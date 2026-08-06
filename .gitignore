@@ -81,3 +81,16 @@ papers/tmp/
 
 # Office lock files
 **/~$*
+
+# LaTeX build artifacts
+*.aux
+*.bbl
+*.blg
+*.fdb_latexmk
+*.fls
+*.log
+*.out
+*.synctex.gz
+*.toc
+## Keep compiled PDFs for papers
+!papers/*.pdf
