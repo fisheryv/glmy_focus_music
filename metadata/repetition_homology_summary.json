@@ -1,0 +1,83 @@
+{
+  "generated_at": "2026-07-29",
+  "ok": true,
+  "selected_representations": [
+    "path_rhythm_phase",
+    "path_acoustic_phase"
+  ],
+  "segments": 1576,
+  "quality_excluded_segments": 24,
+  "confirmatory_discoveries": 2,
+  "cross_scale_replicated_discoveries": 2,
+  "cross_comparator_discoveries": 2,
+  "config": {
+    "exploration_tracks_per_group": 24,
+    "phase_bins": 6,
+    "block_frames": 4,
+    "min_raw_steps": 96,
+    "min_sw_points": 48,
+    "min_period_seconds": 4.0,
+    "max_period_seconds": 32.0,
+    "max_period_blocks": 32,
+    "min_cycles": 3,
+    "max_landmarks": 48,
+    "delay_dimension": 8,
+    "prominent_lifetime": 0.1,
+    "path_thresholds": [
+      0.05,
+      0.1,
+      0.15,
+      0.2,
+      0.25,
+      0.3,
+      0.35,
+      0.4,
+      0.45,
+      0.5,
+      0.55,
+      0.6,
+      0.65,
+      0.7,
+      0.75,
+      0.8,
+      0.85,
+      0.9,
+      0.95
+    ],
+    "calibration_fdr_q": 0.05,
+    "calibration_min_delta": 0.05,
+    "calibration_positive_fraction": 0.75,
+    "selection_p_threshold": 0.05,
+    "selection_effect_threshold": 0.3,
+    "selection_stability_threshold": 0.3,
+    "max_selected_representations": 3,
+    "validation_fdr_q": 0.05,
+    "workers": 4,
+    "random_seed": 20260716
+  },
+  "outputs": {
+    "features": "metadata/repetition_homology_features.csv",
+    "tests": "metadata/repetition_homology_tests.csv",
+    "classification": "metadata/repetition_homology_classification.csv",
+    "report": "docs/repetition-homology-results.md",
+    "plots": [
+      "runs/repetition_homology/loop_scores_validation.png",
+      "runs/repetition_homology/loop_scores_validation.svg",
+      "runs/repetition_homology/path_h1_filtration_validation.png",
+      "runs/repetition_homology/path_h1_filtration_validation.svg"
+    ]
+  },
+  "output_sha256": {
+    "metadata/repetition_homology_features.csv": "a0cb5c3c9af470730100428e56c62f7b571f47e2d768e98bcdfdc869e33a64a4",
+    "metadata/repetition_homology_tests.csv": "7a44c9c02a9a97ff7acbd6babc61e7336204bbade5dad476cdde02f9ce84aa87",
+    "metadata/repetition_homology_classification.csv": "77114392d2686ffe3878e3c3a70e8dd188d155d774a98ac30a01ec1158327ab7",
+    "docs/repetition-homology-results.md": "b777f1b61e9bcdad0c4620fde4a7ef39cfd3158813356345f308c2297bfe27ba",
+    "runs/repetition_homology/loop_scores_validation.png": "45e88d8e1ff4bdb1ca46876ebbe15cd954573b3eb7ab3c8b00a6f387ca4776e7",
+    "runs/repetition_homology/loop_scores_validation.svg": "fea2c6af7faf090dc8249db8efea635720da6d26abff485c18067b7e095fa8b6",
+    "runs/repetition_homology/path_h1_filtration_validation.png": "6eef668c3d9a2b78d845da82e8a2224a19bab868d73545fc55db630c9183a515",
+    "runs/repetition_homology/path_h1_filtration_validation.svg": "8c682cd139df6aaf5a205ae7865bac016838b4212ae83887482a62d38867e11f"
+  },
+  "input_sha256": {
+    "metadata/feature_segments.csv": "f634a36043f4d0b443a70a78e5fad23c6a33a79e160e4c864e08a176c4720cab"
+  }
+}

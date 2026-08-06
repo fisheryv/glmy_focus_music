@@ -1,0 +1,97 @@
+{
+  "generated_at": "2026-08-04",
+  "scope": "structure-only Path Homology analysis on Focus/Classical dataset",
+  "canonical_groups": [
+    "classical",
+    "focus"
+  ],
+  "ok": true,
+  "segments": 1200,
+  "tracks": 600,
+  "primary_validation_n": 120,
+  "primary_tests": 20,
+  "confirmatory_fdr_q": 0.05,
+  "primary_fdr_discoveries_q_0_05": 6,
+  "sensitivity_fdr_discoveries_q_0_05": 4,
+  "primary_pairwise_fdr_discoveries_q_0_05": 6,
+  "primary_fdr_discoveries_q_0_10": 6,
+  "sensitivity_fdr_discoveries_q_0_10": 10,
+  "replicated_same_direction": 4,
+  "primary_pairwise_fdr_discoveries_q_0_10": 6,
+  "validation_180_group_medians": {
+    "vertex_count": {
+      "classical": 2.0,
+      "focus": 3.0
+    },
+    "edge_count": {
+      "classical": 2.0,
+      "focus": 2.0
+    },
+    "edge_density": {
+      "classical": 1.0,
+      "focus": 0.375
+    },
+    "self_transition_ratio": {
+      "classical": 0.3875,
+      "focus": 0.5357142857142857
+    },
+    "path_entropy": {
+      "classical": 0.4807226192923259,
+      "focus": 0.3748900964125389
+    },
+    "directed_recurrence": {
+      "classical": 0.280625,
+      "focus": 0.3333333333333333
+    },
+    "reciprocity": {
+      "classical": 1.0,
+      "focus": 0.0
+    },
+    "h0_betti_mean": {
+      "classical": 1.0,
+      "focus": 1.0
+    },
+    "h1_betti_max": {
+      "classical": 0.0,
+      "focus": 0.0
+    },
+    "h1_observed_persistence": {
+      "classical": 0.0,
+      "focus": 0.0
+    }
+  },
+  "validation_180_h1_counts": {
+    "classical": {
+      "nonzero": 8,
+      "total": 60
+    },
+    "focus": {
+      "nonzero": 5,
+      "total": 60
+    }
+  },
+  "validation_180_sensitivity_h1_counts": {
+    "classical": {
+      "nonzero": 9,
+      "total": 60
+    },
+    "focus": {
+      "nonzero": 6,
+      "total": 60
+    }
+  },
+  "mechanism_example": {
+    "available": false,
+    "finite_h1_intervals": 0,
+    "analysis_set": "validation/180s sensitivity filtration",
+    "interpretation": "No finite H1 interval was observed in either group; no mechanism example was selected."
+  },
+  "artifacts": {
+    "tests": "metadata/structure_statistical_tests.csv",
+    "pairwise": "metadata/structure_pairwise_tests.csv"
+  },
+  "artifact_sha256": {
+    "metadata/structure_statistical_tests.csv": "b9cb674b2507e8148e9e23ccd699a13ba2992bfc2d1f09ebf39e50068f1a28d1",
+    "metadata/structure_pairwise_tests.csv": "caf44ebc5b91034150b7b01d84e9f7f1d3c4d5b9fee5a6bd6b5321d48dd63d28"
+  }
+}

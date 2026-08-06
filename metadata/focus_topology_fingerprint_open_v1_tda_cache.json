@@ -1,0 +1,15 @@
+{
+  "generated_at": "2026-08-03",
+  "input_sha256": {
+    "metadata/feature_segments.csv": "22e9107a0c13f4b1b0d1b2407059e97fee47f76732e1260ae1ec5920e7e36255",
+    "features/models/state_model.npz": "a0dc5f846e8f7121293a9ff7e9386aad9d5c9377b5e76ae48bd67da2d5322b0d",
+    "features/models/state_model.json": "a844e0e3acd0463717d45f68221ab966897f6d96cb50d9837207e42229b3b85e",
+    "configs/pipeline.toml": "82c3f22e12b8f5d177d9f36843ed7ffd091116dfc720388ae700dcf977ee8d71"
+  },
+  "quality_excluded": 0,
+  "rows": 2400,
+  "representations": [
+    "acoustic_novelty_delay",
+    "rhythm"
+  ]
+}

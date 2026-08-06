@@ -1,0 +1,2 @@
+experiment_id,seed,prompt_file,notes
+baseline_smoke,20260716,generation/prompts/focus_instrumental.txt,Reserved smoke-test seed

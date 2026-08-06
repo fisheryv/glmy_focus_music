@@ -1,0 +1,2 @@
+task,role,scale_seconds,n_train,n_validation,n_features,features,best_c,cv_macro_f1,balanced_accuracy,macro_f1,auroc
+open_focus_vs_classical,auxiliary_not_primary,180.0,389,120,3,path_acoustic_phase;path_rhythm_phase;path_chroma_phase,1.0,0.7435122660713758,0.6666666666666666,0.6666666666666666,0.7252777777777778

@@ -1,0 +1,146 @@
+{
+  "generated_at": "2026-08-02",
+  "scope": "validation-stage two-stage multiview Path Homology integration",
+  "evidence_role": {
+    "validation_180": "exploratory integration because fusion was specified after viewing single-view validation results",
+    "validation_300": "duration sensitivity",
+    "holdout": "withheld from all summaries and tests until the hashed analysis gate is written"
+  },
+  "design": {
+    "local_views": [
+      "pitch",
+      "rhythm",
+      "modulation"
+    ],
+    "macro_view": "structure",
+    "metrics_per_view": 20,
+    "block_transform": "discovery-fitted rank-normalized Mahalanobis",
+    "local_weights": {
+      "pitch": 0.3333333333333333,
+      "rhythm": 0.3333333333333333,
+      "modulation": 0.3333333333333333
+    },
+    "hierarchical_weights": {
+      "local": 0.5,
+      "structure": 0.5
+    },
+    "permutations": 999,
+    "bootstrap_resamples": 1000,
+    "seed": 20260716
+  },
+  "sample_counts": {
+    "total_rows_per_view": 1200,
+    "unique_tracks": 600,
+    "discovery_per_scale": 390,
+    "validation_per_scale": 120,
+    "withheld_holdout_per_scale": 90
+  },
+  "primary_180": {
+    "local_permanova": {
+      "pseudo_f": 6.695802422477782,
+      "p_value": 0.001
+    },
+    "pitch_permanova": {
+      "pseudo_f": 7.58803259333116,
+      "p_value": 0.001
+    },
+    "hierarchical_permanova": {
+      "pseudo_f": 4.290622825583707,
+      "p_value": 0.001
+    },
+    "local_classification": {
+      "balanced_accuracy": 0.9333333333333333,
+      "macro_f1": 0.9331662489557226,
+      "macro_auroc_ovr": 0.9891666666666666
+    },
+    "pitch_classification": {
+      "balanced_accuracy": 0.9333333333333333,
+      "macro_f1": 0.9331662489557226,
+      "macro_auroc_ovr": 0.9877777777777778
+    },
+    "hierarchical_classification": {
+      "balanced_accuracy": 0.9083333333333333,
+      "macro_f1": 0.9078147915357218,
+      "macro_auroc_ovr": 0.9813888888888889
+    },
+    "structure_increment": {
+      "delta_pseudo_f": -2.405179596894075,
+      "p_value_one_sided": 1.0,
+      "p_fdr_bh": 1.0
+    },
+    "conditional_structure_residual": {
+      "pseudo_f": 1.7491046005029875,
+      "p_value": 0.049,
+      "validation_r2": 0.0020605248743387275
+    }
+  },
+  "sensitivity_300": {
+    "local_permanova": {
+      "pseudo_f": 9.10146628725621,
+      "p_value": 0.001
+    },
+    "hierarchical_permanova": {
+      "pseudo_f": 5.985865932659445,
+      "p_value": 0.001
+    },
+    "local_classification": {
+      "balanced_accuracy": 0.9416666666666667,
+      "macro_f1": 0.9415652173913043,
+      "macro_auroc_ovr": 0.9908333333333332
+    },
+    "hierarchical_classification": {
+      "balanced_accuracy": 0.9416666666666667,
+      "macro_f1": 0.9415652173913043,
+      "macro_auroc_ovr": 0.9836111111111111
+    },
+    "conditional_structure_residual": {
+      "pseudo_f": 2.9339198719490622,
+      "p_value": 0.002,
+      "validation_r2": 0.0044277698545928945
+    }
+  },
+  "decision": {
+    "local_fusion_supported_as_group_separating_representation": true,
+    "local_fusion_has_validation_increment_over_pitch": false,
+    "structure_has_validation_increment_over_local": false,
+    "structure_increment_direction_stable_300": true,
+    "frozen_holdout_primary_feature_set": "local",
+    "frozen_holdout_secondary_feature_set": "hierarchical",
+    "frozen_local_weights": {
+      "pitch": 0.3333333333333333,
+      "rhythm": 0.3333333333333333,
+      "modulation": 0.3333333333333333
+    },
+    "frozen_hierarchical_weights": {
+      "local": 0.5,
+      "structure": 0.5
+    },
+    "weights_changed_after_validation": false
+  },
+  "input_sha256": {
+    "metadata/pitch_v2_topology_segments.csv": "c3926081ca9708bafb940b5d51ccca309199b3253c1f70ab239b826dbe66fb56",
+    "metadata/rhythm_topology_segments.csv": "559dc788d227dd2ed7aea3f0d1dd73279e9782ad27ad182f47f2f52b3eb3edb9",
+    "metadata/modulation_tertile_topology_segments.csv": "b99a97d769a5999fef8a87b4dcce8e7b64e88c5fe76fae08e52f7e4e90e9f186",
+    "metadata/structure_topology_segments.csv": "192647177a7a72e77f74265c54260bb741cba2d961799bda7195366d9242f882"
+  },
+  "artifacts": [
+    "metadata/multiview_fusion_permanova.csv",
+    "metadata/multiview_fusion_incremental.csv",
+    "metadata/multiview_fusion_classification.csv",
+    "metadata/multiview_fusion_classification_deltas.csv",
+    "metadata/multiview_fusion_distance_correlations.csv",
+    "metadata/multiview_fusion_structure_weight_sensitivity.csv",
+    "metadata/multiview_fusion_structure_residual.csv",
+    "metadata/multiview_fusion_validation_scores.csv",
+    "runs/multiview_fusion/figures/multiview_classification_ablation.png",
+    "runs/multiview_fusion/figures/multiview_classification_ablation.svg",
+    "runs/multiview_fusion/figures/multiview_distance_correlations.png",
+    "runs/multiview_fusion/figures/multiview_distance_correlations.svg",
+    "runs/multiview_fusion/figures/multiview_pca_validation_180.png",
+    "runs/multiview_fusion/figures/multiview_pca_validation_180.svg",
+    "runs/multiview_fusion/figures/multiview_permanova_ablation.png",
+    "runs/multiview_fusion/figures/multiview_permanova_ablation.svg",
+    "runs/multiview_fusion/figures/multiview_structure_weight_sensitivity.png",
+    "runs/multiview_fusion/figures/multiview_structure_weight_sensitivity.svg"
+  ]
+}

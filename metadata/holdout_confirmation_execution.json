@@ -1,0 +1,15 @@
+{
+  "executed_at": "2026-08-02",
+  "status": "completed_once",
+  "gate_sha256": "f75a04a1b6efb82a9ca031900628adfcf54dee06a1813a8bad6183c8c3fa0617",
+  "output_sha256": {
+    "metadata/holdout_confirmation_summary.json": "3fda53469efa66697450429e02d70e2d2c903c365e04f6a97375391e3bc98bda",
+    "metadata/holdout_confirmation_permanova.csv": "2c75bafc8414fa38c493c4f98257e4b7cf1004f537f371eb1bf6ff643beb01aa",
+    "metadata/holdout_confirmation_incremental.csv": "b342cae2abb708d535e296b3729279e372ecb6653439ccef7cf2ce595b5585c5",
+    "metadata/holdout_confirmation_directional_metrics.csv": "545ab6959a7457595f01acc4d3ffc7f477ec7f78e66e3cb02b26df3f38f4c58d",
+    "runs/holdout_confirmation/figures/holdout_directional_replication.png": "7b155e9044f6a5885e97fda4a5c253b54e66b8259fd2876f743d718ab03c97d2",
+    "runs/holdout_confirmation/figures/holdout_directional_replication.svg": "9fb7c7bc3cce6d97d828e35964e26c78e06625911ce9bb60afcd129a07b2e209",
+    "runs/holdout_confirmation/figures/holdout_permanova.png": "63bb02d411f0194ef320f2d1d3cba70312b361b777c16f9443f65b5414b807e2",
+    "runs/holdout_confirmation/figures/holdout_permanova.svg": "65c31d826efcecf2abd496ebcd996847541396f96dce3521ab689fca869b1bc3"
+  }
+}

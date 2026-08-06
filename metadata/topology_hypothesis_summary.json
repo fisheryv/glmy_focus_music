@@ -1,0 +1,10 @@
+{
+  "generated_at": "2026-08-02",
+  "applicable": false,
+  "reason": "the preregistered H2 comparator Pop is absent from the canonical dataset",
+  "core_verdict": "not_applicable_comparator_absent",
+  "core_supported_endpoints": 0,
+  "outputs": {
+    "plots": []
+  }
+}

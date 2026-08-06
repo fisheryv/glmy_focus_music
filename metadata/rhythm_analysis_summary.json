@@ -1,0 +1,110 @@
+{
+  "generated_at": "2026-08-04",
+  "scope": "rhythm-only Path Homology analysis on Focus/Classical dataset",
+  "canonical_focus_source": "Jamendo Open Focus",
+  "canonical_groups": [
+    "classical",
+    "focus"
+  ],
+  "ok": true,
+  "segment_views": 1200,
+  "tracks": 600,
+  "graph_input": "adjacent frozen state transitions",
+  "ssm_used": false,
+  "primary_validation_n": 120,
+  "confirmatory_fdr_q": 0.05,
+  "primary_fdr_discoveries": 14,
+  "primary_tests": 20,
+  "sensitivity_fdr_discoveries": 14,
+  "replicated_same_direction": 14,
+  "focus_classical_fdr_discoveries": 14,
+  "validation_180_group_medians": {
+    "vertex_count": {
+      "classical": 8.0,
+      "focus": 7.0
+    },
+    "edge_count": {
+      "classical": 36.0,
+      "focus": 21.0
+    },
+    "edge_density": {
+      "classical": 0.5773809523809523,
+      "focus": 0.4930555555555556
+    },
+    "self_transition_ratio": {
+      "classical": 0.4790502793296089,
+      "focus": 0.6619410904867744
+    },
+    "path_entropy": {
+      "classical": 1.335851722291833,
+      "focus": 0.8655812512568363
+    },
+    "directed_recurrence": {
+      "classical": 0.0922880059923223,
+      "focus": 0.2645125841099273
+    },
+    "reciprocity": {
+      "classical": 0.8090172239108409,
+      "focus": 0.7692307692307693
+    },
+    "h0_betti_mean": {
+      "classical": 6.833333333333333,
+      "focus": 4.75
+    },
+    "h1_betti_max": {
+      "classical": 0.0,
+      "focus": 0.0
+    }
+  },
+  "validation_180_h1_counts": {
+    "classical": {
+      "nonzero": 1,
+      "total": 60
+    },
+    "focus": {
+      "nonzero": 1,
+      "total": 60
+    }
+  },
+  "validation_180_sensitivity_h1_counts": {
+    "classical": {
+      "nonzero": 12,
+      "total": 60
+    },
+    "focus": {
+      "nonzero": 11,
+      "total": 60
+    }
+  },
+  "mechanism_example": {
+    "segment_id": "focus_jamendo_1901339__180s",
+    "track_id": "focus_jamendo_1901339",
+    "group": "focus",
+    "split": "validation",
+    "scale_seconds": 180,
+    "finite_h1_intervals": 1,
+    "birth_threshold": 0.4,
+    "death_threshold": 0.2,
+    "lifetime": 0.2,
+    "selection_rule": "prefer Focus validation/180s with exactly one finite sensitivity-filtration H1 interval; then largest lifetime; deterministic segment-id tie break"
+  },
+  "artifacts": {
+    "tests": "metadata/rhythm_statistical_tests.csv",
+    "pairwise": "metadata/rhythm_pairwise_tests.csv"
+  },
+  "artifact_sha256": {
+    "metadata/rhythm_statistical_tests.csv": "988a4c146b40227e0514a34c1092bd431905434e0141e7fae36e15ec957a6228",
+    "metadata/rhythm_pairwise_tests.csv": "a21e63e6882cad2c131dfae66b34115be64af09b8faa3886eeff8b1e395e9575"
+  },
+  "local_effect_bootstrap": {
+    "effect": "rank_biserial",
+    "interval": "percentile_95",
+    "resamples": 3000,
+    "seed": 20260716,
+    "resampling_unit": "track_within_group",
+    "analysis_sets": [
+      "primary_validation_180",
+      "sensitivity_validation_300"
+    ]
+  }
+}

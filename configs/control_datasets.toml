@@ -1,0 +1,31 @@
+[selection]
+seed = 20260716
+discovery_fraction = 0.65
+validation_fraction = 0.20
+holdout_fraction = 0.15
+
+[pop]
+sources = ["MTG/mtg-jamendo-dataset", "Jamendo tracks API"]
+source_revision = "cafd8e20c265ed84f1e61f1c875327971f43a62f"
+required_genre_tag = "genre---pop"
+required_voice_annotation = "voice_instrumental---instrumental,instrumental,instrumental"
+strict_mtg_tracks = 132
+api_supplement_tracks = 168
+target_tracks = 300
+max_tracks_per_artist = 6
+api_query_tags = ["pop", "instrumental"]
+audio_format = "mp32"
+redistribute_audio = false
+unavailable_exclusions = "metadata/control_pop_exclusions.csv"
+
+[classical]
+sources = ["Musopen Kickstarter Project #1 via Internet Archive", "MusicNet via Zenodo"]
+archive_item = "musopen-lossless-dvd"
+musicnet_doi = "10.5281/zenodo.5120004"
+licenses = ["Public Domain Mark 1.0", "Creative Commons Attribution 4.0 International"]
+target_tracks = 300
+musopen_tracks = 95
+musicnet_tracks = 205
+subpools = ["piano_solo", "string_quartet", "mixed_chamber", "string_chamber", "solo_instrument"]
+split_group = "composer"
+audio_formats = ["m4a_lossless", "mp3", "pcm_wav"]

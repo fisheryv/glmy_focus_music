@@ -1,0 +1,3 @@
+role,split,scale_seconds,n,metrics,pseudo_f,p_value,permutations,effective_dimensions,covariance_reference
+primary_validation_180,validation,180.0,120,20,10.692654007590129,0.001,999,13,discovery/180s
+duration_sensitivity_300,validation,300.0,120,20,19.827634998886136,0.001,999,13,discovery/180s

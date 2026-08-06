@@ -1,0 +1,46 @@
+{
+  "generated_at": "2026-08-02",
+  "status": "completed_once",
+  "gate_sha256": "f75a04a1b6efb82a9ca031900628adfcf54dee06a1813a8bad6183c8c3fa0617",
+  "scientific_scope": "Operational final confirmation under a retrospective symmetric re-split; the Classical holdout previously belonged to discovery and is not pristine.",
+  "holdout_counts": {
+    "classical": 45,
+    "focus": 45
+  },
+  "primary_180": {
+    "feature_set": "local",
+    "pseudo_f": 5.358576536100512,
+    "p_value": 0.001,
+    "confirmed_at_alpha_0_05": true
+  },
+  "secondary_hierarchical_180": {
+    "pseudo_f": 3.852596011288983,
+    "p_value": 0.001,
+    "p_fdr_bh": 0.0016666666666666668
+  },
+  "directional_metric_replication_180": {
+    "locked_metrics": 44,
+    "direction_matched": 43,
+    "replicated_q_0_10": 42,
+    "fdr_family": "all validation-selected directional metrics across four views"
+  },
+  "adaptation_audit": {
+    "parameters_refit": false,
+    "metrics_reselected": false,
+    "directions_changed": false,
+    "fusion_weights_changed": false,
+    "thresholds_changed": false,
+    "fdr_family_changed": false
+  },
+  "artifacts": {
+    "permanova": "metadata/holdout_confirmation_permanova.csv",
+    "incremental": "metadata/holdout_confirmation_incremental.csv",
+    "directional": "metadata/holdout_confirmation_directional_metrics.csv",
+    "figures": [
+      "runs/holdout_confirmation/figures/holdout_directional_replication.png",
+      "runs/holdout_confirmation/figures/holdout_directional_replication.svg",
+      "runs/holdout_confirmation/figures/holdout_permanova.png",
+      "runs/holdout_confirmation/figures/holdout_permanova.svg"
+    ]
+  }
+}

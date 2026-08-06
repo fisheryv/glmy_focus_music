@@ -1,0 +1,73 @@
+{
+  "generated_at": "2026-08-02",
+  "scope": "rhythm-only Path Homology rerun on Focus/Classical dataset",
+  "canonical_groups": [
+    "classical",
+    "focus"
+  ],
+  "ok": true,
+  "segment_views": 1200,
+  "segments": 1200,
+  "tracks": 600,
+  "status_counts": {
+    "success": 1200
+  },
+  "group_counts": {
+    "classical": 600,
+    "focus": 600
+  },
+  "split_counts": {
+    "validation": 240,
+    "discovery": 780,
+    "holdout": 180
+  },
+  "scale_counts": {
+    "180s": 600,
+    "300s": 600
+  },
+  "h1_nonzero_segment_views": 29,
+  "state_model_sha256": "a0dc5f846e8f7121293a9ff7e9386aad9d5c9377b5e76ae48bd67da2d5322b0d",
+  "config": {
+    "views": [
+      "rhythm"
+    ],
+    "top_k": 6,
+    "include_self_loops": false,
+    "thresholds": [
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9,
+      0.95
+    ],
+    "sensitivity_thresholds": [
+      0.05,
+      0.075,
+      0.1,
+      0.15,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9,
+      0.95
+    ],
+    "max_reported_dimension": 1,
+    "rank_tolerance": 1e-09
+  },
+  "config_sha256": "530d4fb38cb3842c2bef5c3f64cc6e272f5133fd2a57be9a05f25b15d840719a",
+  "artifacts": {
+    "segments": "metadata/rhythm_topology_segments.csv",
+    "filtration": "metadata/rhythm_topology_filtration.csv",
+    "sensitivity_filtration": "metadata/rhythm_topology_filtration_sensitivity.csv"
+  },
+  "artifact_sha256": {
+    "metadata/rhythm_topology_segments.csv": "559dc788d227dd2ed7aea3f0d1dd73279e9782ad27ad182f47f2f52b3eb3edb9",
+    "metadata/rhythm_topology_filtration.csv": "0ea1ea2e807bb3e457ab7ed58367c8c66aa7e445981e48e844e2dfebbd9ade18",
+    "metadata/rhythm_topology_filtration_sensitivity.csv": "b20e4d233dbbbbba9fd428ba6ff85d87476fc4b6cfd80a12cb9a3094bed8c922"
+  }
+}

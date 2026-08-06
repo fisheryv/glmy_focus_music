@@ -1,0 +1,300 @@
+{
+  "generated_at": "2026-08-02",
+  "ok": true,
+  "scope": "four-group structure, pitch_v2, and rhythm Path Homology",
+  "groups": [
+    "classical",
+    "focus",
+    "focus_open",
+    "pop"
+  ],
+  "manifest": {
+    "segments": 2200,
+    "tracks": 1100,
+    "counts": {
+      "classical|discovery|180.0": 221,
+      "classical|discovery|300.0": 221,
+      "classical|validation|180.0": 79,
+      "classical|validation|300.0": 79,
+      "focus|discovery|180.0": 130,
+      "focus|discovery|300.0": 130,
+      "focus|holdout|180.0": 30,
+      "focus|holdout|300.0": 30,
+      "focus|validation|180.0": 40,
+      "focus|validation|300.0": 40,
+      "focus_open|discovery|180.0": 195,
+      "focus_open|discovery|300.0": 195,
+      "focus_open|holdout|180.0": 45,
+      "focus_open|holdout|300.0": 45,
+      "focus_open|validation|180.0": 60,
+      "focus_open|validation|300.0": 60,
+      "pop|discovery|180.0": 224,
+      "pop|discovery|300.0": 224,
+      "pop|validation|180.0": 76,
+      "pop|validation|300.0": 76
+    },
+    "manifest_sha256": "761f8ad02db494165c1c9c02bcce677ccb19c0e34c16e02688a84d7ccd72046a"
+  },
+  "segments": 2200,
+  "tracks": 1100,
+  "segment_views": 6600,
+  "view_counts": {
+    "pitch_v2": 2200,
+    "rhythm": 2200,
+    "structure": 2200
+  },
+  "status_counts": {
+    "success": 6600
+  },
+  "primary_validation_n_per_view": 255,
+  "primary_omnibus_fdr_discoveries": 35,
+  "primary_pairwise_fdr_discoveries": 108,
+  "validation_180_group_medians": {
+    "pitch_v2": {
+      "classical": {
+        "vertex_count": 15.0,
+        "edge_count": 65.0,
+        "self_transition_ratio": 0.34234234234234234,
+        "path_entropy": 1.6733579844131627,
+        "directed_recurrence": 0.028144021922238943,
+        "reciprocity": 0.5357142857142857,
+        "h0_betti_mean": 13.0,
+        "h1_betti_max": 0.0
+      },
+      "focus": {
+        "vertex_count": 10.0,
+        "edge_count": 34.0,
+        "self_transition_ratio": 0.43506371814092953,
+        "path_entropy": 1.314253341390852,
+        "directed_recurrence": 0.07292668399058841,
+        "reciprocity": 0.6733333333333333,
+        "h0_betti_mean": 7.833333333333333,
+        "h1_betti_max": 0.0
+      },
+      "focus_open": {
+        "vertex_count": 10.0,
+        "edge_count": 29.0,
+        "self_transition_ratio": 0.6110143846121958,
+        "path_entropy": 0.9238583937008085,
+        "directed_recurrence": 0.1251136027683364,
+        "reciprocity": 0.6890898812888637,
+        "h0_betti_mean": 6.916666666666666,
+        "h1_betti_max": 0.0
+      },
+      "pop": {
+        "vertex_count": 9.0,
+        "edge_count": 29.0,
+        "self_transition_ratio": 0.4728682170542636,
+        "path_entropy": 1.2073805429573499,
+        "directed_recurrence": 0.09238855075005094,
+        "reciprocity": 0.6666666666666666,
+        "h0_betti_mean": 6.166666666666667,
+        "h1_betti_max": 0.0
+      }
+    },
+    "rhythm": {
+      "classical": {
+        "vertex_count": 8.0,
+        "edge_count": 33.0,
+        "self_transition_ratio": 0.4860335195530726,
+        "path_entropy": 1.2738045357848307,
+        "directed_recurrence": 0.10303985518554352,
+        "reciprocity": 0.8205128205128205,
+        "h0_betti_mean": 6.5,
+        "h1_betti_max": 0.0
+      },
+      "focus": {
+        "vertex_count": 7.0,
+        "edge_count": 22.5,
+        "self_transition_ratio": 0.4888268156424581,
+        "path_entropy": 1.07477709916321,
+        "directed_recurrence": 0.14963640335819733,
+        "reciprocity": 0.8117647058823529,
+        "h0_betti_mean": 4.833333333333333,
+        "h1_betti_max": 0.0
+      },
+      "focus_open": {
+        "vertex_count": 6.0,
+        "edge_count": 22.5,
+        "self_transition_ratio": 0.6003978330793973,
+        "path_entropy": 0.9601127231500916,
+        "directed_recurrence": 0.23916232327330608,
+        "reciprocity": 0.7953488372093023,
+        "h0_betti_mean": 4.666666666666667,
+        "h1_betti_max": 0.0
+      },
+      "pop": {
+        "vertex_count": 7.0,
+        "edge_count": 19.0,
+        "self_transition_ratio": 0.5644970057473575,
+        "path_entropy": 0.9863647594635745,
+        "directed_recurrence": 0.15821135420242816,
+        "reciprocity": 0.7759856630824373,
+        "h0_betti_mean": 4.5,
+        "h1_betti_max": 0.0
+      }
+    },
+    "structure": {
+      "classical": {
+        "vertex_count": 3.0,
+        "edge_count": 3.0,
+        "self_transition_ratio": 0.375,
+        "path_entropy": 0.5193764199421605,
+        "directed_recurrence": 0.28125,
+        "reciprocity": 0.6666666666666666,
+        "h0_betti_mean": 1.0,
+        "h1_betti_max": 0.0
+      },
+      "focus": {
+        "vertex_count": 2.0,
+        "edge_count": 2.0,
+        "self_transition_ratio": 0.6458333333333333,
+        "path_entropy": 0.3911397125312578,
+        "directed_recurrence": 0.43875,
+        "reciprocity": 0.45,
+        "h0_betti_mean": 1.0,
+        "h1_betti_max": 0.0
+      },
+      "focus_open": {
+        "vertex_count": 3.0,
+        "edge_count": 2.0,
+        "self_transition_ratio": 0.5357142857142857,
+        "path_entropy": 0.4170020196151565,
+        "directed_recurrence": 0.35416666666666663,
+        "reciprocity": 0.16666666666666666,
+        "h0_betti_mean": 1.0,
+        "h1_betti_max": 0.0
+      },
+      "pop": {
+        "vertex_count": 3.0,
+        "edge_count": 3.0,
+        "self_transition_ratio": 0.2857142857142857,
+        "path_entropy": 0.46209812037329684,
+        "directed_recurrence": 0.27265306122448985,
+        "reciprocity": 0.5,
+        "h0_betti_mean": 1.0,
+        "h1_betti_max": 0.0
+      }
+    }
+  },
+  "validation_180_h1_counts": {
+    "pitch_v2": {
+      "classical": {
+        "n": 79,
+        "nonzero": 1
+      },
+      "focus": {
+        "n": 40,
+        "nonzero": 3
+      },
+      "focus_open": {
+        "n": 60,
+        "nonzero": 3
+      },
+      "pop": {
+        "n": 76,
+        "nonzero": 1
+      }
+    },
+    "rhythm": {
+      "classical": {
+        "n": 79,
+        "nonzero": 2
+      },
+      "focus": {
+        "n": 40,
+        "nonzero": 0
+      },
+      "focus_open": {
+        "n": 60,
+        "nonzero": 2
+      },
+      "pop": {
+        "n": 76,
+        "nonzero": 3
+      }
+    },
+    "structure": {
+      "classical": {
+        "n": 79,
+        "nonzero": 12
+      },
+      "focus": {
+        "n": 40,
+        "nonzero": 4
+      },
+      "focus_open": {
+        "n": 60,
+        "nonzero": 7
+      },
+      "pop": {
+        "n": 76,
+        "nonzero": 10
+      }
+    }
+  },
+  "state_model_sha256": "6f8c5d5ac49ef0ff8aec8bb894728c11869fe04d966efde673dbd92e08da1186",
+  "state_model_training_groups": {
+    "classical": 221,
+    "focus": 130,
+    "pop": 224,
+    "focus_open": 195
+  },
+  "state_model_sampled_windows": {
+    "acoustic": {
+      "classical": 46670,
+      "focus": 46670,
+      "focus_open": 46670,
+      "pop": 46670
+    },
+    "rhythm": {
+      "classical": 46670,
+      "focus": 46670,
+      "focus_open": 46670,
+      "pop": 46670
+    },
+    "modulation": {
+      "classical": 11440,
+      "focus": 11440,
+      "focus_open": 11440,
+      "pop": 11440
+    },
+    "structure": {
+      "classical": 954,
+      "focus": 954,
+      "focus_open": 954,
+      "pop": 954
+    }
+  },
+  "pitch_codebook_sha256": "1dfbce0fd5fbde0a2e225aea1718a264076ab7cd79c3a8cbd8e544b4aff3fc3f",
+  "pitch_training_steps_per_group": {
+    "classical": 32709,
+    "focus": 32709,
+    "focus_open": 32709,
+    "pop": 32709
+  },
+  "graph_construction": {
+    "structure": "SSM-derived macro-boundaries -> frozen section states -> adjacent transitions",
+    "pitch_v2": "adjacent frozen Tonnetz-codebook states; no SSM",
+    "rhythm": "adjacent frozen rhythm states; no SSM"
+  },
+  "inference": {
+    "primary": "validation/180s",
+    "sensitivity": "validation/300s",
+    "exploratory": "discovery/180s",
+    "holdout_in_omnibus": false,
+    "omnibus_fdr_family": "per analysis set across 3 views x 20 metrics",
+    "pairwise_fdr_family": "per analysis set across 3 views x 20 metrics x 6 contrasts"
+  },
+  "artifacts": {
+    "preprocessed_manifest": "metadata/four_group_preprocessed_segments.csv",
+    "raw_feature_manifest": "metadata/four_group_raw_feature_segments.csv",
+    "feature_manifest": "metadata/four_group_feature_segments.csv",
+    "pitch_feature_manifest": "metadata/four_group_pitch_v2_features.csv",
+    "topology_manifest": "metadata/four_group_topology_segments.csv",
+    "filtration_manifest": "metadata/four_group_topology_filtration.csv",
+    "sensitivity_filtration_manifest": "metadata/four_group_topology_filtration_sensitivity.csv",
+    "omnibus_tests": "metadata/four_group_statistical_tests.csv",
+    "pairwise_tests": "metadata/four_group_pairwise_tests.csv"
+  }
+}

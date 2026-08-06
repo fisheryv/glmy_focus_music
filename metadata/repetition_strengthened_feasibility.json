@@ -1,0 +1,19 @@
+{
+  "generated_at": "2026-07-30",
+  "ok": true,
+  "validation_run": false,
+  "reason": "no strengthened endpoint passed discovery gates",
+  "thresholds": [
+    0.4,
+    0.55,
+    0.7
+  ],
+  "outputs": {
+    "sensitivity": "metadata/repetition_strengthened_sensitivity.csv",
+    "diagnostics": "metadata/repetition_strengthened_diagnostics.csv",
+    "report": "docs/repetition-strengthened-feasibility.md"
+  },
+  "input_sha256": {
+    "metadata/feature_segments.csv": "f634a36043f4d0b443a70a78e5fad23c6a33a79e160e4c864e08a176c4720cab"
+  }
+}

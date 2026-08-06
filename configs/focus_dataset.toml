@@ -1,0 +1,19 @@
+[source]
+dataset = "Jamendo API open Focus catalog"
+categories = ["meditation", "focus", "relaxing", "study", "deepwork"]
+expected_tracks = 300
+restricted = false
+redistribution_allowed = true
+
+[catalog]
+anonymize_filenames = false
+candidate_manifest = "metadata/focus_open_candidates.csv"
+public_manifest = "metadata/focus_manifest.csv"
+duration_method = "contiguous_mpeg_frame_scan"
+verify_sha256 = true
+
+[split]
+strategy = "artist_album_grouped_deterministic"
+discovery_fraction = 0.65
+validation_fraction = 0.20
+holdout_fraction = 0.15

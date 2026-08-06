@@ -1,0 +1,9 @@
+role,comparison,split,scale_seconds,modality,scale_bars,scale_label,metric,n_focus,n_comparator,focus_median,comparator_median,rank_biserial_focus_minus_comparator,p_one_sided,p_fdr_bh
+frozen_validation,focus_greater_than_pop,validation,300.0,acoustic,16,16_bars,h1_surrogate_excess,38,23,0.024529188871383667,0.03985852003097534,-0.1167048054919908,0.7782760023265582,0.7782760023265582
+frozen_validation,focus_greater_than_classical,validation,300.0,acoustic,16,16_bars,h1_surrogate_excess,38,60,0.024529188871383667,0.014760881662368774,0.3157894736842106,0.00438070564716677,0.00876141129433354
+frozen_validation,focus_greater_than_pop,validation,300.0,rhythm,16,16_bars,h1_surrogate_excess,38,23,0.02001705765724182,0.014470219612121582,0.09382151029748287,0.2733574216589044,0.5467148433178088
+frozen_validation,focus_greater_than_classical,validation,300.0,rhythm,16,16_bars,h1_surrogate_excess,38,60,0.02001705765724182,0.004413217306137085,0.27105263157894743,0.012244503890900996,0.012244503890900996
+duration_sensitivity_295s,focus_greater_than_pop,validation,300.0,acoustic,16,16_bars,h1_surrogate_excess,38,15,0.024529188871383667,0.036640286445617676,-0.16491228070175434,0.8258484295396282,0.8258484295396282
+duration_sensitivity_295s,focus_greater_than_classical,validation,300.0,acoustic,16,16_bars,h1_surrogate_excess,38,55,0.024529188871383667,0.015251219272613525,0.3052631578947369,0.006401215992650726,0.011831089037156238
+duration_sensitivity_295s,focus_greater_than_pop,validation,300.0,rhythm,16,16_bars,h1_surrogate_excess,38,15,0.02001705765724182,0.020257771015167236,-0.04210526315789476,0.5974731509930178,0.8258484295396282
+duration_sensitivity_295s,focus_greater_than_classical,validation,300.0,rhythm,16,16_bars,h1_surrogate_excess,38,55,0.02001705765724182,0.003668367862701416,0.27751196172248793,0.011831089037156238,0.011831089037156238

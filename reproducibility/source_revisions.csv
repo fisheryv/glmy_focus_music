@@ -1,0 +1,7 @@
+source,revision,retrieved_at,url
+brainfm-authorized-focus,local_authorized_catalog_200_unique,2026-07-21,
+mtg-jamendo-dataset,cafd8e20c265ed84f1e61f1c875327971f43a62f,2026-07-16,https://github.com/MTG/mtg-jamendo-dataset
+jamendo-tracks-api,live_query_2026-07-17,2026-07-17,https://developer.jamendo.com/v3.0/tracks
+musopen-lossless-dvd,2012-08_public-domain-item,2026-07-16,https://archive.org/details/musopen-lossless-dvd
+musopen-dvd-standard-fallback,2012-08_public-domain-item,2026-07-16,https://archive.org/details/musopen-dvd
+musicnet-zenodo-5120004,md5_844764911fa0d5b97c97da944a057590,2026-07-17,https://doi.org/10.5281/zenodo.5120004

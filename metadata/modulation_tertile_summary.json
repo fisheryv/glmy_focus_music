@@ -1,0 +1,95 @@
+{
+  "generated_at": "2026-08-04",
+  "ok": true,
+  "scope": "three-state spectral-modulation Path Homology on Focus/Classical dataset",
+  "canonical_focus_source": "Jamendo Open Focus",
+  "canonical_groups": [
+    "classical",
+    "focus"
+  ],
+  "segment_views": 1200,
+  "tracks": 600,
+  "status_counts": {
+    "success": 1200
+  },
+  "state_count": 3,
+  "state_labels": [
+    "Low",
+    "Medium",
+    "High"
+  ],
+  "tertile_edges": [
+    0.024829621471326387,
+    0.044771712504977274
+  ],
+  "model_sha256": "0b4705b1bffe9c58774570835bfeefca496e4f17309cb3a416bbafcd2d86787c",
+  "graph_input": "adjacent frozen Low/Medium/High state transitions",
+  "ssm_used": false,
+  "primary_validation_n": 120,
+  "primary_tests": 20,
+  "confirmatory_fdr_q": 0.05,
+  "primary_fdr_discoveries": 12,
+  "sensitivity_fdr_discoveries": 13,
+  "replicated_same_direction": 12,
+  "validation_180_h1_counts": {
+    "classical": {
+      "total": 60,
+      "primary_nonzero": 0,
+      "sensitivity_nonzero": 0
+    },
+    "focus": {
+      "total": 60,
+      "primary_nonzero": 0,
+      "sensitivity_nonzero": 0
+    }
+  },
+  "all_segment_state_occupancy": {
+    "classical": {
+      "low": 24069,
+      "medium": 24531,
+      "high": 10880,
+      "low_share": 0.4046570275722932,
+      "medium_share": 0.41242434431741765,
+      "high_share": 0.18291862811028917
+    },
+    "focus": {
+      "low": 14003,
+      "medium": 16388,
+      "high": 32705,
+      "low_share": 0.22193165969316597,
+      "medium_share": 0.2597312032458476,
+      "high_share": 0.5183371370609864
+    }
+  },
+  "mechanism_example": {
+    "segment_id": "focus_jamendo_1858750__180s",
+    "track_id": "focus_jamendo_1858750",
+    "group": "focus",
+    "split": "validation",
+    "scale_seconds": 180,
+    "finite_h1_available": false,
+    "finite_h1_intervals": 0,
+    "birth_threshold": null,
+    "death_threshold": null,
+    "lifetime": 0.0,
+    "selection_rule": "no finite H1 interval exists; choose Focus validation/180s with most edges, then path entropy"
+  },
+  "artifacts": {
+    "feature_manifest": "metadata/modulation_tertile_features.csv",
+    "segment_manifest": "metadata/modulation_tertile_topology_segments.csv",
+    "filtration_manifest": "metadata/modulation_tertile_topology_filtration.csv",
+    "sensitivity_filtration_manifest": "metadata/modulation_tertile_topology_filtration_sensitivity.csv",
+    "statistical_tests": "metadata/modulation_tertile_statistical_tests.csv",
+    "pairwise_tests": "metadata/modulation_tertile_pairwise_tests.csv"
+  },
+  "artifact_sha256": {
+    "features/models/modulation_tertile_model.npz": "0b4705b1bffe9c58774570835bfeefca496e4f17309cb3a416bbafcd2d86787c",
+    "features/models/modulation_tertile_model.json": "924e5595749e744df650b65743a336c85407a671c2a7d96c2246bedcb35950b0",
+    "metadata/modulation_tertile_features.csv": "fb8e838b95419533f7e4ce17de15fe57f8a701e65ac1276d06104538435bade6",
+    "metadata/modulation_tertile_topology_segments.csv": "b99a97d769a5999fef8a87b4dcce8e7b64e88c5fe76fae08e52f7e4e90e9f186",
+    "metadata/modulation_tertile_topology_filtration.csv": "9c64291fa1c6cb359963b9a69c71dd819fbb811dba45a831daade0215800ae1e",
+    "metadata/modulation_tertile_topology_filtration_sensitivity.csv": "65e6586009d22ba291fe63e87b8089017418277739954d55710840024df3b7fb",
+    "metadata/modulation_tertile_statistical_tests.csv": "e43e6a44cb43264f703e50023a696be32bc6dce52a463ab33464f799c89e6be1",
+    "metadata/modulation_tertile_pairwise_tests.csv": "38e3de2df3c966e5909d5190f0ed943e56f327f8c07e6fb11bbf39c9348c7943"
+  }
+}

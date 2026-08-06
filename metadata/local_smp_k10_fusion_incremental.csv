@@ -1,0 +1,13 @@
+analysis_set,scale_seconds,comparison,candidate,baseline,family,permutations,delta_pseudo_f,p_value_one_sided,null_ci_low,null_ci_high,p_fdr_bh
+primary_validation_180,180.0,full_vs_pitch,local_all,pitch,full versus single view,999,-1.319783404770054,0.999,-0.6184158601022373,0.5399704085383107,1.0
+primary_validation_180,180.0,full_vs_rhythm,local_all,rhythm,full versus single view,999,-0.20546178115709868,0.763,-0.7398799259027311,0.6278684988566893,1.0
+primary_validation_180,180.0,full_vs_modulation,local_all,modulation_smp_k10,full versus single view,999,2.1393835523583737,0.001,-0.7391822959211658,0.6766437997229868,0.003
+primary_validation_180,180.0,add_pitch,local_all,rhythm_modulation,leave-one-view-out,999,0.8644960617881008,0.001,-0.3618171827121214,0.4519813174314728,0.003
+primary_validation_180,180.0,add_rhythm,local_all,pitch_modulation,leave-one-view-out,999,0.10051834768173151,0.231,-0.3062276844267795,0.36860126312415864,0.462
+primary_validation_180,180.0,add_modulation,local_all,pitch_rhythm,leave-one-view-out,999,-0.8143684854342883,1.0,-0.24738385439070368,0.30710520620805676,1.0
+sensitivity_validation_300,300.0,full_vs_pitch,local_all,pitch,full versus single view,999,-7.647926608371449,1.0,-0.6962063135787714,0.5920244393540945,1.0
+sensitivity_validation_300,300.0,full_vs_rhythm,local_all,rhythm,full versus single view,999,0.29814745214244454,0.171,-0.7115860451067719,0.5784820301189836,0.342
+sensitivity_validation_300,300.0,full_vs_modulation,local_all,modulation_smp_k10,full versus single view,999,6.301078833875606,0.001,-0.6578211378722933,0.5844416916203914,0.003
+sensitivity_validation_300,300.0,add_pitch,local_all,rhythm_modulation,leave-one-view-out,999,3.443922050936906,0.001,-0.2930999118470713,0.39015392783921393,0.003
+sensitivity_validation_300,300.0,add_rhythm,local_all,pitch_modulation,leave-one-view-out,999,-0.1456424050298608,0.821,-0.2960513844288683,0.3611951440353754,1.0
+sensitivity_validation_300,300.0,add_modulation,local_all,pitch_rhythm,leave-one-view-out,999,-3.564859209030148,1.0,-0.32987280766332366,0.3354244014315772,1.0

@@ -1,0 +1,33 @@
+prompt_id,caption,bpm,keyscale,timesignature
+p01_soft_piano,"Instrumental focus music with soft piano, steady pulse, restrained melody, smooth dynamics, low distraction, no vocals",80,,4
+p02_felt_piano,"Instrumental focus music with felt piano, even rhythmic flow, sparse melodic movement, controlled dynamics, no vocals",84,,4
+p03_piano_marimba,"Instrumental focus music with piano and soft marimba, stable pulse, limited melodic range, gentle transitions, no vocals",88,,4
+p04_piano_strings,"Instrumental focus music with piano and muted strings, regular pulse, understated motifs, smooth dynamics, no vocals",76,,4
+p05_warm_synth,"Instrumental focus music with warm synthesizer, steady pulse, restrained harmony, gradual timbral motion, no vocals",90,,4
+p06_analog_pad,"Instrumental focus music with analog pads, even pulse, sparse tonal motifs, low contrast, no vocals",86,,4
+p07_synth_plucks,"Instrumental focus music with soft synth plucks, stable beat, simple recurring figures, controlled dynamics, no vocals",94,,4
+p08_ambient_electronic,"Instrumental ambient electronic focus music, steady mid-tempo pulse, subtle melodic development, no drops, no vocals",92,,4
+p09_muted_guitar,"Instrumental focus music with muted electric guitar, consistent pulse, restrained phrasing, smooth texture, no vocals",82,,4
+p10_nylon_guitar,"Instrumental focus music with nylon guitar, regular pulse, minimal melodic variation, gentle dynamics, no vocals",78,,4
+p11_guitar_pad,"Instrumental focus music with clean guitar and warm pad, stable rhythm, sparse motifs, seamless transitions, no vocals",88,,4
+p12_harp_guitar,"Instrumental focus music with soft harp and guitar, even pulse, narrow melodic range, low distraction, no vocals",74,,4
+p13_marimba_pad,"Instrumental focus music with soft marimba and ambient pad, steady pulse, simple repeating motif, no vocals",96,,4
+p14_vibraphone,"Instrumental focus music with mellow vibraphone, consistent pulse, restrained harmony, smooth dynamics, no vocals",90,,4
+p15_mallet_synth,"Instrumental focus music with muted mallets and soft synthesizer, stable beat, sparse melodic motion, no vocals",98,,4
+p16_bell_texture,"Instrumental focus music with subdued bell textures, even pulse, minimal accents, gentle evolution, no vocals",84,,4
+p17_cello_pad,"Instrumental focus music with soft cello and warm pad, measured pulse, limited melodic movement, no vocals",72,,4
+p18_muted_strings,"Instrumental focus music with muted string ensemble, stable pulse, understated harmonic changes, no vocals",78,,4
+p19_strings_piano,"Instrumental focus music with light strings and piano, even rhythmic flow, restrained motifs, no vocals",82,,4
+p20_chamber_ambient,"Instrumental ambient chamber music, regular pulse, smooth voice leading, low dramatic contrast, no vocals",76,,4
+p21_lofi_keys,"Instrumental focus music with clean lo-fi keys, steady beat, restrained melody, smooth dynamics, no vocals",88,,4
+p22_soft_rhodes,"Instrumental focus music with soft electric piano, stable pulse, sparse chordal motion, no vocals",86,,4
+p23_rhodes_bass,"Instrumental focus music with electric piano and subdued bass, consistent groove, limited melodic range, no vocals",92,,4
+p24_tape_keys,"Instrumental focus music with warm tape-textured keys, even pulse, simple motifs, gentle transitions, no vocals",84,,4
+p25_minimal_acoustic,"Minimal instrumental focus music, stable acoustic pulse, restrained tonal movement, smooth dynamics, no vocals",80,,4
+p26_minimal_electronic,"Minimal instrumental electronic focus music, regular pulse, subtle repetition, low contrast, no vocals",94,,4
+p27_neutral_ambient,"Neutral instrumental ambient focus music, soft steady pulse, gradual texture changes, no dramatic events, no vocals",78,,4
+p28_flowing_texture,"Instrumental focus music with flowing soft textures, consistent pulse, understated motifs, seamless dynamics, no vocals",86,,4
+p29_light_percussion,"Instrumental focus music with light percussion and warm pads, steady rhythm, restrained melody, no vocals",96,,4
+p30_brushed_rhythm,"Instrumental focus music with brushed rhythmic texture, even pulse, sparse harmony, controlled dynamics, no vocals",90,,4
+p31_subtle_polyrhythm,"Instrumental focus music with subtle interlocking rhythm, stable meter, limited melodic motion, no vocals",88,,4
+p32_pulse_drone,"Instrumental focus music with a soft pulse and warm drone, gradual harmonic movement, low distraction, no vocals",82,,4

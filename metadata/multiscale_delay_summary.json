@@ -1,0 +1,100 @@
+{
+  "generated_at": "2026-07-30",
+  "role": "frozen validation on 300 s segments",
+  "config_sha256": "17eb3887757d212eb7884cfb8470831d2f3c3b14764c6157c1262b3767f9df42",
+  "selected_endpoints": [
+    {
+      "modality": "acoustic",
+      "scale_bars": 16,
+      "metric": "h1_surrogate_excess"
+    },
+    {
+      "modality": "rhythm",
+      "scale_bars": 16,
+      "metric": "h1_surrogate_excess"
+    }
+  ],
+  "validation_segments": 121,
+  "validation_run": true,
+  "frozen_tests": [
+    {
+      "role": "frozen_validation",
+      "comparison": "focus_greater_than_pop",
+      "split": "validation",
+      "scale_seconds": 300.0,
+      "modality": "acoustic",
+      "scale_bars": 16,
+      "scale_label": "16_bars",
+      "metric": "h1_surrogate_excess",
+      "n_focus": 38,
+      "n_comparator": 23,
+      "focus_median": 0.024529188871383667,
+      "comparator_median": 0.03985852003097534,
+      "rank_biserial_focus_minus_comparator": -0.1167048054919908,
+      "p_one_sided": 0.7782760023265582,
+      "p_fdr_bh": 0.7782760023265582
+    },
+    {
+      "role": "frozen_validation",
+      "comparison": "focus_greater_than_classical",
+      "split": "validation",
+      "scale_seconds": 300.0,
+      "modality": "acoustic",
+      "scale_bars": 16,
+      "scale_label": "16_bars",
+      "metric": "h1_surrogate_excess",
+      "n_focus": 38,
+      "n_comparator": 60,
+      "focus_median": 0.024529188871383667,
+      "comparator_median": 0.014760881662368774,
+      "rank_biserial_focus_minus_comparator": 0.3157894736842106,
+      "p_one_sided": 0.00438070564716677,
+      "p_fdr_bh": 0.00876141129433354
+    },
+    {
+      "role": "frozen_validation",
+      "comparison": "focus_greater_than_pop",
+      "split": "validation",
+      "scale_seconds": 300.0,
+      "modality": "rhythm",
+      "scale_bars": 16,
+      "scale_label": "16_bars",
+      "metric": "h1_surrogate_excess",
+      "n_focus": 38,
+      "n_comparator": 23,
+      "focus_median": 0.02001705765724182,
+      "comparator_median": 0.014470219612121582,
+      "rank_biserial_focus_minus_comparator": 0.09382151029748287,
+      "p_one_sided": 0.2733574216589044,
+      "p_fdr_bh": 0.5467148433178088
+    },
+    {
+      "role": "frozen_validation",
+      "comparison": "focus_greater_than_classical",
+      "split": "validation",
+      "scale_seconds": 300.0,
+      "modality": "rhythm",
+      "scale_bars": 16,
+      "scale_label": "16_bars",
+      "metric": "h1_surrogate_excess",
+      "n_focus": 38,
+      "n_comparator": 60,
+      "focus_median": 0.02001705765724182,
+      "comparator_median": 0.004413217306137085,
+      "rank_biserial_focus_minus_comparator": 0.27105263157894743,
+      "p_one_sided": 0.012244503890900996,
+      "p_fdr_bh": 0.012244503890900996
+    }
+  ],
+  "outputs": {
+    "features": "metadata/multiscale_delay_validation_features.csv",
+    "tests": "metadata/multiscale_delay_validation_tests.csv",
+    "report": "docs/multiscale-delay-300s-results.md",
+    "discovery_plot": "runs/multiscale_delay/discovery_scale_effects.png",
+    "validation_plot": "runs/multiscale_delay/validation_scores.png"
+  },
+  "exploration_config_sha256": "17eb3887757d212eb7884cfb8470831d2f3c3b14764c6157c1262b3767f9df42",
+  "input_sha256": {
+    "metadata/feature_segments.csv": "f634a36043f4d0b443a70a78e5fad23c6a33a79e160e4c864e08a176c4720cab"
+  }
+}

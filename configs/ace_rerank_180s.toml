@@ -1,0 +1,38 @@
+[experiment]
+run_id = "ace_rerank_180s_v2"
+prompt_manifest = "generation/prompts/ace_rerank_formal.csv"
+candidate_count = 8
+seed_start = 2026071600
+duration_seconds = 180.0
+workers = 2
+save_latents = true
+run_directory = "runs/ace_rerank"
+
+[ace]
+checkout = "ACE-Step-1.5"
+model = "acestep-v15-turbo"
+device = "cuda"
+inference_steps = 8
+shift = 3.0
+infer_method = "ode"
+sampler_mode = "euler"
+guidance_scale = 1.0
+compile_model = false
+offload_to_cpu = false
+offload_dit_to_cpu = false
+dcw_enabled = true
+dcw_mode = "double"
+dcw_scaler = 0.05
+dcw_high_scaler = 0.02
+dcw_wavelet = "haar"
+
+[scoring]
+target_group = "focus"
+target_split = "discovery"
+target_scale_seconds = 180.0
+covariance_shrinkage = 0.2
+technical_quality_weight = 0.0
+success_min_median_improvement = 0.10
+minimum_prompt_pools = 20
+permutations = 999
+bootstrap_resamples = 1000

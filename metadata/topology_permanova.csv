@@ -1,0 +1,4 @@
+analysis_set,role,split,scale_seconds,distance,permutations,n_tracks,n_features,pseudo_f,p_value,effective_dimensions
+primary_validation_180,confirmatory,validation,180.0,mahalanobis,999,139,80,4.180243090272297,0.001,54
+sensitivity_validation_300,sensitivity,validation,300.0,mahalanobis,999,139,80,3.571239825718335,0.001,54
+exploratory_discovery_180,exploratory,discovery,180.0,mahalanobis,999,416,80,7.0160411659481925,0.001,54

@@ -1,0 +1,32 @@
+{
+  "generated_at": "2026-08-02",
+  "split_version": "symmetric_holdout_v2",
+  "source_manifest": "metadata/feature_segments.csv",
+  "source_manifest_sha256": "e307b286f3910815f287cab6580ec77f41c28c273a038886eafc1e46b4aa9e6b",
+  "preprocessed_manifest": "metadata/preprocessed_segments_v2.csv",
+  "preprocessed_manifest_sha256": "18d50c412aab3d70f983122c4569f547df034e6c3167295697f81d7eab151fc5",
+  "seed_manifest": "metadata/feature_segments_v2_seed.csv",
+  "seed_manifest_sha256": "b3dde0067116c8cd296b88decff7ab98531b3ba599a42a6e4c9e0181f1e77f76",
+  "segments": 1200,
+  "files": 6000,
+  "methods": {
+    "hardlink": 1840,
+    "same_path": 4160
+  },
+  "counts_by_scale_group_split": {
+    "180s/classical/discovery": 195,
+    "180s/classical/validation": 60,
+    "180s/classical/holdout": 45,
+    "180s/focus/discovery": 195,
+    "180s/focus/validation": 60,
+    "180s/focus/holdout": 45,
+    "300s/classical/discovery": 195,
+    "300s/classical/validation": 60,
+    "300s/classical/holdout": 45,
+    "300s/focus/discovery": 195,
+    "300s/focus/validation": 60,
+    "300s/focus/holdout": 45
+  },
+  "scientific_note": "Continuous feature arrays are byte-identical to the prior extraction. State arrays remain historical until the v2 discovery-only model is refit and all segments are transformed.",
+  "ok": true
+}

@@ -1,0 +1,25 @@
+{
+  "generated_at": "2026-08-02",
+  "ok": true,
+  "segments": 600,
+  "tracks": 300,
+  "status_counts": {
+    "verified_existing": 600
+  },
+  "group_counts": {
+    "focus": 600
+  },
+  "split_counts": {
+    "holdout": 90,
+    "discovery": 390,
+    "validation": 120
+  },
+  "scale_counts": {
+    "180s": 300,
+    "300s": 300
+  },
+  "output_files": 600,
+  "output_bytes": 11332554088,
+  "output_gib": 10.554,
+  "canonical_focus_source": "jamendo-api-open-focus"
+}

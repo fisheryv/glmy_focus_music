@@ -1,0 +1,75 @@
+{
+  "generated_at": "2026-08-02",
+  "ok": true,
+  "segment_views": 4800,
+  "segments": 1200,
+  "tracks": 600,
+  "status_counts": {
+    "success": 4800
+  },
+  "view_counts": {
+    "modulation": 1200,
+    "pitch": 1200,
+    "rhythm": 1200,
+    "structure": 1200
+  },
+  "group_counts": {
+    "classical": 2400,
+    "focus": 2400
+  },
+  "split_counts": {
+    "discovery": 3328,
+    "validation": 1112,
+    "holdout": 360
+  },
+  "scale_counts": {
+    "180s": 2400,
+    "300s": 2400
+  },
+  "h1_nonzero_segment_views": 362,
+  "output_files": 14400,
+  "output_bytes": 34236955,
+  "output_gib": 0.032,
+  "config": {
+    "views": [
+      "pitch",
+      "rhythm",
+      "modulation",
+      "structure"
+    ],
+    "top_k": 6,
+    "include_self_loops": false,
+    "thresholds": [
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9,
+      0.95
+    ],
+    "sensitivity_thresholds": [
+      0.05,
+      0.075,
+      0.1,
+      0.15,
+      0.2,
+      0.3,
+      0.4,
+      0.5,
+      0.6,
+      0.7,
+      0.8,
+      0.9,
+      0.95
+    ],
+    "max_reported_dimension": 1,
+    "rank_tolerance": 1e-09
+  },
+  "config_sha256": "b7fca07519ac767e8f98faae8be7172d281928d9fb6047533ae4c5787a62adc5",
+  "segment_manifest": "metadata/topology_segments.csv",
+  "segment_manifest_sha256": "6efd1a5673851bf317541d3caae454d46f16d3ad329e1ac9ee1c41c4b9cc9186",
+  "filtration_manifest": "metadata/topology_filtration.csv",
+  "filtration_manifest_sha256": "d6f2cf8b0acd1f6bcf6a51aeb1b7b8a22cac12a328eec428d0071c97d3a9574b",
+  "sensitivity_filtration_manifest": "metadata/topology_filtration_sensitivity.csv",
+  "sensitivity_filtration_manifest_sha256": "df493ac8423dc7cfba5b2b5e65e56d253979448cce858bb5029d8c8f8b33fc4f"
+}

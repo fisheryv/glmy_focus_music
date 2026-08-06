@@ -1,0 +1,59 @@
+This is BibTeX, Version 0.99d (TeX Live 2025)
+Capacity: max_strings=200000, hash_size=200000, hash_prime=170003
+The top-level auxiliary file: main.aux
+The style file: IEEEtran.bst
+Reallocated singl_function (elt_size=4) to 100 items from 50.
+Reallocated singl_function (elt_size=4) to 100 items from 50.
+Reallocated singl_function (elt_size=4) to 100 items from 50.
+Reallocated wiz_functions (elt_size=4) to 6000 items from 3000.
+Reallocated singl_function (elt_size=4) to 100 items from 50.
+Database file #1: biblio.bib
+Warning--entry type for "john_thickstun_2016_5120004" isn't style-file defined
+--line 309 of file biblio.bib
+-- IEEEtran.bst version 1.14 (2015/08/26) by Michael Shell.
+-- http://www.michaelshell.org/tex/ieeetran/bibtex/
+-- See the "IEEEtran_bst_HOWTO.pdf" manual for usage information.
+
+Done.
+You've used 31 entries,
+            4087 wiz_defined-function locations,
+            1048 strings with 14188 characters,
+and the built_in function-call counts, 21737 in all, are:
+= -- 1862
+> -- 539
+< -- 125
++ -- 282
+- -- 109
+* -- 1095
+:= -- 3562
+add.period$ -- 62
+call.type$ -- 31
+change.case$ -- 30
+chr.to.int$ -- 228
+cite$ -- 31
+duplicate$ -- 1596
+empty$ -- 1615
+format.name$ -- 136
+if$ -- 4977
+int.to.chr$ -- 0
+int.to.str$ -- 31
+missing$ -- 300
+newline$ -- 176
+num.names$ -- 31
+pop$ -- 696
+preamble$ -- 1
+purify$ -- 0
+quote$ -- 2
+skip$ -- 1706
+stack$ -- 0
+substring$ -- 640
+swap$ -- 1281
+text.length$ -- 49
+text.prefix$ -- 0
+top$ -- 5
+type$ -- 31
+warning$ -- 0
+while$ -- 75
+width$ -- 33
+write$ -- 400
+(There was 1 warning)

@@ -1,0 +1,66 @@
+{
+  "generated_at": "2026-08-01",
+  "ok": true,
+  "method": "Vietoris-Rips persistent homology over Z/2",
+  "selected_representations": [
+    "acoustic_novelty_delay",
+    "rhythm",
+    "acoustic_pca"
+  ],
+  "selected_features": [
+    {
+      "representation": "acoustic_novelty_delay",
+      "metric": "h0_max_persistence"
+    },
+    {
+      "representation": "rhythm",
+      "metric": "h0_total_persistence"
+    },
+    {
+      "representation": "acoustic_pca",
+      "metric": "h0_persistence_entropy"
+    }
+  ],
+  "segments": 1598,
+  "quality_excluded_segments": 2,
+  "feature_rows": 4794,
+  "confirmatory_fdr_discoveries": 3,
+  "cross_scale_replicated_discoveries": 2,
+  "primary_cross_comparator_discoveries": 2,
+  "config": {
+    "exploration_tracks_per_group": 24,
+    "max_points": 24,
+    "acoustic_pca_components": 8,
+    "delay_dimension": 4,
+    "delay_lag": 2,
+    "prominent_lifetime": 0.1,
+    "max_selected_representations": 3,
+    "exploration_p_threshold": 0.05,
+    "exploration_effect_threshold": 0.3,
+    "exploration_stability_threshold": 0.2,
+    "validation_fdr_q": 0.05,
+    "workers": 4,
+    "random_seed": 20260716
+  },
+  "outputs": {
+    "features": "metadata/tda_features.csv",
+    "tests": "metadata/tda_statistical_tests.csv",
+    "classification": "metadata/tda_classification_results.csv",
+    "report": "docs/tda-analysis-results.md",
+    "plots": [
+      "runs/tda/selected_features_validation.png",
+      "runs/tda/selected_features_validation.svg"
+    ]
+  },
+  "input_sha256": {
+    "metadata/feature_segments.csv": "f634a36043f4d0b443a70a78e5fad23c6a33a79e160e4c864e08a176c4720cab"
+  },
+  "output_sha256": {
+    "metadata/tda_features.csv": "0a7bdb6dfaf2ceb82e805b3b397cb9d71ca8dbe4817d8f7386af40668d0b2c9a",
+    "metadata/tda_statistical_tests.csv": "9a3ef294aefc0d5564e31c3f5da5e8f263a4d533863bd57c2dc87ee5928cf838",
+    "metadata/tda_classification_results.csv": "38d24f3d8f1a6cb5f8561bf3ecea00d8919e57baa7ddc9a06764f8d80a66034c",
+    "docs/tda-analysis-results.md": "07b3d42b6e0f6746312539b6b68598d734e6c6fd99d8a3ab138c71576cd82af9",
+    "runs/tda/selected_features_validation.png": "faf1f3fb2a0db70ffdf6f6f073bab18ccec9fa765c052839af4574fea580553b",
+    "runs/tda/selected_features_validation.svg": "f56834fe89370cbfb942b2413a6c58c4c266b93a41d1a1d6552741f004296744"
+  }
+}

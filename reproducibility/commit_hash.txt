@@ -1,0 +1,3 @@
+# 在每次正式实验启动前，用具体根仓库和 ACE-Step 子仓库 commit hash 替换本说明。
+root_commit=UNRECORDED
+ace_step_commit=UNRECORDED

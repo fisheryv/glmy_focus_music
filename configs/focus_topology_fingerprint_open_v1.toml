@@ -1,0 +1,11 @@
+[fingerprint]
+fingerprint_id = "focus_topology_fingerprint_open_v1"
+reference_group = "focus"
+reference_split = "discovery"
+reference_scale_seconds = 180.0
+covariance_shrinkage = 0.2
+core_radius_quantile = 0.90
+support_lower_quantile = 0.10
+support_upper_quantile = 0.90
+random_seed = 20260716
+

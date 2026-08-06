@@ -1,0 +1,15 @@
+analysis_set,scale_seconds,feature_set,input_dimensions,n_validation,permutations,pseudo_f,p_value,p_fdr_bh
+primary_validation_180,180.0,pitch,16,120,999,7.58803259333116,0.001,0.001
+primary_validation_180,180.0,rhythm,16,120,999,6.473710969718205,0.001,0.001
+primary_validation_180,180.0,modulation_smp_k10,17,120,999,4.1288656362027325,0.001,0.001
+primary_validation_180,180.0,pitch_rhythm,32,120,999,7.0826176739953945,0.001,0.001
+primary_validation_180,180.0,pitch_modulation,33,120,999,6.167730840879375,0.001,0.001
+primary_validation_180,180.0,rhythm_modulation,33,120,999,5.4037531267730055,0.001,0.001
+primary_validation_180,180.0,local_all,49,120,999,6.268249188561106,0.001,0.001
+sensitivity_validation_300,300.0,pitch,16,120,999,18.188898781256242,0.001,0.001
+sensitivity_validation_300,300.0,rhythm,16,120,999,10.242824720742348,0.001,0.001
+sensitivity_validation_300,300.0,modulation_smp_k10,17,120,999,4.239893339009186,0.001,0.001
+sensitivity_validation_300,300.0,pitch_rhythm,32,120,999,14.10583138191494,0.001,0.001
+sensitivity_validation_300,300.0,pitch_modulation,33,120,999,10.686614577914654,0.001,0.001
+sensitivity_validation_300,300.0,rhythm_modulation,33,120,999,7.097050121947887,0.001,0.001
+sensitivity_validation_300,300.0,local_all,49,120,999,10.540972172884793,0.001,0.001

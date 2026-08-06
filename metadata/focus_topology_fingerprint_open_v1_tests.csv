@@ -1,0 +1,5 @@
+analysis_role,scale_seconds,metric,alternative,n_focus,n_classical,focus_median,classical_median,mannwhitney_u,p_value_one_sided,probability_focus_lower
+exploratory_validation_180,180.0,core_distance,Focus core fingerprint distance < Classical core fingerprint distance,60,60,1.6596831578603712,0.8995596274386669,2834.0,0.999999971778234,0.21277777777777773
+exploratory_validation_180,180.0,support_band_loss,Focus local support band loss < Classical local support band loss,60,60,0.014398164181997021,9.021335414104367,128.0,5.549533236034036e-19,0.9644444444444444
+same_track_duration_sensitivity_300,300.0,core_distance,Focus core fingerprint distance < Classical core fingerprint distance,60,60,2.081284256890581,0.8792285355312426,2983.0,0.9999999997380347,0.17138888888888892
+same_track_duration_sensitivity_300,300.0,support_band_loss,Focus local support band loss < Classical local support band loss,60,60,0.06872651218024481,13.610697866340345,84.0,6.785038336015096e-20,0.9766666666666667

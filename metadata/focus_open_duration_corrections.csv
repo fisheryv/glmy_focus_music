@@ -1,0 +1,2 @@
+track_id,previous_duration_seconds,corrected_duration_seconds,method,reason,corrected_at
+focus_jamendo_0016398,245.000,239.453061,ffmpeg_decoded_sample_count_22050,frame-scan duration exceeded decodable audio by 5.547 seconds,2026-08-01

@@ -1,0 +1,60 @@
+{
+  "generated_at": "2026-07-30",
+  "role": "discovery-only strengthened repetition feature selection",
+  "config": {
+    "exploration_tracks_per_group": 24,
+    "phase_bins": 6,
+    "state_bins": 3,
+    "state_similarity_threshold": 0.55,
+    "block_frames": 4,
+    "min_raw_steps": 96,
+    "min_cycles": 3,
+    "max_period_blocks": 32,
+    "recurrence_phase_radius": 1,
+    "top_k_per_source": 3,
+    "path_thresholds": [
+      0.05,
+      0.1,
+      0.15,
+      0.2,
+      0.25,
+      0.3,
+      0.35,
+      0.4,
+      0.45,
+      0.5,
+      0.55,
+      0.6,
+      0.65,
+      0.7,
+      0.75,
+      0.8,
+      0.85,
+      0.9,
+      0.95
+    ],
+    "calibration_fdr_q": 0.05,
+    "calibration_min_delta": 0.05,
+    "calibration_positive_fraction": 0.75,
+    "selection_p_threshold": 0.05,
+    "selection_effect_threshold": 0.2,
+    "selection_stability_threshold": 0.3,
+    "incremental_p_threshold": 0.1,
+    "incremental_effect_threshold": 0.1,
+    "validation_fdr_q": 0.05,
+    "workers": 4,
+    "random_seed": 20260716
+  },
+  "config_sha256": "2309a9d5d61b0d994a27d46c3a9916e72ccbdd6074351e11586fe7051e732cbc",
+  "selected_representations": [],
+  "outputs": {
+    "features": "metadata/repetition_strengthened_exploration_features.csv",
+    "calibration": "metadata/repetition_strengthened_calibration.csv",
+    "tests": "metadata/repetition_strengthened_exploration_tests.csv",
+    "incremental": "metadata/repetition_strengthened_incremental_tests.csv",
+    "selection": "metadata/repetition_strengthened_selection.csv"
+  },
+  "input_sha256": {
+    "metadata/feature_segments.csv": "f634a36043f4d0b443a70a78e5fad23c6a33a79e160e4c864e08a176c4720cab"
+  }
+}

@@ -1,0 +1,169 @@
+[project]
+seed = 20260716
+analysis_sample_rate = 22050
+archive_sample_rate = 48000
+analysis_channels = 1
+segment_seconds = 180
+window_seconds = 30
+window_overlap = 0.5
+target_lufs = -15.0
+
+[preprocessing]
+analysis_sample_rate = 22050
+analysis_channels = 1
+segment_scales_seconds = [180, 300]
+target_lufs = -15.0
+peak_ceiling_dbfs = -1.0
+crop_strategy = "center_or_full_track"
+output_format = "WAV_FLOAT32"
+padding = false
+
+[features]
+sample_rate = 22050
+n_fft = 2048
+hop_length = 512
+n_mels = 64
+n_mfcc = 13
+contrast_bands = 6
+tempo_bins = 32
+tempo_min_bpm = 30.0
+tempo_max_bpm = 300.0
+analysis_window_seconds = 1.0
+analysis_hop_seconds = 0.5
+hpss = true
+modulation_hop_length = 128
+modulation_window_seconds = 4.0
+modulation_hop_seconds = 2.0
+modulation_min_hz = 0.5
+modulation_max_hz = 45.0
+pitch_uncertainty_ratio = 1.15
+rhythm_clusters = 10
+acoustic_pca_components = 32
+acoustic_clusters = 64
+structure_kernel_seconds = 8.0
+structure_min_segment_seconds = 8.0
+structure_max_segment_seconds = 45.0
+structure_novelty_threshold = 1.5
+structure_similarity_threshold = 0.75
+structure_clusters = 16
+max_fit_windows_per_group = 50000
+random_seed = 20260716
+
+[data]
+groups = ["focus", "classical"]
+focus_is_restricted = false
+require_instrumental_for_primary_analysis = true
+split_group_key = ["artist_key", "album_key", "composer_key"]
+
+[graph]
+# Frozen group-comparison views. Structure states are fitted on discovery
+# macro-sections detected from acoustic self-similarity matrices.
+views = ["pitch", "rhythm", "modulation", "structure"]
+top_k = 6
+include_self_loops = false
+thresholds = [0.50, 0.60, 0.70, 0.80, 0.90, 0.95]
+sensitivity_thresholds = [0.05, 0.075, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95]
+
+[homology]
+field = "real"
+max_reported_dimension = 1
+rank_tolerance = 1e-9
+
+[tda]
+exploration_tracks_per_group = 24
+max_points = 24
+acoustic_pca_components = 8
+delay_dimension = 4
+delay_lag = 2
+prominent_lifetime = 0.10
+max_selected_representations = 3
+exploration_p_threshold = 0.05
+exploration_effect_threshold = 0.30
+exploration_stability_threshold = 0.20
+validation_fdr_q = 0.05
+workers = 4
+
+[repetition]
+exploration_tracks_per_group = 24
+phase_bins = 6
+block_frames = 4
+min_raw_steps = 96
+min_sw_points = 48
+min_period_seconds = 4.0
+max_period_seconds = 32.0
+max_period_blocks = 32
+min_cycles = 3
+max_landmarks = 48
+delay_dimension = 8
+prominent_lifetime = 0.10
+path_thresholds = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
+calibration_fdr_q = 0.05
+calibration_min_delta = 0.05
+calibration_positive_fraction = 0.75
+selection_p_threshold = 0.05
+selection_effect_threshold = 0.30
+selection_stability_threshold = 0.30
+max_selected_representations = 3
+validation_fdr_q = 0.05
+workers = 4
+
+[repetition_strengthened]
+exploration_tracks_per_group = 24
+phase_bins = 6
+state_bins = 3
+state_similarity_threshold = 0.55
+block_frames = 4
+min_raw_steps = 96
+min_cycles = 3
+max_period_blocks = 32
+recurrence_phase_radius = 1
+top_k_per_source = 3
+path_thresholds = [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
+calibration_fdr_q = 0.05
+calibration_min_delta = 0.05
+calibration_positive_fraction = 0.75
+selection_p_threshold = 0.05
+selection_effect_threshold = 0.20
+selection_stability_threshold = 0.30
+incremental_p_threshold = 0.10
+incremental_effect_threshold = 0.10
+validation_fdr_q = 0.05
+workers = 4
+
+[multiscale_delay]
+exploration_tracks_per_group = 24
+scales_bars = [4, 8, 16, 32]
+beats_per_bar = 4
+embedding_dimension = 8
+acoustic_pca_components = 8
+min_cycles = 3.0
+min_effective_seconds = 270.0
+max_landmarks = 64
+max_landmark_candidates = 160
+surrogate_count = 9
+prominent_lifetime = 0.10
+validation_fdr_q = 0.05
+workers = 4
+
+[generation]
+candidate_count = 8
+inference_steps = 8
+steering_strategy = "rerank"
+steering_start = 0.25
+steering_end = 0.80
+max_steering_scale = 0.15
+lambda_topology = 1.0
+lambda_stay = 0.2
+lambda_smooth = 0.0
+
+[evaluation]
+primary_alpha = 0.05
+fdr_q = 0.05
+primary_distance = "mahalanobis"
+primary_split = "validation"
+primary_scale_seconds = 180
+sensitivity_scale_seconds = 300
+permutations = 999
+classification_folds = 5
+bootstrap_resamples = 1000
+random_seed = 20260716

@@ -1,0 +1,730 @@
+\documentclass{article}
+
+% if you need to pass options to natbib, use, e.g.:
+%     \PassOptionsToPackage{numbers, compress}{natbib}
+% before loading aaj2026
+
+
+% ready for submission
+\usepackage[final]{aaj2026}
+\bibliographystyle{IEEEtran}
+% use CJKutf8 for Chinese characters
+\usepackage{ctex}
+
+% to compile a preprint version, e.g., for submission to arXiv, add add the
+% [preprint] option:
+%     \usepackage[preprint]{aaj2026}
+
+
+% to compile a camera-ready version, add the [final] option, e.g.:
+%     \usepackage[final]{aaj2026}
+
+
+% to avoid loading the natbib package, add option nonatbib:
+%    \usepackage[nonatbib]{aaj2026}
+
+
+\usepackage[utf8]{inputenc} % allow utf-8 input
+\usepackage[T1]{fontenc}    % use 8-bit T1 fonts
+\usepackage{hyperref}       % hyperlinks
+\usepackage{url}            % simple URL typesetting
+\usepackage{booktabs}       % professional-quality tables
+\usepackage{amsfonts}       % blackboard math symbols
+\usepackage{nicefrac}       % compact symbols for 1/2, etc.
+\usepackage{microtype}      % microtypography
+\usepackage[table]{xcolor}         % colors
+\usepackage[most]{tcolorbox} % colored boxes
+\usepackage{graphicx}       % graphics
+
+\title{Topological Feature Analysis of Focus Music Based on Path Homology and Its Application in ACE-Step Latent Space-Guided Generation}
+
+
+% The \author macro works with any number of authors. There are two commands
+% used to separate the names and addresses of multiple authors: \And and \AND.
+%
+% Using \And between authors leaves it to LaTeX to determine where to break the
+% lines. Using \AND forces a line break at that point. So, if LaTeX puts 3 of 4
+% authors names on the first line, and the last on the second line, try using
+% \AND instead of \And before the third author name.
+
+
+\author{%
+  Fisher E. Yu \\
+  \texttt{July 29, 2026} \\
+}
+
+
+\begin{document}
+
+
+\maketitle
+
+
+\begin{abstract}
+  功能性专注音乐被广泛用于学习、工作等持续注意力场景，但``专注音乐''区别于普通音乐的结构性特征仍缺乏可计算、可解释、可用于生成控制的数学表达。本文将音乐视为一个随时间演化的有向动态系统，提出了一种基于 Path Homology 和持续同调的专注音乐拓扑流形建模方法。通过综合使用 GLMY 路径同调、Vietoris-Rips 持久同调和相位提升路径同调，我们提取到专注音乐的三类具体拓扑特征：
+  \begin{enumerate}
+    \item \texttt{acoustic\_novelty\_delay} 与 \texttt{h0\_max\_persistence} 更低，说明其新颖度动态中不易出现需要较大尺度才并入整体的``孤立状态簇''；
+    \item \texttt{rhythm} 与 \texttt{h0\_total\_persistence} 更低，说明节奏状态几何更紧凑、碎片化更少；
+    \item \texttt{path\_acoustic\_phase} 与 \texttt{path\_rhythm\_phase} 的循环分数更高，表明 Focus music 具有更稳定的跨周期同相位复现结构。
+  \end{enumerate}
+
+  在生成阶段，本文采用 ACE-Step 1.5 作为骨干音乐生成模型，不微调 ACE-Step 主模型，而是在推理阶段引入 topology-guided latent intervention，将拓扑约束设计成一种可插拔的高阶生成控制器。在保留预训练音乐大模型已有的能力的同时，令生成音乐的拓扑结构更加贴近 Focus Music 的特性。
+\end{abstract}
+
+
+\begin{keywords}
+  Focus Music, Path Homology, Persistent Homology, Topological Data Analysis (TDA), Topological Manifold Modeling, Latent-Space Guided Generation, Topology-guided Latent Intervention, ACE-Step
+\end{keywords}
+
+\clearpage
+
+\tableofcontents
+
+\clearpage
+
+\section{Introduction}
+
+% 研究背景
+
+全球大约有 2.4 亿人不同程度地受到注意力缺失的影响 \cite{Siva2025, Samuele2026}，作者本人就是注意力缺陷和多动障碍（Attention Deficit Hyperactivity Disorder, ADHD）患者。在学习、写作、编程和深度工作场景中，专注音乐常被用于支持持续注意力 \cite{Woods2024}。尤其在 ADHD 患者的疗愈方面，有针对性设计的 Focus Music 展现出了卓越的疗效潜力 \cite{MADJAR2020113207, Phoebe2025, Erarslan2026}。
+
+近几年，随着 EEG、fMRI 和大语言模型技术的发展，对功能性音乐的特征研究也日益受到关注。Kevin J. P. Woods 等人 \cite{Woods2024} 系统探讨了音乐的幅度调制（amplitude modulation, AM） 特性如何影响人的持续注意力。Achuthan 等人 \cite{Achuthan2025} 通过大规模 Reddit 数据分析，借助 Spotify API 和大语言模型，揭示了focus music, stuck songs 和 general purpose music 之间的音频特征差异。
+
+% 过往研究的缺陷与不足
+
+然而，过往对 Focus Music 特征的研究都忽略了音乐的方向性！音乐本质上是一种具有高度时间方向性的时序数据流。在音乐理论中，音符或和弦的转移序列具有绝对的方向性。例如，``C大调 $\to$ G大调''（主音到属音，代表紧张度的积累与悬念）与``G大调 $\to$ C大调''（属音到主音，代表紧张度的释放与回归）在听觉和心理层面有着本质的区别。在 Focus Music 中，丢失音乐旋律中至关重要的非对称时间方向性信息是致命的，因为有方向性的声部推进和不可逆的和声循环是维持听觉预期而不引起注意力分散的主要机制 \cite{Stefan2000, David2001}。    
+
+% 研究目标与方法
+
+本文的研究目的正是为了弥补这一缺陷。通过引入 GLMY 路径同调理论 \cite{glmy2013,glmy2020} 和持续路径同调（Persistent Path Homology）\cite{Samir2017}，我们从数据集中提取了 Focus Music 和 Classic Music 具体的拓扑特征，并对比了二者之间的差异，为 Focus Music 的结构性特征提供可计算、可解释、可用于生成控制的数学表达，进而将其应用到 Focus Music 的生成中。
+
+\begin{tcolorbox}[colback=pink!15,colframe=pink!50,boxrule=0.5pt,arc=6pt,left=6pt,right=6pt,top=4pt,bottom=4pt]
+注意，生成医疗级别的 Focus Music \textbf{不是}本文的目标，不应认为采用本文方法生成的 Focus Music 对 ADHD 或其他注意障碍具有临床疗效。
+\end{tcolorbox}
+
+本研究分为两个阶段：首先从数据集中发现经过独立验证的多尺度拓扑特征，进而将这些特征冻结为一个分布型生成目标；随后以精确拓扑算法作为教师，通过候选重排序和潜空间代理建模，逐步将该目标引入 ACE-Step 1.5 的推理过程（见图1）。该框架不预设专注音乐的任何特征，也不把某个拓扑指标的极大化或极小化视为生成目标，而是试图刻画音乐在局部连通、全局几何和中尺度周期回归之间形成的结构平衡。
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig/p1.png}
+    \caption{fig.1: 整体分析和应用框架。}
+    \label{fig:p1}
+\end{figure}
+
+% Key Contributions
+
+本研究的主要贡献和创新总结如下：
+
+\begin{itemize}
+  \item 本文率先将 path homology 与 persistent path homology 应用到专注音乐的特征分析中，发现了 Focus Music 相比 Classical Music 的独特结构特征。
+  \item 在表示层面，我们提出了相位提升递归图表示（phase-lifted recurrence graph representation）。这一表示同时保留了时间方向、周期相位、跨周期复现程度，用相隔一个周期的同相位复现一致性定义边权。在实际应用中明确检验到了 Focus Music 与其他音乐的拓扑特征差异。
+  \item 我们冻结了四维精确拓扑目标并实现了 ACE-Step 多候选后验重排流水线；轻量级时间条件代理网络与采样内梯度引导属于通过重排验证后的下一阶段工作。
+  \item 本研究构建了一个双尺度数据集，包含 300 首 Focus Music 和 300 首 Classic Music，每类音乐提供 180s 和 300s 两种长度的切片。
+  \item 我们将拓扑特征发现过程中使用的代码封装成了一个 Python 库，名为 \texttt{focus\_music\_topology}，可在 \url{https://github.com/fisheryv/focus\_music\_topology} 上获取。
+\end{itemize}
+
+本研究完整的可复现代码已上传至 \url{https://github.com/fisheryv/focus\_music\_topology}。
+
+\section{Related Work}
+
+\subsection{音乐拓扑分析}
+
+\textbf{音乐拓扑学}：19 世纪 Hugo Riemann 提出的声调网格（Tonnetz）构成了现代音乐几何表示的起点 \cite{Yust2020}。Guerino Mazzola 的经典著作 \emph{The Topos of Music} \cite{Guerino2017} 运用范畴论、模论与代数拓扑，将音乐属性（如旋律、和声、对位法）统一在拓扑空间与概形（Schemes）的代数结构中。拓扑学为音乐分析提供了一种强大的数学工具。
+
+\textbf{Topological Data Analysis (TDA)}: TDA 是近年来兴起的一种分析高维复杂数据内在形状与几何结构的强大数学工具。其核心方法是持续同调（Persistent Homology） \cite{Edelsbrunner2002}，通过在离散的数据点云（Point Cloud）或图节点上构建一系列不断膨胀的邻域单纯形（Simplices），从而追踪数据结构中连通分支（0维孔洞）、环状结构（1维孔洞）、空腔（2维孔洞）的生成与消亡过程。Cohen-Steiner 等人 \cite{David2007} 提出的持续图 (Persistence Diagram)和 Carlsson 等人 \cite{Carlsson2004} 提出的条形码图（Barcode）为持续同调（Persistent Homology）提供了两大核心可视化工具。近几年，利用 TDA 分析音乐拓扑特征的研究日益增多，Sethares \& Budney \cite{Sethares_2014} 研究了多种音乐数据上的度量，并通过持久同调成功识别出音乐的三个基本拓扑结构：八度循环、五度循环和节奏的周期性重复。Alberto \& Pablo \cite{Alberto2024} 提出了一个系统性的拓扑音乐分析框架，将乐谱数据转换为欧几里得空间中的点集，并构建单纯复形来计算其同调特征。Eunwoo Heo 等人 \cite{Heo_2025} 将乐曲映射为节点与加权边构成的网络，引入并对比了三种不同距离定义下提取出的拓扑特征在音乐结构区分、特征分类效果上的差异，强调了根据具体分析目标选择合适距离度量（Distance Metric）的重要性。
+
+然而，传统单纯复形的一个根本性局限在于其天然的``无向性''（Undirectedness）与``对称性''，这使得持续同调无法有效处理有向性的音乐数据。为了解决有向图的同调计算问题，Alexander Grigor'yan、Yong Lin、Yuri Muranov 和 Shing-Tung Yau \cite{glmy2013} 提出路径复形（Path Complex）与路径同调（Path Homology），现统称为 GLMY 理论。
+
+\textbf{Path Homology}: 将路径同调应用于音乐分析是一个前沿的交叉方向，目前的学术论文数量非常有限。Guo-Wei Wei \cite{Wei2024} 将路径复形（Path Complex）与路径同调扩展为持续路径拉普拉斯算子（Persistent Path Laplacians, PPL）。利用 PPL 的零特征值（对应路径同调贝蒂数 $\beta_k$）与非零特征值（捕捉同伦形状的动态演化），为乐器的音调分析与和声转移网络提供了严格的拓扑数据分析框架。Martín Mijangos 等人 \cite{Martin2022} 将乐曲中的音高转换（Pitch/Intervallic Transitions）构建为加权有向图（Weighted Directed Graphs），证明了有向拓扑特征能够作为``作曲家/时代风格指纹''，显著优于传统无向图统计指标。目前已知尚未有将路径同调应用于功能性音乐分析的研究论文发表。
+
+\subsection{潜空间拓扑优化}
+
+目前，潜空间拓扑优化还是一个非常前沿的课题，主要应用在工程结构设计和 3D 图形生成领域。
+
+Lutheran et al. \cite{lutheran2025latentspacediffusiontopology} 结合变分自编码器(VAE)和潜扩散模型(LDM)，实现拓扑的快速、条件生成。该方法将 von Mises 应力等物理场作为条件输入，并通过辅助损失函数引导生成过程。Wei Zhang et al. \cite{ZHANG2025102966} 提出了TOLDM——一种多阶段拓扑优化方法，将潜扩散模型与 SIMP 方法结合，通过将扩散过程从图像空间转移到低维潜空间，降低了计算成本。Giacomini \& Huerta \cite{GIACOMINI2026118503} 使用前馈神经网络将输入参数映射到由编码器/解码器确定的低维潜空间，再重建高维拓扑。通过两步走策略：先快速预测``准最优''拓扑作为初始猜测，再通过一个高效算法进行微调，修正代理模型的误差并消除伪影。实验表明可减少平均 $53\%$ 的优化迭代次数。Sridhara et al. \cite{Sridhara2026} 利用变分自编码器（VAE） 将材料数据库映射到一个连续的低维材料潜空间。然后，在拓扑优化中，让梯度优化器（如 MMA 算法）同时在这个潜空间中搜索最优材料，并优化拓扑。
+
+在 3D 图形生成领域，Hu et al. \cite{hu2024topologyawarelatentdiffusion3d} 将潜扩散模型与持续同调相结合以生成 3D 形状。该方法将 3D 形状表示为隐式场，提取贝蒂数和持续图等拓扑特征，并将这些特征策略性地融入扩散过程，以生成更丰富、更多样的3D形状。Du et al. \cite{DU2026109240} 提出了 TopoDDPM，这是一个针对 3D 点云生成的扩散概率模型，显式地结合了持续同调。它引入了一个由持续同调提取的拓扑潜变量和一个由归一化流参数化的形状潜变量，作为去噪过程的条件。此外，还设计了一个拓扑损失函数来 enforce 结构一致性。Liu et al. \cite{liu2025topolidmtopologyawarelidardiffusion} 提出了 TopoLiDM，一个面向 LiDAR 点云生成的框架，通过图神经网络(GNN) 提取拓扑保持的潜图表示，以解决现有方法在建模细节几何结构和保持全局拓扑一致性方面的不足。
+
+% \textbf{LatCHs 与 Selective TFG}：在潜扩散模型中，传统的无分类器引导（Classifier-Free Guidance, CFG）通常需要将每个采样时间步的潜变量 $z_t$ 还原至时域波形，这步操作开销极大。为了解决这一计算瓶颈，针对扩散模型，Zachary Novack 等人 \cite{novack2026} 提出了基于潜空间控制头（Latent-Control Heads, LatCHs）和选择性时间步过滤引导（Selective Time-Step Filtered Guidance, Selective TFG）的纯潜域引导方案。LatCHs 借鉴了计算机视觉领域的 Readout 网络思想，直接构建在潜扩散模型的中间层扩散特征之上。LatCHs 仅包含约 $7$M 参数，仅需约 4 小时训练即可直接在潜空间内预测音乐的动态强度、音高曲线与节拍位置。Selective TFG 技术通过仅在特定选择的少数关键时间步（如早期大尺度结构形成阶段）施加 LatCHs 梯度引导，在大幅缩短计算耗时的同时，实现了音乐控制精度与听觉保真度的最优平衡。
+
+% \textbf{LiLAC}：Shih-Lun Wu 等人 \cite{TASLP} 提出的 Music ControlNet 架构构建了能够接受时变旋律（Melody）、动态（Dynamics）与节奏（Rhythm）条件的控制分支。然而，传统 ControlNet 复制主干编码器（Cloned Encoder）的做法带来了巨大的显存开销。Tom Baker 和 Javier Nistal \cite{baker2025} 2025 发布的 LiLAC（Lightweight Latent ControlNet）架构对此作出了关键改进。LiLAC 摒弃了大型副本编码器，改为采用由轻量级卷积层构成的模块化控制单元。这些独立训练的轻量单元（如专门控制色彩谱 Chroma 或和弦 Chords 的单元）不仅显著降低了训练与推理显存占用，还支持在推理阶段任意组合，大幅提升了生产环境下的部署弹性。
+
+% \textbf{Dynamic-Shift Distillation}：为了解决传统引导机制（如 CFG）在推理时需要双向前向传播带来的高延时问题，ACE-Step \cite{gong2026} 在 DiT 扩散架构中引入了动态偏移蒸馏（Dynamic-Shift Distillation）。蒸馏后的模型不仅能将采样步数从 50 步大幅压缩至 8 步，而且在推理阶段完全无需无分类器引导（CFG-Free）。这消除了潜空间引导对昂贵采样计算的依赖，实现了极低延迟的快速流引导推理。
+
+\section{数据集}
+
+\subsection{数据来源}
+
+本研究采用的数据集由 600 首经过严格甄选与物理校验的独立音频文件构成，总时长 $57.84$ 小时，有两组数据来源。
+
+\textbf{第一组为 Focus Music}：该组作为功能性专注音乐参考集，数据来自 BMTG-Jamendo \cite{bogdanov2019mtg}。以 \verb|voice_instrumental---instrumental| 和 \verb|--allowed-moods focus,meditation| 为标签建立候选池，然后筛选出 300 首高质量音乐，覆盖了 154 位艺术家、263 张专辑，总时长 $29.51$ 小时。
+
+\textbf{第二组为 Classical Music}：引入古典音乐组的根本目的是为了验证 Focus Music 与 Classical Music 在拓扑特征上存在明显差异。古典对照组共计 300 首曲目，来自公共领域与学术共享记录：
+\begin{itemize}
+  \item 基础池的 $95$ 首曲目来自著名的 \href{https://archive.org/details/musopen-lossless-dvd}{Musopen Lossless DVD} 项目，该项目版权标注为 Public Domain Mark 1.0。为了降低古典音乐内部跨度，我们选取了包括巴赫的哥德堡变奏曲、舒伯特的钢琴奏鸣曲以及多位大师的弦乐四重奏。
+  \item 扩展池来自 \href{https://doi.org/10.5281/zenodo.5120004}{MusicNet Zenodo} 记录\cite{john_thickstun_2016_5120004}，该记录整体采用 CC BY 4.0。排除 \verb|source=Museopen| 以及与基础池相同的作品，按作曲家平衡后选取 $205$ 条；
+\end{itemize}
+整体古典数据涵盖了从钢琴独奏到弦乐室内的多种编制，总时长达 $28.33$ 小时。
+
+\subsection{数据切分与治理}
+
+为了确保最终提取的拓扑特征能够真实反映音乐的宏观组织逻辑，而非被流派标签、响度差异、艺人个人风格或混音技术带来的混淆变量所污染，本研究设计并执行了一套极其严苛的数据治理与切分方案。针对长时拓扑分析的需求，数据集被标准化构建为双尺度表示：包含用于训练与分类的 180 秒核心片段集，以及用于敏感性分析与后续行为学评估的 300 秒片段集。考虑到不同曲目的总时长分布，为保障音频中段的结构完整性，截断始终优先锚定中心位置。不足目标时长保留整曲，不循环、不补零、不跨曲拼接。
+
+两个类别两种尺度的音乐片段按照 discovery $65\%$，validation $20\%$，holdout $15\%$ 的比例划分。为了防止数据泄露，在划分数据集时，我们按作曲家整组划分，避免同一创作者跨组。
+
+\begin{table}[h]
+\centering
+\caption{数据集构成与分析角色}
+\label{tab:dataset}
+\begin{tabular}{lrrrrrll}
+\toprule
+组别 & 曲目数 & 总时长(h) & discovery & validation & holdout & 许可 & 角色 \\
+\midrule
+Focus      & 300 & 222.12 & 195 & 60 & 45 & CC & 功能性参考 \\
+Classical  & 300 & 28.31  & 195 & 60 & 45 & PDM/CC & 对照组 \\
+\midrule
+合计       & 600 & 269.30 & 390 & 120 & 90 &  & 源曲目级无泄漏划分 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{数据预处理}
+
+% 所有待分析音频在解析层首先被强制转码为单声道（Mono）与 22.05 kHz 的全局统一采样率，并以浮点 float32 精度载入系统。由于响度的波动极易被非线性的拓扑模型捕捉并误解为宏观状态的跃迁，我们强制引入了符合广播级标准的 EBU R128 双向 \verb|loudnorm| 规范算法，所有音频片段在此被强制削平至 $-15$ LUFS 的基准响度，并在最后级联了一道 $-1$ dBFS 的软限幅器（soft limiting），扫除瞬态音量毛刺带来的干扰。
+
+在将原始音频送入拓扑分析流程前，必须通过高度确定性的数字信号处理（DSP）管道进行格式、响度与成分的归一化，以消除由于灌录年代、混音电平和动态范围带来的混杂偏差。
+
+第一阶段进行重采样与声道变换。音频解码后统一转换为采样率为 $22.05$ KHz、单声道（Mono）且采样精度为 $32$ 位浮点型（float32）的标准 Writable WAV 流 。
+
+第二阶段执行高精度双端响度对齐。管道调用双通道 EBU R128 标准的 \verb|loudnorm| 过滤器，将所有切片的响度硬性约束在 $-15$ LUFS，并在最后级联了一道 $-1$ dBFS 软限制器（Soft Limiting），扫除瞬态音量毛刺带来的干扰。经处理后，$1,600$ 个分析段的实际最终响度均严格落入 $-15.1995$ 至 $-14.8005$ LUFS 区间内，且最大采样峰值精确锁死在 $0.891249$（$-1$ dBFS），有效保障了特征提取在能量尺度的均一化。
+
+为了应对局部静音窗口带来的偏置，管道弃用以``最大能量''为优先级的贪婪切片策略，转而应用一种确定性的静音退避序列：优先检测并定位中心窗口，若中心区域触发静音阈值，则依序向左侧相邻窗口、右侧相邻窗口、起始窗口和末端窗口回退，以保证每个切片均包含连续且有效的声学几何信息。
+
+\section{拓扑特征发现与验证}
+
+\subsection{理论基础}
+
+本文将音乐视为一个随时间演化的动态系统。音乐的每一小段可以被表示为一个状态，整首音乐则可以表示为状态序列：
+\[S=(s_1,s_2,\ldots,s_T),\quad s_t\in\mathbb R^d.\]
+
+如果音乐状态从 $s_t$ 演化到 $s_{t+1}$，则可以构建一个有向转移关系。定义 $i \to j$ 的非自转移计数为：
+\[N_{ij}=\sum_{t=1}^{T-1}
+\mathbf 1(s_t=i,\ s_{t+1}=j,\ i\neq j),\]
+状态 $i$ 的非自转移总数为：
+\[N_i^{\text{out}}=\sum_{k\neq i}N_{ik}.\]
+则 $i \to j$ 的边权重为非自转移条件概率，即离开状态 $i$ 的条件下，下一状态为 $j$ 的经验概率：
+\[
+w_{ij}
+=
+\frac{N_{ij}}{N_i^{\mathrm{out}}}
+=
+\frac{N_{ij}}{\sum_{k\neq i}N_{ik}},
+\quad N_i^{\mathrm{out}}>0.\]
+自转移仅用于描述统计，不进入 Path Homology 图；每个源状态只保留权重最高的 6 条出边。
+
+经过状态离散化后，音乐片段可以表示为加权有向图：
+\[G_X=(V,E,W).\]
+其中 $V$ 是音乐状态集合，$E$ 是状态转移边，$W$ 是边权矩阵。
+
+过滤图 $G_\tau$ 保留 $w_{ij}\ge\tau$ 的边；阈值从 $0.95$ 降至 $0.05$ 过程中边逐渐增加：
+\[G_\tau=
+\left(V,\{i\rightarrow j:w_{ij}\ge\tau\}\right), \qquad G_{0.95}\subseteq G_{0.90}\subseteq\cdots\subseteq G_{0.05}.\]
+
+对允许的 $p$-路径 $e_{v_0\ldots v_p}$，GLMY 边界算子为：
+\[
+\partial e_{v_0\ldots v_p}=\sum_i(-1)^i e_{v_0\ldots\widehat{v_i}\ldots v_p},\]
+令允许路径空间 $\Omega_p=\{a\in A_p:\partial a\in A_{p-1}\}$，%其中 $A_p$ 由允许的有向 $p$-路径张成%
+则
+\[H_p^{\mathrm{path}}(G)=
+\frac{\ker(\partial_p|_{\Omega_p})}{\operatorname{im}(\partial_{p+1}|_{\Omega_{p+1}})},
+\qquad \beta_p=\dim H_p^{\mathrm{path}}(G).
+\]
+持久图和 barcode 使用 $a=1-\tau$ 把降阈值过滤改写为递增参数。对 $a_i\le a_j$，持久秩不变量为
+$$
+\rho_p(a_i,a_j)=\operatorname{rank}\operatorname{im}
+\left[H_p(G_{a_i})\longrightarrow H_p(G_{a_j})\right].
+$$
+
+\subsection{分析框架与方法}
+
+本研究将音乐表示为多尺度有向图。首先从音高、节奏和调制特征构建局部状态转移图；然后从声学与和声轨迹估计主导周期，构建六节点相位环，以最弱相位连接的持续阈值衡量中尺度循环闭合强度；最后构建宏观段落转移图作为全局结构层。三个尺度回答不同问题：
+\begin{itemize}
+  \item \textbf{局部尺度}：短时间窗内，音高、节奏、调制状态怎样发生有向转移？
+  \item \textbf{中度尺度}：跨若干局部块，候选重复周期的相位是否按顺序稳定闭合？
+  \item \textbf{全局尺度}：整段音乐的段落角色与宏观段落转移怎样组织？
+\end{itemize}
+局部尺度和全局尺度下均采用 GLMY 路径同调分析，在固定阈值过滤下提取连通性、环结构、持续性、路径熵、复现性及图密度等描述子；相位尺度主要提取六节点相位环的 \verb|loop_score|。最终将三个尺度进行融合，经过层级增量分析后得到音乐的拓扑指纹。整体分析框架见 Figure \ref{fig:analysis_framework}.
+
+\begin{figure}[htbp]
+    \centering
+    \begin{tikzpicture}[
+        node distance=1.5cm,
+        rect/.style={rectangle, draw, minimum width=2.5cm, minimum height=0.8cm, text centered},
+        local/.style={rect, fill=blue!10, draw=blue!40, thick},
+        f_local/.style={rect, fill=blue!20, draw=blue!60, thick},
+        phase/.style={rect, fill=green!10, draw=green!40!black, thick},
+        f_phase/.style={rect, fill=green!20, draw=green!60!black, thick},
+        comb/.style={rect, fill=orange!20, draw=orange!80!black, thick},
+        struct/.style={rect, fill=purple!15, draw=purple!60, thick},
+        test/.style={rect, fill=gray!15, draw=gray!60, thick, dashed},
+        arrow/.style={->, >=stealth, thick}
+    ]
+        % Local block nodes
+        \node[local] (A) {Local Pitch PH};
+        \node[local, below of=A, yshift=-.2cm] (B) {Local Rhythm PH};
+        \node[local, below of=B, yshift=-.2cm] (C) {Local Modulation PH};
+        \node[f_local, right of=B, xshift=2.5cm] (L) {Local Feature $(L)$};
+
+        % Middle phase block nodes
+        \node[f_phase, above of=L, yshift=1cm] (P) {Phase Feature $(P)$};
+        \node[phase, above of=P] (R) {Rhythm phase loop};
+        \node[phase, right of=R, xshift=3cm] (D) {Acoustic phase loop};
+        \node[phase, left of=R, xshift=-3cm] (E) {Chroma phase loop};
+
+        % Combination nodes
+        \node[comb, right of=L, xshift=2.5cm] (LP) {L + P};
+        \node[comb, right of=LP, xshift=2.5cm] (LPS) {L + P + S};
+
+        % Structure nodes
+        \node[struct, below of=LP, yshift=-.2cm] (F) {Structure PH $(S)$};
+
+        % Test nodes
+        \node[test, above of=LP,xshift=1cm] (T1) {Verify: $LP - L$};
+        \node[test, above of=LPS,xshift=1cm] (T2) {Verify: $LPS - LP$};
+        
+        % Arrows
+        \draw[arrow] (A) -- (L);
+        \draw[arrow] (B) -- (L);
+        \draw[arrow] (C) -- (L);
+        \draw[arrow] (D) -- (P);
+        \draw[arrow] (E) -- (P);
+        \draw[arrow] (R) -- (P);
+        \draw[arrow] (L) -- (LP);
+        \draw[arrow] (P) -- (LP);
+        \draw[arrow] (F) -- (LPS);
+        \draw[arrow] (LP) -- (LPS);
+        \draw[dashed] (LP) -- (T1);
+        \draw[dashed] (LPS) -- (T2);
+    \end{tikzpicture}
+    \caption{多尺度拓扑特征融合分析框架}
+    \label{fig:analysis_framework}
+\end{figure}
+
+
+各分析分支均遵循``发现—冻结—验证—敏感性分析''流程：
+\begin{itemize}
+  \item \textbf{发现阶段}：仅使用 discovery/180s 数据完成特征定义、缺失值处理、标准化、状态模型拟合和质量检查，并预先确定检验方向、指标集合及多重比较家族。该阶段用于校准方法，不作为最终显著性证据。
+  \item \textbf{冻结阶段}：固定特征算法、参数、排除标准和统计方案，之后不根据验证结果修改特征。
+  \item \textbf{验证阶段}：在 validation/180s 上做主验证。不同分析分支采用与其研究问题相匹配的冻结检验，不将局部指标检验、相位分析和多视角融合的统计量混用；各分支均在预定义比较家族内进行 BH-FDR 校正，并以校正后 \(q\le0.05\) 为统计显著，而不只依据原始 \(p<0.05\)。
+  \item \textbf{敏感性分析}：在相同 validation 曲目的 300s 片段上检查方向和效应稳定性，并计算 180/300s 相关性。
+\end{itemize}
+
+\subsection{局部有向拓扑：统一框架与跨视角比较}
+
+局部分析包含音高、节奏和调制三个物理视角。三者的输入特征和时间分辨率不同，但共享同一分析算子：首先仅在 discovery/180s 上拟合预处理器与状态码本，将连续特征序列 $\mathbf{x}^{(v)}_t$ 量化为离散状态 $s^{(v)}_t$；随后由相邻有效状态的转移计数 $N^{(v)}_{ij}$ 构造条件转移概率
+\[
+P^{(v)}_{ij}=\frac{N^{(v)}_{ij}}{\sum_jN^{(v)}_{ij}}.
+\]
+对每个源状态保留概率最高的前 $6$ 条非自环出边，并在冻结阈值 $\{0.50,0.60,0.70,0.80,0.90,0.95\}$ 上形成超水平过滤。GLMY 路径同调与图统计共同产生 20 个预设指标，覆盖状态占用、转移数量与熵、自转移、有向复现、密度、互惠性以及 $H_0/H_1$ 持续性。自转移比例由原始状态序列统计，不因路径同调图排除自环而丢失。
+
+局部指标在 validation/180s 上进行主验证：每项指标先做两组 Kruskal--Wallis 检验并报告 $\epsilon^2=(H-k+1)/(N-k)$；预设的 Open Focus--Classical 对比使用双侧 Mann--Whitney $U$ 检验并报告 rank-biserial 效应量。两套结果分别在各视角预定义的 20 指标家族内作 BH-FDR 校正，确认性阈值统一为 $q\le0.05$。validation/300s 重复同一分析，但只用于同曲目时长敏感性，不作为独立复制。
+
+
+\subsubsection{视角特定的状态表征}
+
+表~\ref{tab:local_view_representations} 概括了三个视角的差异。所有缺失值处理、标准化、降维和聚类参数均只由 discovery/180s 估计，随后冻结应用于 validation。
+
+\begin{table}[htbp]
+\centering
+\setlength{\tabcolsep}{4pt}
+\caption{局部拓扑三个视角的状态表征}
+\label{tab:local_view_representations}
+\begin{tabular}{llll}
+\toprule
+视角 & 时间单元 & 连续表征 & 冻结状态模型 \\
+\midrule
+音高 & 节拍同步 & 12 维 Chroma $\rightarrow$ 6 维 Tonnetz & MiniBatch K-means，$K=16$ \\
+节奏 & 1s 窗、0.5s 步长 & 8 维起音、IOI、BPM与拍点特征 & MiniBatch K-means，$K=10$ \\
+调制 & 4s 窗、2s 步长 & 178 维相对 SMP $\rightarrow$ Hellinger $\rightarrow$ PCA-32 & MiniBatch K-means，$K=10$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{音高状态}
+对每个节拍的 12 维 chroma 向量 $c_t$ 作 $L_1$ 归一化，
+\[\widetilde c_t(k)=\frac{c_t(k)}{\sum_{r=0}^{11}c_t(r)+\varepsilon},\]
+再映射到 Harte Tonnetz 的五度、小三度和大三度三个圆周：
+\[
+T(c)=\sum_{k=0}^{11}\widetilde c(k)
+\begin{bmatrix}
+\cos(7\pi k/6)\\ \sin(7\pi k/6)\\
+\cos(3\pi k/2)\\ \sin(3\pi k/2)\\
+\cos(2\pi k/3)\\ \sin(2\pi k/3)
+\end{bmatrix}.
+\]
+在 discovery/180s 上按组等量抽取每组 $50,000$ 个有效节拍，拟合固定的 16 状态谐波码本。低置信节拍按 $1.15$ 主峰比规则记为缺失，不另设缺失状态，也不跨缺失位置连接转移。
+
+\paragraph{节奏状态}
+固定使用 1s 窗和 0.5s 步长，对第 $n$ 个窗口构造
+\[\mathbf r_n=[\mu_o,\sigma_o,\operatorname{max}_o,\rho_o,\mu_{IOI},\sigma_{IOI},BPM,\rho_b]^\mathsf T.\]
+其中前四项描述起音包络及起音率，$\mu_{IOI}$ 与 $\sigma_{IOI}$ 描述起音间隔，$BPM$ 和 $\rho_b$ 分别表示局部速度与拍点率。事件不足时相应维度记为缺失，以 discovery 中位数 $m_j$ 填补后按 discovery 均值和标准差标准化：
+\[
+r'_{n,j}=\begin{cases}r_{n,j},&\text{有效},\\m_j,&\text{缺失},\end{cases}
+\qquad
+\widetilde r_{n,j}=\frac{r'_{n,j}-\mu_j}{\sigma_j}.
+\]
+每组等量抽取 $50,000$ 个 discovery 窗口，拟合并冻结 10 状态码本。
+
+\paragraph{调制状态}
+对 Mel 子带能量包络 $x_b[n]$ 使用 4s 窗和 2s 步长，计算并跨子带累加调制功率：
+\[
+P_t(f_m)=\sum_b\left|\sum_n w[n]x_b[n+tH]e^{-i2\pi f_mn/f_s}\right|^2,
+\qquad
+\widetilde P_t(f_m)=\frac{P_t(f_m)}{\sum_{0.5\le f\le45}P_t(f)}.
+\]
+在 0.5--45Hz 内得到 178 维相对 SMP 后，依次采用 Hellinger 映射、discovery 中位数/IQR 稳健标准化和共享 PCA-32：
+\[
+h_{tj}=\sqrt{\widetilde P_t(f_j)},\qquad
+z_{tj}=\frac{h_{tj}-\operatorname{median}_D(h_{\cdot j})}
+{Q_{0.75,D}(h_{\cdot j})-Q_{0.25,D}(h_{\cdot j})},
+\qquad y_t=W_{32}(z_t-\mu_D).
+\]
+32 个主成分累计解释方差为 $0.821$。平衡抽样后拟合固定的 10 状态码本，并按原始 SMP 频谱质心由低到高排序。由于该 SMP-$K=10$ 表征是在既有 holdout 打开后提出，本视角定位为探索性 validation 分析，而非与音高、节奏等同的冻结确认性证据。
+
+\subsubsection{跨视角验证结果}
+
+表~\ref{tab:local_view_summary} 汇总主验证与跨时长结果；完整 20 指标统计见附表~\ref{tab:pitch_topology}--\ref{tab:modulation_rank_biserial}。效应量及 180s/300s 稳定性见图~\ref{fig:pitch_effect_size}--\ref{fig:modulation_duration_stability}。
+
+\begin{table}[htbp]
+\centering
+\setlength{\tabcolsep}{3pt}
+\caption{局部拓扑视角的主要验证结果}
+\small
+\label{tab:local_view_summary}
+\begin{tabular}{lccp{5.2cm}p{2cm}p{1.4cm}l}
+\toprule
+视角 & 180s FDR & 跨时长稳定 & 主要组间方向 & $H_0$ & $H_1$ & 证据等级 \\
+\midrule
+音高 & 13/20 & 13 & Classical 覆盖与转移更多；Open Focus 状态保持、复现和音高互惠性更高 & 稳定组间差异 & 不支持 & 确认性 \\
+节奏 & 14/20 & 14 & Classical 覆盖、熵、密度和互惠性更高；Open Focus 自转移与复现更高 & 稳定组间差异 & 不支持 & 确认性 \\
+调制 & 5/20 & 4 & Open Focus 状态和绝对边更多，但密度与互惠性更低 & 无跨时长稳定结论 & 不支持 & 探索性 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.5\textwidth}
+        \includegraphics[width=\textwidth]{fig/pitch_v2_effect_sizes.pdf}
+        \caption{音高 rank-biserial 效应量对比}
+        \label{fig:pitch_effect_size}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.46\textwidth}
+        \includegraphics[width=\textwidth]{fig/pitch_v2_duration_stability.pdf}
+        \caption{音高跨时长稳定性图}
+        \label{fig:pitch_duration_stability}
+    \end{minipage}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.5\textwidth}
+        \includegraphics[width=\textwidth]{fig/rhythm_effect_sizes.pdf}
+        \caption{节奏 rank-biserial 效应量对比}
+        \label{fig:rhythm_effect_size}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.46\textwidth}
+        \includegraphics[width=\textwidth]{fig/rhythm_duration_stability.pdf}
+        \caption{节奏跨时长稳定性图}
+        \label{fig:rhythm_duration_stability}
+    \end{minipage}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \begin{minipage}{0.5\textwidth}
+        \includegraphics[width=\textwidth]{fig/modulation_smp_effect_sizes.pdf}
+        \caption{调制 rank-biserial 效应量对比}
+        \label{fig:modulation_effect_size}
+    \end{minipage}
+    \hfill
+    \begin{minipage}{0.46\textwidth}
+        \includegraphics[width=\textwidth]{fig/modulation_smp_duration_stability.pdf}
+        \caption{调制跨时长稳定性图}
+        \label{fig:modulation_duration_stability}
+    \end{minipage}
+\end{figure}
+
+音高和节奏视角呈现共同的组织模式：Classical 通常占用更多局部原型、形成更多有向边，并具有更高的路径熵与转移熵；Open Focus 则表现出更高的自转移比例和有向复现率。音高视角中，Classical 与 Open Focus 的状态数中位数分别为 $16$ 对 $10$、边数为 $70$ 对 $31$；节奏视角中相应数值分别为 $8$ 对 $7$、$36$ 对 $21$。与此同时，Open Focus 的音高自转移比例和有向复现率分别为 $0.631$ 和 $0.114$，高于 Classical 的 $0.322$ 和 $0.025$；节奏视角中的对应数值为 $0.662$、$0.265$ 与 $0.479$、$0.092$。因此，两类音乐的共同差异可概括为 Classical 的状态覆盖和转移多样性更广，而 Open Focus 的局部状态路径更集中、重复更强。
+
+该共性不能外推到所有连接指标。音高互惠性在 Open Focus 中更高（$0.667$ 对 $0.522$），提示较强的相邻音高双向回返；节奏互惠性则在 Classical 中略高（$0.809$ 对 $0.769$），且其边密度也更高。因此，``Open Focus 局部复现更强''仅指自转移和既有有向路径的重复，不能改写为所有视角下的网络都更稠密或更双向。
+
+调制视角呈现不同于音高和节奏的模式。Open Focus 在共享 $10$ 状态 SMP 码本中访问更多原型并形成更多绝对边，状态数和边数中位数分别为 $6$ 和 $14$，高于 Classical 的 $5$ 和 $11.5$；但其边密度和互惠性分别为 $0.524$ 和 $0.776$，低于 Classical 的 $0.667$ 和 $0.873$。这表明 Open Focus 在当前 SMP 表征下覆盖更广，但连接相对于潜在边空间更稀疏、双向成对转移更少。四项跨时长稳定指标的 $\epsilon^2$ 为 $0.051$--$0.105$，rank-biserial 绝对值为 $0.279$--$0.386$，故该结果应作为效应有限的探索性解释层，而非已确认的核心指纹。
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig/pitch_v2_group_summary.pdf}
+    \caption{音高视角下 Classical 与 Open Focus 的主要拓扑特征分布。}
+    \label{fig:pitch_group_summary}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig/rhythm_group_summary.pdf}
+    \caption{节奏视角下 Classical 与 Open Focus 的主要拓扑特征分布。}
+    \label{fig:rhythm_group_summary}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig/modulation_smp_k10_group_summary.pdf}
+    \caption{调制视角下 Classical 与 Open Focus 的主要拓扑特征分布。}
+    \label{fig:modulation_group_summary}
+\end{figure}
+
+三个视角下的 betti 曲线见图~\ref{fig:pitch_betti_curves}--\ref{fig:modulation_betti_curves}。在同调层级上，音高和节奏的 $H_0$ 结果与状态覆盖差异一致：Classical 在冻结过滤过程中保留更多连通分量并经历更充分的分量合并。不过，$H_0$ 描述子同时受实际占用顶点数影响，应与状态数、边数和熵联合解释，不能单独表述为某一组具有更高或更优的拓扑复杂性。调制视角仅有 \verb|h0_censored_count| 在 180s 通过 FDR，且在 300s 不再显著（$q=0.159$），因而不形成稳定的 $H_0$ 结论。
+
+三个视角均不支持稳定的组间 $H_1$ 差异。主阈值范围内，非零 $H_1$ 片段在音高视角为 Classical 2/60、Open Focus 6/60，在节奏视角均为 1/60，在调制视角为 2/60 和 3/60；六个预设 $H_1$ 指标的组中位数均为 0，且没有指标通过 180s 主分析 FDR。因此，局部视角的主要判别信息来自状态覆盖、转移集中性、局部复现和 $H_0$ 连通过程，而不是稳健的高阶环结构。
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig/pitch_v2_betti_curves.pdf}
+    \caption{音高视角的 Betti 曲线。}
+    \label{fig:pitch_betti_curves}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig/rhythm_betti_curves.pdf}
+    \caption{节奏视角的 Betti 曲线。}
+    \label{fig:rhythm_betti_curves}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig/modulation_smp_betti_curves.pdf}
+    \caption{调制视角的 Betti 曲线。}
+    \label{fig:modulation_betti_curves}
+\end{figure}
+
+\subsubsection{多视角融合与消融分析}
+
+\subsection{中尺度拓扑特征发现}
+
+\subsection{宏观结构拓扑特征发现}
+
+\subsection{多尺度融合与消融分析}
+
+\section{ACE-Step 潜空间拓扑引导}
+
+将连续的声学时序信号映射为有向拓扑空间，需要建立离散的多视角状态序列表征。生成控制沿用前述冻结分析中的音高、节奏和调制状态定义，并增加宏观结构视角：
+
+\begin{itemize}
+  \item \textbf{音高视角}：将 12 维 Chroma 映射到 Tonnetz，并使用 discovery 拟合的冻结 16 状态谐波码本。
+  \item \textbf{节奏视角}：使用起音、起音间隔、局部速度和拍点率构成的 8 维局部特征，以及冻结的 10 状态码本。
+  \item \textbf{调制视角}：提取 0.5--45Hz 的 178 维相对谱调制轮廓，经 Hellinger 映射、稳健标准化和 PCA-32 后，使用冻结的 SMP-$K=10$ 原型码本；不再采用三分位三状态表示。
+  \item \textbf{结构视角}：通过构建自相似矩阵（Self-Similarity Matrix）计算声学块的边界，将宏观段落进行转换为高阶抽象状态。
+\end{itemize}
+
+各视角得到离散状态序列后，均按前述冻结的一阶转移概率与 top-$6$ 非自环出边规则构建有向状态图。由此，生成候选的拓扑评分与特征发现阶段使用同一状态语义和图构建算子，避免分析目标与生成目标之间因离散化定义不同而发生漂移。
+
+
+\clearpage
+
+\bibliography{biblio.bib}
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\clearpage
+\appendix
+
+\section{完整特征指标数据}
+\label{sec:appendix_topology_tables}
+
+本附录提供音高、节奏、调制视角下古典音乐与专注音乐的完整拓扑特征对比数据。各指标按 180s 主分析的 $\epsilon^2$ 降序排列；其中 $\epsilon^2$ 为 Kruskal-Wallis 秩效应量，BH-FDR $q$ 为在预设检验族内对原始 $p$ 值进行 Benjamini-Hochberg 校正后的 $p$ 值。独立两两比较另行报告 rank-biserial 效应量。
+
+\subsection{音高视角}
+
+\begin{table}[htbp]
+\centering
+\caption{音高视角下古典音乐与专注音乐的拓扑特征对比}
+\label{tab:pitch_topology}
+\begin{tabular}{lrrrrr}
+\toprule
+指标                    & $\text{Median}_{\text{Classical}}$ & $\text{Median}_{\text{Focus}}$ & $\epsilon^2$ & 180s BH-FDR $q$ & 300s BH-FDR $q$ \\
+\midrule
+\rowcolor{green!15}\verb|vertex_count|            &           16.000 &            10.000 &        0.703 &   8.2e-19 &   2.8e-19 \\
+\rowcolor{green!15}\verb|edge_count|              &           70.000 &            31.000 &        0.683 &   8.2e-19 &   1.8e-19 \\
+\rowcolor{green!15}\verb|h0_betti_auc|            &            6.200 &             3.125 &        0.677 &   8.2e-19 &   1.8e-19 \\
+\rowcolor{green!15}\verb|h0_betti_mean|           &           13.667 &             6.833 &        0.676 &   8.2e-19 &   1.8e-19 \\
+\rowcolor{green!15}\verb|h0_observed_persistence| &            6.375 &             3.325 &        0.677 &   8.2e-19 &   1.8e-19 \\
+\rowcolor{green!15}\verb|h0_betti_max|            &           14.500 &             8.000 &        0.672 &   8.2e-19 &   1.8e-19 \\
+\rowcolor{green!15}\verb|h0_interval_count|       &           14.500 &             8.000 &        0.672 &   8.2e-19 &   1.8e-19 \\
+\rowcolor{green!15}\verb|path_entropy|            &            1.696 &             0.965 &        0.673 &   8.2e-19 &   1.8e-19 \\
+\rowcolor{green!15}\verb|h0_censored_count|       &           11.000 &             3.500 &        0.596 &  6.53e-17 &  7.59e-18 \\
+\rowcolor{green!15}\verb|directed_recurrence|     &            0.025 &             0.114 &        0.585 &  1.14e-16 &  4.43e-17 \\
+\rowcolor{green!15}\verb|self_transition_ratio|   &            0.322 &             0.631 &        0.563 &  3.89e-16 &  1.92e-16 \\
+\rowcolor{green!15}\verb|transition_entropy|      &            0.915 &             0.771 &        0.489 &  3.03e-14 &  8.01e-14 \\
+\rowcolor{green!15}\verb|reciprocity|             &            0.522 &             0.667 &        0.361 &  6.25e-11 &  2.31e-09 \\
+\verb|edge_density|            &            0.311 &             0.332 &        0.025 &    0.0654 &         1 \\
+\rowcolor{orange!15}\verb|h1_betti_auc|            &            0.000 &             0.000 &        0.010 &     0.153 &    0.0255 \\
+\rowcolor{orange!15}\verb|h1_betti_max|            &            0.000 &             0.000 &        0.010 &     0.153 &    0.0255 \\
+\rowcolor{orange!15}\verb|h1_betti_mean|           &            0.000 &             0.000 &        0.010 &     0.153 &    0.0255 \\
+\rowcolor{orange!15}\verb|h1_censored_count|       &            0.000 &             0.000 &        0.010 &     0.153 &    0.0255 \\
+\rowcolor{orange!15}\verb|h1_interval_count|       &            0.000 &             0.000 &        0.010 &     0.153 &    0.0255 \\
+\verb|h1_observed_persistence| &            0.000 &             0.000 &        0.000 &         1 &         1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vspace{2em}
+
+\begin{table}[htbp]
+\centering
+\caption{音高视角在主尺度通过独立两两 FDR 的指标（Open Focus-Classical）}
+\label{tab:pitch_rank_biserial}
+\makebox[\linewidth][c]{%
+  \begin{tabular}{lrr||lrr}
+    \toprule
+    指标 & rank-biserial & BH-FDR $q$ & 指标 & rank-biserial & BH-FDR $q$ \\
+    \midrule
+    \texttt{edge\_count} & -0.956 & 8.4e-19 & \texttt{vertex\_count} & -0.954 & 8.4e-19 \\
+    \texttt{h0\_betti\_auc} & -0.952 & 8.4e-19 & \texttt{h0\_censored\_count} & -0.892 & 6.68e-17 \\
+    \texttt{h0\_betti\_max} & -0.944 & 8.4e-19 & \texttt{directed\_recurrence} & 0.886 & 1.16e-16 \\
+    \texttt{h0\_betti\_mean} & -0.951 & 8.4e-19 & \texttt{self\_transition\_ratio} & 0.869 & 3.97e-16 \\
+    \texttt{h0\_interval\_count} & -0.944 & 8.4e-19 & \texttt{transition\_entropy} & -0.811 & 3.09e-14 \\
+    \texttt{h0\_observed\_persistence} & -0.952 & 8.4e-19 & \texttt{reciprocity} & 0.699 & 6.37e-11  \\
+    \texttt{path\_entropy} & -0.949 & 8.4e-19 &  &  &  \\
+    \bottomrule
+  \end{tabular}%
+}
+\end{table}
+
+\clearpage
+\subsection{节奏视角}
+
+\begin{table}[htbp]
+\centering
+\caption{节奏视角下古典音乐与专注音乐的拓扑特征对比}
+\label{tab:rhythm_topology}
+\begin{tabular}{lrrrrr}
+\toprule
+指标                    & $\text{Median}_{\text{Classical}}$ & $\text{Median}_{\text{Focus}}$ & $\epsilon^2$ & 180s BH-FDR $q$ & 300s BH-FDR $q$ \\
+\midrule
+\rowcolor{green!15}\verb|path_entropy|            &            1.336 &             0.866 &        0.390 &  1.38e-10 &  1.06e-10 \\
+\rowcolor{green!15}\verb|edge_count|              &           36.000 &            21.000 &        0.356 &  5.48e-10 &  3.06e-10 \\
+\rowcolor{green!15}\verb|directed_recurrence|     &            0.092 &             0.265 &        0.311 &  5.47e-09 &  1.78e-08 \\
+\rowcolor{green!15}\verb|h0_betti_mean|           &            6.833 &             4.750 &        0.299 &  8.56e-09 &  4.62e-09 \\
+\rowcolor{green!15}\verb|h0_betti_auc|            &            3.100 &             2.175 &        0.288 &  1.35e-08 &  4.62e-09 \\
+\rowcolor{green!15}\verb|h0_observed_persistence| &            3.300 &             2.275 &        0.276 &  2.02e-08 &  4.62e-09 \\
+\rowcolor{green!15}\verb|transition_entropy|      &            0.792 &             0.611 &        0.276 &  2.02e-08 &  4.82e-07 \\
+\rowcolor{green!15}\verb|h0_betti_max|            &            8.000 &             6.000 &        0.256 &  5.13e-08 &  2.50e-08 \\
+\rowcolor{green!15}\verb|h0_interval_count|       &            8.000 &             6.000 &        0.256 &  5.13e-08 &  2.50e-08 \\
+\rowcolor{green!15}\verb|self_transition_ratio|   &            0.479 &             0.662 &        0.252 &  5.78e-08 &  3.15e-08 \\
+\rowcolor{green!15}\verb|h0_censored_count|       &            5.000 &             2.000 &        0.245 &  8.46e-08 &  1.24e-05 \\
+\rowcolor{green!15}\verb|vertex_count|            &            8.000 &             7.000 &        0.166 &  9.64e-06 &  1.83e-05 \\
+\rowcolor{green!15}\verb|edge_density|            &            0.577 &             0.493 &        0.075 &    0.00267 &  1.84e-05 \\
+\rowcolor{green!15}\verb|reciprocity|             &            0.809 &             0.769 &        0.039 &    0.0248 &    0.00639 \\
+\verb|h1_observed_persistence| &            0.000 &             0.000 &        0.000 &    0.423 &         1 \\
+\verb|h1_betti_auc|            &            0.000 &             0.000 &        0.000 &         1 &    0.334 \\
+\verb|h1_betti_max|            &            0.000 &             0.000 &        0.000 &         1 &    0.334 \\
+\verb|h1_betti_mean|           &            0.000 &             0.000 &        0.000 &         1 &    0.334 \\
+\verb|h1_censored_count|       &            0.000 &             0.000 &        0.000 &         1 &    0.334 \\
+\verb|h1_interval_count|       &            0.000 &             0.000 &        0.000 &         1 &    0.334 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vspace{2em}
+
+\begin{table}[htbp]
+\centering
+\caption{节奏视角在主尺度通过独立两两（Open Focus-Classical）FDR 的指标}
+\label{tab:rhythm_rank_biserial}
+\makebox[\linewidth][c]{%
+  \begin{tabular}{lrr||lrr}
+    \toprule
+    指标 & rank-biserial & BH-FDR $q$ & 指标 & rank-biserial & BH-FDR $q$ \\
+    \midrule
+    \texttt{path\_entropy} & -0.726 & 1.4e-10 & \texttt{h0\_betti\_max} & -0.580 & 5.21e-08 \\
+    \texttt{edge\_count} & -0.694 & 5.58e-10 & \texttt{h0\_interval\_count} & -0.580 & 5.21e-08 \\
+    \texttt{directed\_recurrence} & 0.650 & 5.56e-09 & \texttt{self\_transition\_ratio} & 0.587 & 5.86e-08 \\
+    \texttt{h0\_betti\_mean} & -0.637 & 8.7e-09 & \texttt{h0\_censored\_count} & -0.570 & 8.59e-08 \\
+    \texttt{h0\_betti\_auc} & -0.626 & 1.37e-08 & \texttt{vertex\_count} & -0.467 & 9.76e-06 \\
+    \texttt{h0\_observed\_persistence} & -0.613 & 2.05e-08 & \texttt{edge\_density} & -0.331 & 0.0027 \\
+    \texttt{transition\_entropy} & -0.613 & 2.05e-08 & \texttt{reciprocity} & -0.252 & 0.025  \\
+    \bottomrule
+  \end{tabular}%
+}
+\end{table}
+
+\clearpage
+\subsection{调制视角}
+
+\begin{table}[htbp]
+\centering
+\caption{调制视角下古典音乐与专注音乐的拓扑特征对比}
+\label{tab:modulation_topology}
+\begin{tabular}{lrrrrr}
+\toprule
+指标                    & $\text{Median}_{\text{Classical}}$ & $\text{Median}_{\text{Focus}}$ & $\epsilon^2$ & 180s BH-FDR $q$ & 300s BH-FDR $q$ \\
+\midrule
+\rowcolor{green!15}\verb|edge_density|            &            0.667 &             0.524 &        0.105 &    0.00509 &    0.0423 \\
+\rowcolor{orange!15}\verb|h0_censored_count|       &            1.000 &             1.000 &        0.087 &    0.00533 &     0.159 \\
+\rowcolor{green!15}\verb|vertex_count|            &            5.000 &             6.000 &        0.092 &    0.00533 &    0.0396 \\
+\rowcolor{green!15}\verb|reciprocity|             &            0.873 &             0.776 &        0.078 &     0.0071 &    0.0464 \\
+\rowcolor{green!15}\verb|edge_count|              &           11.500 &            14.000 &        0.051 &    0.0328 &    0.0424 \\
+\rowcolor{orange!15}\verb|h0_betti_max|            &            4.000 &             5.000 &        0.035 &    0.0633 &    0.0424 \\
+\rowcolor{orange!15}\verb|h0_betti_mean|           &            2.917 &             3.583 &        0.034 &    0.0633 &    0.0424 \\
+\rowcolor{orange!15}\verb|h0_interval_count|       &            4.000 &             5.000 &        0.035 &    0.0633 &    0.0424 \\
+\verb|self_transition_ratio|   &            0.448 &             0.401 &        0.031 &    0.0699 &    0.0928 \\
+\rowcolor{orange!15}\verb|h0_betti_auc|            &            1.300 &             1.625 &        0.028 &    0.0747 &    0.0424 \\
+\rowcolor{orange!15}\verb|h0_observed_persistence| &            1.450 &             1.775 &        0.026 &    0.0809 &    0.0424 \\
+\rowcolor{orange!15}\verb|directed_recurrence|     &            0.130 &             0.109 &        0.021 &      0.1 &    0.0424 \\
+\rowcolor{orange!15}\verb|transition_entropy|      &            0.843 &             0.860 &        0.010 &     0.216 &    0.0424 \\
+\verb|path_entropy|            &            1.087 &             1.119 &        0.000 &     0.643 &     0.962 \\
+\verb|h1_betti_auc|            &            0.000 &             0.000 &        0.000 &     0.683 &         1 \\
+\verb|h1_betti_max|            &            0.000 &             0.000 &        0.000 &     0.683 &         1 \\
+\verb|h1_betti_mean|           &            0.000 &             0.000 &        0.000 &     0.683 &         1 \\
+\verb|h1_censored_count|       &            0.000 &             0.000 &        0.000 &     0.683 &         1 \\
+\verb|h1_interval_count|       &            0.000 &             0.000 &        0.000 &     0.683 &         1 \\
+\verb|h1_observed_persistence| &            0.000 &             0.000 &        0.000 &         1 &     0.453 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vspace{2em}
+
+\begin{table}[h]
+\centering
+\caption{调制视角在主尺度通过独立两两（Open Focus-Classical）FDR 的指标}
+\label{tab:modulation_rank_biserial}
+\begin{tabular}{lrr}
+\toprule
+指标 & rank-biserial & BH-FDR $q$ \\
+\midrule
+\verb|edge_density| & -0.386 & 0.00514 \\
+\verb|h0_censored_count| & 0.299 & 0.00539 \\
+\verb|vertex_count| & 0.355 & 0.00539 \\
+\verb|reciprocity| & -0.336 & 0.00716 \\
+\verb|edge_count| & 0.279 & 0.0331 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\clearpage
+\section{Acknowledgments}
+
+感谢 Kevin JP Woods 博士授权 Brain.fm 的 focus music 用于本研究。你的慷慨授权是此项研究的重要基础。
+
+\section{研究经历}
+
+% 此研究源于我个人对 Focus Music 的好奇。我本人是 Focus Music 的重度使用者，一直好奇为什么 Focus Music 能够帮助我提升专注力，它与其他音乐有何不同？2025 年圣诞假期，我看到 \emph{The role of music in ADHD: A multi-dimensional computational and theoretical analysis} \cite{Achuthan2025} 这篇论文，意识到听觉体验原来是可以用数学建模的。于是 2026 年寒假期间，我用 Python 重新实现这篇论文的分析方法（原论文是用 R 语言实现的），并在 Spotify 的专注歌单上重新跑了一遍实验。
+
+
+
+
+\end{document}

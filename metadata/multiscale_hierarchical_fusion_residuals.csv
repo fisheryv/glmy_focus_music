@@ -1,0 +1,5 @@
+analysis_set,scale_seconds,conditional_test,predictor,outcome,ridge_alpha,discovery_r2,validation_r2,permutations,pseudo_f,p_value,p_fdr_bh
+exploratory_validation_180,180.0,P_given_L,L,P,10.0,0.18859109835987387,0.09488325026673317,999,4.711866053704798,0.02,0.04
+exploratory_validation_180,180.0,S_given_LP,LP,S,10.0,0.10923356205123938,0.011318897023841812,999,1.5415697175857057,0.107,0.107
+sensitivity_validation_300,300.0,P_given_L,L,P,1.0,0.30473263636796866,0.17058655428079822,999,3.977869498400307,0.026,0.026
+sensitivity_validation_300,300.0,S_given_LP,LP,S,10.0,0.10523457130115366,0.010088659749383208,999,2.3718692769797554,0.021,0.026

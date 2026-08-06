@@ -1,0 +1,59 @@
+{
+  "generated_at": "2026-08-02",
+  "ok": true,
+  "config": {
+    "primary_alpha": 0.05,
+    "fdr_q": 0.1,
+    "primary_distance": "mahalanobis",
+    "primary_split": "validation",
+    "primary_scale_seconds": 180,
+    "sensitivity_scale_seconds": 300,
+    "permutations": 999,
+    "classification_folds": 5,
+    "bootstrap_resamples": 1000,
+    "random_seed": 20260716
+  },
+  "config_sha256": "100632adadd2b5171c0463770d341b98d273e8b9b82a3b8da7a148afdf1adb2b",
+  "topology_manifest": "metadata/topology_segments.csv",
+  "topology_manifest_sha256": "6efd1a5673851bf317541d3caae454d46f16d3ad329e1ac9ee1c41c4b9cc9186",
+  "feature_manifest_sha256": "e307b286f3910815f287cab6580ec77f41c28c273a038886eafc1e46b4aa9e6b",
+  "analysis_track_counts": {
+    "primary_validation_180": 139,
+    "sensitivity_validation_300": 139,
+    "exploratory_discovery_180": 416
+  },
+  "holdout_segment_views_available": 360,
+  "holdout_segment_views_analyzed": 0,
+  "primary_omnibus_tests": 80,
+  "primary_fdr_discoveries": 47,
+  "h2_core_verdict": "not_applicable_comparator_absent",
+  "h2_core_supported_endpoints": 0,
+  "h2_core_applicable": false,
+  "outputs": {
+    "omnibus": "metadata/topology_statistical_tests.csv",
+    "pairwise": "metadata/topology_pairwise_tests.csv",
+    "permanova": "metadata/topology_permanova.csv",
+    "classification": "metadata/classification_results.csv",
+    "confusion_matrices": "metadata/classification_confusion_matrices.json",
+    "hypothesis_summary": "metadata/topology_hypothesis_summary.json",
+    "report": "docs/topology-analysis-results.md",
+    "plots": [
+      "runs/topology_statistics/topology_pca_validation_180.png",
+      "runs/topology_statistics/h1_filtration_validation_180.png",
+      "runs/topology_statistics/classification_macro_f1_validation_180.png"
+    ]
+  },
+  "plot_errors": [],
+  "output_sha256": {
+    "metadata/topology_statistical_tests.csv": "53fcdf39350416e599cd5f5199f61d93bdb001f9b8071b2bf844ea858a05d342",
+    "metadata/topology_pairwise_tests.csv": "e5b36009f90b883c6f2324a15ccd28de9726d63c6c9b0930073522b22a91d56a",
+    "metadata/topology_permanova.csv": "1469c159fc9b892832738e8ff504f2727cd0f72bdaddac69a8e1296d233b2338",
+    "metadata/classification_results.csv": "30f39bbef42b033844e76fb8257515ac8ceb3f93f53627ab890591fef0eba51b",
+    "metadata/classification_confusion_matrices.json": "e21a1e93916642d11b32dad95b8098108900f43027c3990ae538a3dbc6493290",
+    "metadata/topology_hypothesis_summary.json": "3f72ac4ce2a9190c7cbd8db4178c2413c6aa24c8b5f8d9359c35574d22a2149f",
+    "docs/topology-analysis-results.md": "7a9cd032c1cd23caf1cb7e812bf204a13a88285658dc938606091d32137a2c78",
+    "runs/topology_statistics/topology_pca_validation_180.png": "8078c3373cd08abd7eff22b5a3e14bd9f5217998d86ff663bc54b1d9175a220f",
+    "runs/topology_statistics/h1_filtration_validation_180.png": "285e23725b6bc3a9d08104304d5cb81e79f6ccff92960b15c0cee1c3a3a7227a",
+    "runs/topology_statistics/classification_macro_f1_validation_180.png": "c2cea5cedee883e0fd7c0fdc536f37540dcc13bd37cecdac339334a120d32219"
+  }
+}

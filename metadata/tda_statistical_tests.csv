@@ -1,0 +1,16 @@
+role,comparison,split,scale_seconds,representation,metric,n_focus,n_comparator,focus_median,comparator_median,rank_biserial_focus_minus_comparator,p_value,p_fdr_bh
+confirmatory_focus_vs_pop,focus_vs_pop,validation,180.0,acoustic_novelty_delay,h0_max_persistence,40,76,0.9640063643455505,1.310338318347931,-0.55,1.2162782332296186e-06,1.8244173498444279e-06
+confirmatory_focus_vs_pop,focus_vs_pop,validation,180.0,acoustic_pca,h0_persistence_entropy,40,76,0.9836952029122654,0.9543967953927254,0.6736842105263159,2.7652875200682033e-09,8.29586256020461e-09
+confirmatory_focus_vs_pop,focus_vs_pop,validation,180.0,rhythm,h0_total_persistence,40,76,9.678537745028734,10.498605832457542,-0.2618421052631579,0.020951223331399565,0.020951223331399565
+scale_replication_focus_vs_pop,focus_vs_pop,validation,300.0,acoustic_novelty_delay,h0_max_persistence,40,76,1.0014506876468658,1.673303484916687,-0.6598684210526315,5.7807553430865555e-09,8.671133014629834e-09
+scale_replication_focus_vs_pop,focus_vs_pop,validation,300.0,acoustic_pca,h0_persistence_entropy,40,76,0.9817096100785083,0.9253832807069662,0.8644736842105263,2.3582975535502278e-14,7.074892660650684e-14
+scale_replication_focus_vs_pop,focus_vs_pop,validation,300.0,rhythm,h0_total_persistence,40,76,9.977644685655832,10.685517463833094,-0.21907894736842104,0.05344441925307232,0.05344441925307233
+specificity_focus_vs_classical,focus_vs_classical,validation,180.0,acoustic_novelty_delay,h0_max_persistence,40,79,0.9640063643455505,1.2599217891693115,-0.4981012658227848,9.670702764151008e-06,1.4506054146226512e-05
+specificity_focus_vs_classical,focus_vs_classical,validation,180.0,acoustic_pca,h0_persistence_entropy,40,79,0.9836952029122654,0.9821029165669979,0.05063291139240511,0.6547144602468146,0.6547144602468146
+specificity_focus_vs_classical,focus_vs_classical,validation,180.0,rhythm,h0_total_persistence,40,79,9.678537745028734,10.752998694777489,-0.5101265822784811,5.862417331695939e-06,1.4506054146226512e-05
+specificity_scale_focus_vs_classical,focus_vs_classical,validation,300.0,acoustic_novelty_delay,h0_max_persistence,40,79,1.0014506876468658,1.398996353149414,-0.5670886075949367,4.7145188344066535e-07,1.414355650321996e-06
+specificity_scale_focus_vs_classical,focus_vs_classical,validation,300.0,acoustic_pca,h0_persistence_entropy,40,79,0.9817096100785083,0.9705603174174343,0.3512658227848102,0.0018127746532131117,0.0018127746532131117
+specificity_scale_focus_vs_classical,focus_vs_classical,validation,300.0,rhythm,h0_total_persistence,40,79,9.977644685655832,10.835576608777046,-0.3816455696202532,0.0007006432669071234,0.001050964900360685
+descriptive_discovery,focus_vs_pop,discovery,180.0,acoustic_novelty_delay,h0_max_persistence,130,223,1.0004947185516357,1.356998324394226,-0.3772335288030355,3.37441094003475e-09,6.120513209914229e-09
+descriptive_discovery,focus_vs_pop,discovery,180.0,acoustic_pca,h0_persistence_entropy,130,223,0.9779959307614527,0.9593010552913437,0.37523283890996906,4.0803421399428195e-09,6.120513209914229e-09
+descriptive_discovery,focus_vs_pop,discovery,180.0,rhythm,h0_total_persistence,130,223,9.569040775299072,10.601648107171059,-0.27299068644360125,1.8828593492087415e-05,1.8828593492087415e-05

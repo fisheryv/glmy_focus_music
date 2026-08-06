@@ -1,0 +1,79 @@
+{
+  "generated_at": "2026-08-02",
+  "schema_version": 3,
+  "canonical_groups": [
+    "focus",
+    "classical"
+  ],
+  "canonical_focus_source": "jamendo-api-open-focus",
+  "groups": {
+    "focus": {
+      "tracks": 300,
+      "discovery": 195,
+      "validation": 60,
+      "holdout": 45,
+      "duration_seconds": 106193.72,
+      "duration_hours": 29.5,
+      "bytes": 2452800343,
+      "gibibytes": 2.284,
+      "license_counts": {
+        "Creative Commons Attribution-Non-Commercial-Share-Alike license": 41,
+        "Creative Commons Attribution license": 6,
+        "Creative Commons Attribution-Share-Alike license": 18,
+        "Creative Commons Attribution-Non-Commercial-No Derivatives license": 227,
+        "Creative Commons Attribution-Non-Commercial license": 8
+      },
+      "source_counts": {
+        "jamendo-api-open-focus": 292,
+        "jamendo-api-open-focus-early-local-candidate": 8
+      },
+      "artists": 154,
+      "albums": 263,
+      "restricted": false,
+      "redistribution_allowed": true
+    },
+    "classical": {
+      "tracks": 300,
+      "discovery": 195,
+      "validation": 60,
+      "holdout": 45,
+      "duration_seconds": 101911.039,
+      "duration_hours": 28.31,
+      "bytes": 15715012706,
+      "gibibytes": 14.636,
+      "license_counts": {
+        "Creative Commons Attribution 4.0 International": 205,
+        "Public Domain Mark 1.0": 95
+      }
+    }
+  },
+  "combined": {
+    "tracks": 600,
+    "discovery": 390,
+    "validation": 120,
+    "holdout": 90,
+    "duration_hours": 57.81,
+    "bytes": 18167813049,
+    "gibibytes": 16.92
+  },
+  "audit": {
+    "hashes_verified_before_group_migration": true,
+    "duplicate_audio": false,
+    "split_leakage": false,
+    "license_records": 600,
+    "split_version": "symmetric_holdout_v2",
+    "symmetric_group_counts": true,
+    "downstream_artifacts_require_rerun": true
+  },
+  "archived_pop": {
+    "status": "removed_from_canonical_dataset",
+    "archive": "dataset_archive/pop_music_legacy_2026-08-02",
+    "tracks": 300,
+    "scientific_results": "historical_only; two-group rerun required"
+  },
+  "legacy_brainfm": {
+    "status": "retired_from_canonical_dataset",
+    "archive": "restricted_archive/brainfm_legacy_2026-08-02",
+    "scientific_results": "historical_only; rerun required for open Focus claims"
+  }
+}

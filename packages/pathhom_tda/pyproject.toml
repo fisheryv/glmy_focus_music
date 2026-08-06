@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pathhom-tda"
+version = "0.1.0"
+description = "Path homology, persistent path homology, and Vietoris-Rips TDA"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Research-only; choose an OSI-approved license before public release" }
+authors = [{ name = "Focus Music GLMY research team" }]
+keywords = [
+  "path homology",
+  "persistent path homology",
+  "topological data analysis",
+  "directed graph",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Topic :: Scientific/Engineering :: Mathematics",
+  "Typing :: Typed",
+]
+dependencies = ["numpy>=1.26,<3"]
+
+[project.optional-dependencies]
+tda = ["ripser>=0.6.12"]
+dev = [
+  "pytest>=8",
+  "ruff>=0.6",
+  "ripser>=0.6.12",
+]
+
+[project.scripts]
+pathhom-tda = "pathhom_tda.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+pathhom_tda = ["py.typed"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]

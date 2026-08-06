@@ -1,0 +1,128 @@
+{
+  "generated_at": "2026-08-02",
+  "split_version": "symmetric_holdout_v2",
+  "seed": 20260716,
+  "targets_per_group": {
+    "discovery": 195,
+    "validation": 60,
+    "holdout": 45
+  },
+  "actual_per_group": {
+    "focus": {
+      "holdout": 45,
+      "discovery": 195,
+      "validation": 60
+    },
+    "classical": {
+      "validation": 60,
+      "discovery": 195,
+      "holdout": 45
+    }
+  },
+  "focus_assignments_unchanged": true,
+  "classical_grouping_key": "composer_key",
+  "classical_composers_by_split": {
+    "discovery": [
+      "bach",
+      "beethoven",
+      "borodin",
+      "cambini",
+      "haydn"
+    ],
+    "validation": [
+      "mozart",
+      "schubert"
+    ],
+    "holdout": [
+      "brahms",
+      "dvorak",
+      "faure",
+      "mendelssohn",
+      "ravel",
+      "suk"
+    ]
+  },
+  "classical_subpools_by_split": {
+    "discovery": {
+      "mixed_chamber": 26,
+      "piano_solo": 115,
+      "solo_instrument": 24,
+      "string_chamber": 14,
+      "string_quartet": 16
+    },
+    "validation": {
+      "mixed_chamber": 17,
+      "piano_solo": 30,
+      "string_chamber": 5,
+      "string_quartet": 8
+    },
+    "holdout": {
+      "mixed_chamber": 21,
+      "string_chamber": 11,
+      "string_quartet": 13
+    }
+  },
+  "classical_leakage": {
+    "composer": {},
+    "album": {}
+  },
+  "changed_classical_tracks": 184,
+  "transition_counts": {
+    "discovery->holdout": 45,
+    "discovery->validation": 60,
+    "validation->discovery": 79
+  },
+  "holdout_composition_warning": "Classical holdout has no piano_solo tracks because exact 195/60/45 counts and composer-level isolation cannot place Bach or Beethoven outside discovery while retaining a representative validation split.",
+  "downstream_status": "All preprocessed, feature, topology, statistics, and report artifacts built with the previous split are historical and require a full refit/rerun.",
+  "stale_metadata_manifests": [
+    "metadata/feature_segments.csv",
+    "metadata/four_group_feature_segments.csv",
+    "metadata/four_group_pitch_v2_features.csv",
+    "metadata/four_group_preprocessed_segments.csv",
+    "metadata/four_group_raw_feature_segments.csv",
+    "metadata/four_group_topology_filtration.csv",
+    "metadata/four_group_topology_filtration_sensitivity.csv",
+    "metadata/four_group_topology_segments.csv",
+    "metadata/modulation_tertile_features.csv",
+    "metadata/modulation_tertile_topology_filtration.csv",
+    "metadata/modulation_tertile_topology_filtration_sensitivity.csv",
+    "metadata/modulation_tertile_topology_segments.csv",
+    "metadata/multiscale_delay_discovery_features.csv",
+    "metadata/multiscale_delay_validation_features.csv",
+    "metadata/multiview_fusion_validation_scores.csv",
+    "metadata/pitch_topology_filtration.csv",
+    "metadata/pitch_topology_filtration_sensitivity.csv",
+    "metadata/pitch_topology_segments.csv",
+    "metadata/pitch_v2_features.csv",
+    "metadata/pitch_v2_topology_filtration.csv",
+    "metadata/pitch_v2_topology_filtration_sensitivity.csv",
+    "metadata/pitch_v2_topology_segments.csv",
+    "metadata/preprocessed_segments.csv",
+    "metadata/repetition_exploration_features.csv",
+    "metadata/repetition_homology_features.csv",
+    "metadata/repetition_strengthened_exploration_features.csv",
+    "metadata/rhythm_topology_filtration.csv",
+    "metadata/rhythm_topology_filtration_sensitivity.csv",
+    "metadata/rhythm_topology_segments.csv",
+    "metadata/structure_representative_selection.csv",
+    "metadata/structure_topology_filtration.csv",
+    "metadata/structure_topology_filtration_sensitivity.csv",
+    "metadata/structure_topology_segments.csv",
+    "metadata/tda_exploration_features.csv",
+    "metadata/tda_features.csv",
+    "metadata/topology_filtration.csv",
+    "metadata/topology_filtration_sensitivity.csv",
+    "metadata/topology_segments.csv"
+  ],
+  "sha256": {
+    "metadata/control_classical.csv": "766f33e784d17749ad3ca83f37a7d60913d3571ee7d14347ed5737d77cce8240",
+    "metadata/split_discovery.csv": "f2feda72ebfb3a04073501b942e05cc1b22f4b6927e73ac556804224570322bb",
+    "metadata/split_validation.csv": "92830b15cdbb1ae03fee8490cbf6360f3fe3dca7392644bf9bd152705667843f",
+    "metadata/split_holdout.csv": "dfa6cf6abfacf255d6c7b0d9f25097f121dd045f3a729bf772c31585d3fec4bf",
+    "metadata/split_assignment_v2.csv": "f4b34fec1db4c3a9ef6c07a2be658ec871b498b854fb0ff219dccb4422098b17",
+    "metadata/classical_split_change_log.csv": "f822487e63fd23b320e2c418226a132b2c8c87dd8763011ceee011581f6dd1ed",
+    "metadata/dataset_summary.json": "d98c6c1413a20829482d9788a0cc6768f5e51dbd8d289760a8eeb230a491d75d",
+    "metadata/control_dataset_summary.json": "d5d2e67a42091f12e91ced9e2b917244e6d90774553ff2414e500513e86fcd0f"
+  },
+  "ok": true
+}
