@@ -15,7 +15,7 @@ from typing import Any
 import matplotlib
 import numpy as np
 import pandas as pd
-from pathhom_tda import vietoris_rips
+from pyglmy import vietoris_rips
 from scipy.stats import mannwhitneyu
 
 from features.batch import _json_hash, _read_npz, _sha256, _write_json_atomic

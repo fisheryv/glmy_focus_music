@@ -21,7 +21,7 @@ classifiers = [
 ]
 dependencies = [
   "numpy>=1.26,<3",
-  "pathhom-tda>=0.1.0,<0.2",
+  "pyglmy>=0.1.0,<0.2",
 ]
 
 [project.optional-dependencies]
@@ -81,7 +81,7 @@ focus_topology = ["py.typed"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
-pythonpath = ["packages/pathhom_tda/src", "src"]
+pythonpath = ["packages/pyglmy/src", "src"]
 
 [tool.ruff]
 line-length = 100

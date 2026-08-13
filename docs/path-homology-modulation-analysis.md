@@ -235,7 +235,7 @@ $$
 ## 9. 复现入口与产物
 
 ```powershell
-$env:PYTHONPATH = "packages/pathhom_tda/src;src"
+$env:PYTHONPATH = "packages/pyglmy/src;src"
 .\.venv\Scripts\python.exe scripts\run_modulation_tertile_analysis.py
 .\.venv\Scripts\python.exe scripts\render_modulation_tertile_report.py
 ```

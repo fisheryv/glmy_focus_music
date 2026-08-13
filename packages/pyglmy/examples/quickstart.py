@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from pathhom_tda import (
+from pyglmy import (
     WeightedDiGraph,
     path_homology,
     persistent_path_homology,

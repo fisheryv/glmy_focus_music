@@ -416,7 +416,7 @@ def build_pdf() -> Path:
     story.extend(
         [
             _paragraph("12. 复现与产物", h1),
-            _paragraph("PYTHONPATH=src;packages/pathhom_tda/src  python scripts/rerun_pitch_path_homology.py", formula),
+            _paragraph("PYTHONPATH=src;packages/pyglmy/src  python scripts/rerun_pitch_path_homology.py", formula),
             _paragraph("python scripts/render_pitch_path_report.py", formula),
             _paragraph(
                 "数值产物：metadata/pitch_topology_segments.csv、pitch_topology_filtration.csv、pitch_topology_filtration_sensitivity.csv 与 pitch_topology_summary.json。",

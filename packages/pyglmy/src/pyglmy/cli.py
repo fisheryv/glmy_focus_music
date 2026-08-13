@@ -140,7 +140,7 @@ def command_rips(args: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="pathhom-tda",
+        prog="pyglmy",
         description="Path homology and Vietoris-Rips TDA",
     )
     parser.add_argument("--version", action="version", version=__version__)

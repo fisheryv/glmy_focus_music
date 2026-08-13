@@ -1,29 +1,33 @@
-# pathhom-tda
+# pyglmy
 
-`pathhom-tda` is a domain-independent Python library for:
+`pyglmy` is a domain-independent Python reference library for:
 
 - real-coefficient GLMY path homology of directed graphs;
 - finite persistent path homology of weighted digraph filtrations;
 - Vietoris–Rips persistence of point clouds or distance matrices;
-- deterministic point-cloud sampling, distance normalization, delay embedding,
-  and persistence-diagram descriptors.
+- deterministic point-cloud sampling, distance normalization, delay embedding, and persistence-diagram descriptors.
 
-The core path-homology implementation depends only on NumPy. Ripser.py is an
-optional backend installed by the `tda` extra.
+The core path-homology implementation depends only on [NumPy](https://github.com/numpy/numpy). `Ripser.py` is an optional backend installed by the `tda` extra.
 
 ## Install
 
-From this monorepo:
+From GitHub:
 
 ```powershell
-python -m pip install -e packages/pathhom_tda
-python -m pip install -e "packages/pathhom_tda[tda]"
+python -m pip install "pyglmy[tda] @ git+https://github.com/fisheryv/pyglmy.git"
+```
+
+For local development in the Focus Music GLMY monorepo:
+
+```powershell
+python -m pip install -e packages/pyglmy
+python -m pip install -e "packages/pyglmy[tda]"
 ```
 
 ## Path homology
 
 ```python
-from pathhom_tda import path_homology
+from pyglmy import path_homology
 
 result = path_homology(
     vertices=[0, 1, 2],
@@ -42,7 +46,7 @@ function that returns only `HomologyGroup` objects.
 ## Persistent path homology
 
 ```python
-from pathhom_tda import WeightedDiGraph, persistent_path_homology
+from pyglmy import WeightedDiGraph, persistent_path_homology
 
 graph = WeightedDiGraph.from_edges(
     [
@@ -77,7 +81,7 @@ cross-checking; high-dimensional dense graphs can grow exponentially.
 
 ```python
 import numpy as np
-from pathhom_tda import vietoris_rips
+from pyglmy import vietoris_rips
 
 theta = np.linspace(0, 2 * np.pi, 64, endpoint=False)
 circle = np.column_stack([np.cos(theta), np.sin(theta)])
@@ -112,9 +116,9 @@ Graph JSON:
 Commands:
 
 ```powershell
-pathhom-tda path graph.json --max-dimension 2
-pathhom-tda pph graph.json --levels 0.95,0.8,0.5
-pathhom-tda rips points.csv --max-dimension 1 --normalize
+pyglmy path graph.json --max-dimension 2
+pyglmy pph graph.json --levels 0.95,0.8,0.5
+pyglmy rips points.csv --max-dimension 1 --normalize
 ```
 
 ## Scope and references
@@ -123,8 +127,9 @@ The API is inspired by the small graph-to-Betti workflow in
 [PathHom](https://github.com/WeilabMSU/PathHom) and the structured
 point-cloud workflow in
 [Ripser.py](https://ripser.scikit-tda.org/en/latest/reference/stubs/ripser.ripser.html).
-The implementation in this repository is independently organized around the
-existing GLMY and TDA code; no external source files are copied.
+The implementation is independently organized around the GLMY and TDA code
+developed for the Focus Music GLMY research project; no external source files
+are copied.
 
-Before publishing this package publicly, the project owner must select an
-explicit software license and a final package name.
+This repository currently uses a research-only notice. Select and add an
+OSI-approved license before making a public software release.

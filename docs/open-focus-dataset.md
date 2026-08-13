@@ -20,7 +20,7 @@ Open Focus 已于 2026-08-02 从独立候选组提升为规范 `focus` 组。它
 ## 复验命令
 
 ```powershell
-$env:PYTHONPATH = "packages/pathhom_tda/src;src"
+$env:PYTHONPATH = "packages/pyglmy/src;src"
 python -m data.focus_open audit metadata/focus_open_candidates.csv `
   --target-count 300 --minimum-bitrate-kbps 0 `
   --allowed-moods focus,meditation,relaxing,study,deepwork --verify-hash

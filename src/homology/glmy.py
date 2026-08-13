@@ -1,10 +1,10 @@
-"""Compatibility adapter to the standalone :mod:`pathhom_tda` package."""
+"""Compatibility adapter to the standalone :mod:`pyglmy` package."""
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 
-from pathhom_tda import (
+from pyglmy import (
     HomologyGroup,
     PathComplex,
     PathHomology,
@@ -17,8 +17,8 @@ from pathhom_tda import (
     enumerate_allowed_paths,
     path_homology,
 )
-from pathhom_tda import filtration_descriptors as _filtration_descriptors
-from pathhom_tda import persistent_path_homology as _persistent_path_homology
+from pyglmy import filtration_descriptors as _filtration_descriptors
+from pyglmy import persistent_path_homology as _persistent_path_homology
 
 from graphs.transition import TransitionGraph
 

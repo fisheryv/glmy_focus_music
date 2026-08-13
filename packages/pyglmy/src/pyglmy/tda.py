@@ -228,7 +228,7 @@ def _ripser_backend() -> Any:
     except ImportError as exc:
         raise ImportError(
             "Vietoris-Rips persistence requires the 'tda' extra: "
-            "install pathhom-tda[tda]"
+            "install pyglmy[tda]"
         ) from exc
     return ripser
 

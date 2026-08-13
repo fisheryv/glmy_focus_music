@@ -200,7 +200,7 @@ PCA 仅用于显示 discovery 拟合坐标下的 validation 投影，不参与�
 ## 8. 复现与审计
 
 ```powershell
-$env:PYTHONPATH = "packages/pathhom_tda/src;src"
+$env:PYTHONPATH = "packages/pyglmy/src;src"
 .\.venv\Scripts\python.exe scripts\run_local_smp_k10_fusion_analysis.py
 ```
 

@@ -669,7 +669,7 @@ Kruskal–Wallis 检验在 20 个预设 modulation_tertile 指标内作 BH-FDR�
 ## 7. 复现入口与产物
 
 ```powershell
-$env:PYTHONPATH = "packages/pathhom_tda/src;src"
+$env:PYTHONPATH = "packages/pyglmy/src;src"
 python scripts/run_modulation_tertile_analysis.py
 python scripts/render_modulation_tertile_report.py
 ```
@@ -909,7 +909,7 @@ $$
 ## 9. 复现入口与产物
 
 ```powershell
-$env:PYTHONPATH = "packages/pathhom_tda/src;src"
+$env:PYTHONPATH = "packages/pyglmy/src;src"
 .\.venv\Scripts\python.exe scripts\run_modulation_tertile_analysis.py
 .\.venv\Scripts\python.exe scripts\render_modulation_tertile_report.py
 ```

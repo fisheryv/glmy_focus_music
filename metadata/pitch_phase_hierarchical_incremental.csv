@@ -1,0 +1,5 @@
+analysis_set,scale_seconds,comparison,candidate,baseline,alternative,permutations,delta_pseudo_f,p_value_one_sided,null_ci_low,null_ci_high,p_fdr_bh
+primary_validation_180,180.0,PitchPhase_minus_Pitch,PitchPhase,Pitch,candidate pseudo-F > baseline pseudo-F,999,5.897678172922564,0.001,-0.7148339029725496,1.9201221467497103,0.002
+primary_validation_180,180.0,PitchPhase_minus_Phase,PitchPhase,Phase,candidate pseudo-F > baseline pseudo-F,999,-7.094023986890452,1.0,-1.7284144973518902,0.8765354680581602,1.0
+same_track_sensitivity_300,300.0,PitchPhase_minus_Pitch,PitchPhase,Pitch,candidate pseudo-F > baseline pseudo-F,999,7.9549369968295345,0.001,-0.8690428756204719,1.5925478733147955,0.002
+same_track_sensitivity_300,300.0,PitchPhase_minus_Phase,PitchPhase,Phase,candidate pseudo-F > baseline pseudo-F,999,-8.027102827098876,1.0,-1.5389959175177481,0.7215397275038093,1.0

@@ -226,7 +226,7 @@ holdout 未用于本报告的新显著性检验。Classical holdout 不含钢琴
 复现命令：
 
 ```powershell
-$env:PYTHONPATH='packages/pathhom_tda/src;src'
+$env:PYTHONPATH='packages/pyglmy/src;src'
 .\.venv\Scripts\python.exe scripts\rerun_pitch_path_homology.py
 .\.venv\Scripts\python.exe scripts\render_pitch_path_report_current.py
 ```

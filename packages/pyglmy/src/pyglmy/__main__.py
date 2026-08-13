@@ -1,4 +1,4 @@
-"""Run ``python -m pathhom_tda``."""
+"""Run ``python -m pyglmy``."""
 
 from .cli import main
 

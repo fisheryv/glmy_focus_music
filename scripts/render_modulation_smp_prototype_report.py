@@ -734,7 +734,7 @@ $$
 
 PowerShell命令：
 
-    $env:PYTHONPATH = "packages/pathhom_tda/src;src"
+    $env:PYTHONPATH = "packages/pyglmy/src;src"
     .\.venv\Scripts\python.exe scripts\run_modulation_smp_prototype_analysis.py
     .\.venv\Scripts\python.exe scripts\render_modulation_smp_prototype_report.py
 

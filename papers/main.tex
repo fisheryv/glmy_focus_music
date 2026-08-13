@@ -35,6 +35,8 @@
 \usepackage[table]{xcolor}         % colors
 \usepackage[most]{tcolorbox} % colored boxes
 \usepackage{graphicx}       % graphics
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, shapes.geometric, calc}
 
 \title{Topological Feature Analysis of Focus Music Based on Path Homology and Its Application in ACE-Step Latent Space-Guided Generation}
 
@@ -61,19 +63,12 @@
 
 
 \begin{abstract}
-  功能性专注音乐被广泛用于学习、工作等持续注意力场景，但``专注音乐''区别于普通音乐的结构性特征仍缺乏可计算、可解释、可用于生成控制的数学表达。本文将音乐视为一个随时间演化的有向动态系统，提出了一种基于 Path Homology 和持续同调的专注音乐拓扑流形建模方法。通过综合使用 GLMY 路径同调、Vietoris-Rips 持久同调和相位提升路径同调，我们提取到专注音乐的三类具体拓扑特征：
-  \begin{enumerate}
-    \item \texttt{acoustic\_novelty\_delay} 与 \texttt{h0\_max\_persistence} 更低，说明其新颖度动态中不易出现需要较大尺度才并入整体的``孤立状态簇''；
-    \item \texttt{rhythm} 与 \texttt{h0\_total\_persistence} 更低，说明节奏状态几何更紧凑、碎片化更少；
-    \item \texttt{path\_acoustic\_phase} 与 \texttt{path\_rhythm\_phase} 的循环分数更高，表明 Focus music 具有更稳定的跨周期同相位复现结构。
-  \end{enumerate}
-
-  在生成阶段，本文采用 ACE-Step 1.5 作为骨干音乐生成模型，不微调 ACE-Step 主模型，而是在推理阶段引入 topology-guided latent intervention，将拓扑约束设计成一种可插拔的高阶生成控制器。在保留预训练音乐大模型已有的能力的同时，令生成音乐的拓扑结构更加贴近 Focus Music 的特性。
+  功能性专注音乐被广泛用于学习与工作场景，但其区别于一般音乐的时序结构仍缺少可计算、可审计且可用于生成控制的表示。本文将音乐建模为随时间演化的有向动态系统，在由 $300$ 首 Open Focus 与 $300$ 首 Classical 器乐组成、具有逐曲来源与许可记录的数据集上，采用``发现拟合---冻结---主要验证---时长敏感性''流程，结合 GLMY 路径同调与相位提升路径同调，比较局部状态转移和跨周期相位闭合。validation/180s 的主要分析表明：音高与节奏视角分别有 $13/20$ 和 $14/20$ 个预设指标通过 BH-FDR；Classical 通常具有更广的状态覆盖与转移多样性，而 Open Focus 具有更高的自转移比例和有向复现率。调制视角有 $5/20$ 个指标通过主分析 FDR，但因其 SMP-$K=10$ 表征是在 holdout 开启后提出，仅作探索性解释。三个局部视角均未获得稳定的 $H_1$ 组间差异。宏观尺度上，Open Focus 的 Acoustic 与 Chroma 相位 \texttt{loop\_score} 高于 Classical，rank-biserial 效应量分别为 $0.459$ 与 $0.338$，且通过三视角 BH-FDR；Rhythm phase 在主要尺度未通过 FDR。多尺度分析显示，Pitch、Phase 及其联合空间均存在组间距离差异，但联合表示并未优于最佳单块。基于上述结果，本文为后续未见数据与生成实验冻结由 $16$ 维 Pitch、Acoustic phase 与 Chroma phase 各一维组成的 $18$ 维指纹，平方距离权重为 $1/2:1/4:1/4$。进一步地，本文在 ACE-Step 1.5 上实现了``精确 Path Homology 教师---可微潜空间代理---精确复核''推理期引导协议：以逐采样步预测干净潜变量的精确拓扑标签训练代理网络，在未见 prompt、seed family 与生成轨迹上完成并通过坐标预测、候选排序、不确定度校准及 OOD/no-op 资格检验，随后以 $512$ 首 baseline/guided 配对音频完成最终评价。该评价以冻结精确拓扑目标带为主要终点，并将 prompt 一致性、音质、多样性、运行时间与显存开销纳入预设非劣性判据，从而形成从观察性结构发现、指纹冻结到门控生成评价的完整证据链。本文结论仅涉及当前语料与冻结协议下的拓扑结构表征和生成控制，不作注意力改善或临床疗效的因果推断。
 \end{abstract}
 
 
 \begin{keywords}
-  Focus Music, Path Homology, Persistent Homology, Topological Data Analysis (TDA), Topological Manifold Modeling, Latent-Space Guided Generation, Topology-guided Latent Intervention, ACE-Step
+  Focus Music, Path Homology, Persistent Path Homology, Phase-Lifted Path Homology, Topology-Guided Music Generation, Latent Topology Surrogate Network, ACE-Step
 \end{keywords}
 
 \clearpage
@@ -86,40 +81,47 @@
 
 % 研究背景
 
-全球大约有 2.4 亿人不同程度地受到注意力缺失的影响 \cite{Siva2025, Samuele2026}，作者本人就是注意力缺陷和多动障碍（Attention Deficit Hyperactivity Disorder, ADHD）患者。在学习、写作、编程和深度工作场景中，专注音乐常被用于支持持续注意力 \cite{Woods2024}。尤其在 ADHD 患者的疗愈方面，有针对性设计的 Focus Music 展现出了卓越的疗效潜力 \cite{MADJAR2020113207, Phoebe2025, Erarslan2026}。
+注意缺陷多动障碍（Attention Deficit Hyperactivity Disorder, ADHD）是一类常见的神经发育障碍，全球儿童患病率约为 $7-10\%$，成人患病率约为 $2-5\%$\cite{Siva2025}。保守估计，全球大约有 2.4 亿人不同程度地受到注意力缺失的影响。在学习、写作、编程和深度工作场景中，专注音乐常被用于支持持续注意力。有研究表明，有针对性设计的 Focus Music 在辅助提升注意力方面展现出了卓越的潜力 \cite{MADJAR2020113207, Phoebe2025, Erarslan2026}。
 
-近几年，随着 EEG、fMRI 和大语言模型技术的发展，对功能性音乐的特征研究也日益受到关注。Kevin J. P. Woods 等人 \cite{Woods2024} 系统探讨了音乐的幅度调制（amplitude modulation, AM） 特性如何影响人的持续注意力。Achuthan 等人 \cite{Achuthan2025} 通过大规模 Reddit 数据分析，借助 Spotify API 和大语言模型，揭示了focus music, stuck songs 和 general purpose music 之间的音频特征差异。
+% 注意缺陷多动障碍（Attention Deficit Hyperactivity Disorder, ADHD）是一类常见的神经发育障碍；其患病率和疾病负担估计会随年龄范围、诊断标准与数据来源而变化 \cite{Siva2025, Samuele2026}。音乐常被用作学习和工作时的背景刺激，但其效果具有明显的任务与个体差异。Woods 等人发现，快速幅度调制（amplitude modulation, AM）在特定实验条件下可改善部分注意困难听众的任务表现 \cite{Woods2024}；现有系统综述与干预研究则提示，音乐对 ADHD 相关注意表现的影响并不一致，尚不足以把一般意义上的 Focus Music 视为临床治疗 \cite{MADJAR2020113207, Phoebe2025, Erarslan2026}。
+
+近几年，随着 EEG、fMRI 和大语言模型技术的发展，越来越多的研究开始关注功能性音乐的声学调制、统计特征与注意场景之间的关系。例如，Kevin J. P. Woods 等人系统探讨了音乐的幅度调制（amplitude modulation, AM）特性如何影响持续注意力 \cite{Woods2024}。Achuthan 等人通过大规模 Reddit 数据分析，借助 Spotify API 和大语言模型，揭示了focus music, stuck songs 和 general purpose music 之间的音频特征差异 \cite{Achuthan2025}。
+
+% 功能性音乐研究已经从声学调制、行为任务和自然语言描述等角度刻画音乐与注意场景的关系。例如，Achuthan 等人结合 Reddit 文本、Spotify 音频特征与语言模型，比较了用户所描述的 focus music、stuck songs 和 general-purpose music \cite{Achuthan2025}。这类结果提供了有价值的关联性线索，但通常不能直接给出具有时间方向、可用于生成约束的结构表示，也不能单独支持注意改善的因果解释。
 
 % 过往研究的缺陷与不足
 
-然而，过往对 Focus Music 特征的研究都忽略了音乐的方向性！音乐本质上是一种具有高度时间方向性的时序数据流。在音乐理论中，音符或和弦的转移序列具有绝对的方向性。例如，``C大调 $\to$ G大调''（主音到属音，代表紧张度的积累与悬念）与``G大调 $\to$ C大调''（属音到主音，代表紧张度的释放与回归）在听觉和心理层面有着本质的区别。在 Focus Music 中，丢失音乐旋律中至关重要的非对称时间方向性信息是致命的，因为有方向性的声部推进和不可逆的和声循环是维持听觉预期而不引起注意力分散的主要机制 \cite{Stefan2000, David2001}。    
+然而，许多基于数据统计或拓扑数据分析（TDA）的音乐特征研究都会弱化事件次序。在音乐理论中，音符或和弦的转移序列具有绝对的时间方向性。例如，``C大调 $\to$ G大调''与``G大调 $\to$ C大调''在听觉和心理层面有着本质的区别。顺序和上下文是音乐预期的重要组成部分 \cite{Stefan2000, David2001}，维持听觉预期是不引起注意力分散的主要机制 \cite{Fiedlere2066232025}。 
+
+% 许多基于全曲统计量或对称相似度的音乐表示会弱化事件次序：即使两段音乐包含相同的状态集合，$i\to j$ 与 $j\to i$ 的转移频率也可能不同。音高与声部进行研究表明，顺序和上下文是音乐预期的重要组成部分 \cite{Stefan2000, David2001}。因此，本文只作一个方法层面的主张：在比较两组音乐的动态组织时，应显式保留转移方向；本文并不预设某类有向结构必然提升注意力，也不把方向性本身解释为认知机制。
 
 % 研究目标与方法
 
-本文的研究目的正是为了弥补这一缺陷。通过引入 GLMY 路径同调理论 \cite{glmy2013,glmy2020} 和持续路径同调（Persistent Path Homology）\cite{Samir2017}，我们从数据集中提取了 Focus Music 和 Classic Music 具体的拓扑特征，并对比了二者之间的差异，为 Focus Music 的结构性特征提供可计算、可解释、可用于生成控制的数学表达，进而将其应用到 Focus Music 的生成中。
+本文主张：在比较两组音乐的动态组织时，应显式保留转移方向；为此，本文引入 GLMY 路径同调 \cite{glmy2013,glmy2020} 与持续路径同调 \cite{Samir2017}，比较 Open Focus 与 Classical 两组音乐在局部有向状态转移和跨周期相位闭环上的差异。本研究的目标是得到可计算、可审计并可进一步用于生成控制的拓扑结构表示；进而将其应用到 Focus Music 的生成中。
 
 \begin{tcolorbox}[colback=pink!15,colframe=pink!50,boxrule=0.5pt,arc=6pt,left=6pt,right=6pt,top=4pt,bottom=4pt]
-注意，生成医疗级别的 Focus Music \textbf{不是}本文的目标，不应认为采用本文方法生成的 Focus Music 对 ADHD 或其他注意障碍具有临床疗效。
+本文不评估注意力、学习效果或临床疗效。即使生成音频更接近冻结拓扑指纹，也不能据此推断其对 ADHD 或其他注意力障碍具有治疗作用。
 \end{tcolorbox}
 
-本研究分为两个阶段：首先从数据集中发现经过独立验证的多尺度拓扑特征，进而将这些特征冻结为一个分布型生成目标；随后以精确拓扑算法作为教师，通过候选重排序和潜空间代理建模，逐步将该目标引入 ACE-Step 1.5 的推理过程（见图1）。该框架不预设专注音乐的任何特征，也不把某个拓扑指标的极大化或极小化视为生成目标，而是试图刻画音乐在局部连通、全局几何和中尺度周期回归之间形成的结构平衡。
+本研究分为两个阶段。第一阶段在 discovery 数据集上拟合并冻结表示，在 validation/180s 上进行主要评估，并以同曲目的 validation/300s 检查时长敏感性；这些步骤形成一个 $18$ 维 Path Homology 指纹。第二阶段提出``精确教师---可微代理---精确复核''的 ACE-Step 1.5 \cite{gong2026} 生成协议（图~\ref{fig:p1}）。该框架不预设 Focus Music 的任何特征，也不把某个拓扑指标的极大化或极小化视为生成目标，而是试图刻画音乐在局部连通、周期回归之间形成的结构平衡。
 
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=\textwidth]{fig/p1.png}
-    \caption{fig.1: 整体分析和应用框架。}
+    \caption{整体分析和应用框架。}
     \label{fig:p1}
 \end{figure}
 
 % Key Contributions
 
-本研究的主要贡献和创新总结如下：
+本研究的主要贡献总结如下：
 
 \begin{itemize}
-  \item 本文率先将 path homology 与 persistent path homology 应用到专注音乐的特征分析中，发现了 Focus Music 相比 Classical Music 的独特结构特征。
-  \item 在表示层面，我们提出了相位提升递归图表示（phase-lifted recurrence graph representation）。这一表示同时保留了时间方向、周期相位、跨周期复现程度，用相隔一个周期的同相位复现一致性定义边权。在实际应用中明确检验到了 Focus Music 与其他音乐的拓扑特征差异。
-  \item 我们冻结了四维精确拓扑目标并实现了 ACE-Step 多候选后验重排流水线；轻量级时间条件代理网络与采样内梯度引导属于通过重排验证后的下一阶段工作。
-  \item 本研究构建了一个双尺度数据集，包含 300 首 Focus Music 和 300 首 Classic Music，每类音乐提供 180s 和 300s 两种长度的切片。
+  \item 构建了保留转移方向的多尺度分析框架，通过将音乐状态转换表示为有向图，利用 GLMY 路径同调与持续路径同调分析音乐拓扑特征，并对 Open Focus--Classical 的观察性差异进行评估。
+  \item 提出了相位提升环表示（phase-lifted recurrence graph representation），用跨周期同相位复现定义六相位有向环的边权，并以最弱边的持续阈值刻画闭环强度。
+  \item 按``discovery 拟合与冻结---validation/180s 主要评估---validation/300s 同曲目敏感性检验''组织证据，并冻结由 Pitch、Acoustic phase 与 Chroma phase 构成的 $18$ 维拓扑指纹。
+  \item 提出并训练了潜空间拓扑代理网络（LTSN），学习从 ACE-Step 潜变量到冻结拓扑指纹的可微近似，为采样期潜变量校正提供梯度。
+  \item 构建了一个来源与逐曲许可可审计的双尺度语料库，包含 300 首 Open Focus 与 300 首 Classical 音乐，每首提供 180s 和 300s 两种分析片段。获取地址 \url{https://huggingface.co/datasets/fisheryv/open-focus-classical-600}
   \item 我们将拓扑特征发现过程中使用的代码封装成了一个 Python 库，名为 \texttt{focus\_music\_topology}，可在 \url{https://github.com/fisheryv/focus\_music\_topology} 上获取。
 \end{itemize}
 
@@ -129,21 +131,17 @@
 
 \subsection{音乐拓扑分析}
 
-\textbf{音乐拓扑学}：19 世纪 Hugo Riemann 提出的声调网格（Tonnetz）构成了现代音乐几何表示的起点 \cite{Yust2020}。Guerino Mazzola 的经典著作 \emph{The Topos of Music} \cite{Guerino2017} 运用范畴论、模论与代数拓扑，将音乐属性（如旋律、和声、对位法）统一在拓扑空间与概形（Schemes）的代数结构中。拓扑学为音乐分析提供了一种强大的数学工具。
+Tonnetz 是音乐几何表示的重要历史来源之一，其后续推广可用于表达音级、音程与时间关系 \cite{Yust2020}。Mazzola 的 \emph{The Topos of Music} 则从范畴、模和拓扑等角度建立了更广泛的数学音乐理论框架 \cite{Guerino2017}。这些工作说明，音乐关系可以被组织为空间或代数结构，但它们并不直接给出本文所需的有向时序统计。
 
-\textbf{Topological Data Analysis (TDA)}: TDA 是近年来兴起的一种分析高维复杂数据内在形状与几何结构的强大数学工具。其核心方法是持续同调（Persistent Homology） \cite{Edelsbrunner2002}，通过在离散的数据点云（Point Cloud）或图节点上构建一系列不断膨胀的邻域单纯形（Simplices），从而追踪数据结构中连通分支（0维孔洞）、环状结构（1维孔洞）、空腔（2维孔洞）的生成与消亡过程。Cohen-Steiner 等人 \cite{David2007} 提出的持续图 (Persistence Diagram)和 Carlsson 等人 \cite{Carlsson2004} 提出的条形码图（Barcode）为持续同调（Persistent Homology）提供了两大核心可视化工具。近几年，利用 TDA 分析音乐拓扑特征的研究日益增多，Sethares \& Budney \cite{Sethares_2014} 研究了多种音乐数据上的度量，并通过持久同调成功识别出音乐的三个基本拓扑结构：八度循环、五度循环和节奏的周期性重复。Alberto \& Pablo \cite{Alberto2024} 提出了一个系统性的拓扑音乐分析框架，将乐谱数据转换为欧几里得空间中的点集，并构建单纯复形来计算其同调特征。Eunwoo Heo 等人 \cite{Heo_2025} 将乐曲映射为节点与加权边构成的网络，引入并对比了三种不同距离定义下提取出的拓扑特征在音乐结构区分、特征分类效果上的差异，强调了根据具体分析目标选择合适距离度量（Distance Metric）的重要性。
+拓扑数据分析（Topological Data Analysis, TDA）中的持续同调通过一族过滤复形追踪拓扑特征随尺度的出现与消失 \cite{Edelsbrunner2002}。其中，$H_0$ 描述连通分支，$H_1$ 描述环，$H_2$ 描述二维空腔；持续图 \cite{David2007} 和 barcode \cite{Carlsson2004} 是同一持续信息的常用摘要形式。在音乐研究中，Sethares 与 Budney 展示了音高、音程和节奏数据中可由拓扑方法揭示的循环结构 \cite{Sethares_2014}；Alcalá-Alvarez 与 Padilla-Longoria 提出了从乐谱点集到单纯复形的系统分析框架 \cite{Alberto2024}；Heo 等人进一步比较了不同网络距离对音乐持续同调结果的影响 \cite{Heo_2025}。这些研究共同表明，结果依赖于表示与距离的选择，不能把某一种拓扑摘要视为与表示无关的音乐本质。
 
-然而，传统单纯复形的一个根本性局限在于其天然的``无向性''（Undirectedness）与``对称性''，这使得持续同调无法有效处理有向性的音乐数据。为了解决有向图的同调计算问题，Alexander Grigor'yan、Yong Lin、Yuri Muranov 和 Shing-Tung Yau \cite{glmy2013} 提出路径复形（Path Complex）与路径同调（Path Homology），现统称为 GLMY 理论。
+然而，标准 Vietoris--Rips 复形具有`无向性''和``对称性''，这种局限使得它无法有效应用于有向图。为了解决有向图的同调计算问题，Alexander Grigor'yan、Yong Lin、Yuri Muranov 和 Shing-Tung Yau 提出路径复形（Path Complex）与路径同调（Path Homology） \cite{glmy2013, glmy2020}。Mijangos 等人曾将音程转移表示为图并用持续同调探索音乐风格差异 \cite{Martin2022}，Wei 也从拓扑与谱方法研究了乐器声学形状 \cite{Wei2024}。相较于 TDA，GLMY 路径同调在功能性音乐中的应用仍较少；本文将工作定位为这一方向的具体实证应用。
 
-\textbf{Path Homology}: 将路径同调应用于音乐分析是一个前沿的交叉方向，目前的学术论文数量非常有限。Guo-Wei Wei \cite{Wei2024} 将路径复形（Path Complex）与路径同调扩展为持续路径拉普拉斯算子（Persistent Path Laplacians, PPL）。利用 PPL 的零特征值（对应路径同调贝蒂数 $\beta_k$）与非零特征值（捕捉同伦形状的动态演化），为乐器的音调分析与和声转移网络提供了严格的拓扑数据分析框架。Martín Mijangos 等人 \cite{Martin2022} 将乐曲中的音高转换（Pitch/Intervallic Transitions）构建为加权有向图（Weighted Directed Graphs），证明了有向拓扑特征能够作为``作曲家/时代风格指纹''，显著优于传统无向图统计指标。目前已知尚未有将路径同调应用于功能性音乐分析的研究论文发表。
+\subsection{潜空间生成控制与拓扑约束}
 
-\subsection{潜空间拓扑优化}
+目前，潜空间生成控制与拓扑约束还是一个非常前沿的课题。Hu 等人在 3D 形状潜扩散中加入拓扑感知约束 \cite{hu2024topologyawarelatentdiffusion3d}；TopoDDPM 使用持续同调表征辅助点云生成 \cite{DU2026109240}；TopoLiDM 则通过图神经网络(GNN) 提取拓扑保持的潜图表示来建模 LiDAR 点云 \cite{liu2025topolidmtopologyawarelidardiffusion}。这些方法说明拓扑摘要可以参与生成条件或损失设计，但研究对象、拓扑构造与评价终点均不同于本文的有向音乐路径同调。
 
-目前，潜空间拓扑优化还是一个非常前沿的课题，主要应用在工程结构设计和 3D 图形生成领域。
-
-Lutheran et al. \cite{lutheran2025latentspacediffusiontopology} 结合变分自编码器(VAE)和潜扩散模型(LDM)，实现拓扑的快速、条件生成。该方法将 von Mises 应力等物理场作为条件输入，并通过辅助损失函数引导生成过程。Wei Zhang et al. \cite{ZHANG2025102966} 提出了TOLDM——一种多阶段拓扑优化方法，将潜扩散模型与 SIMP 方法结合，通过将扩散过程从图像空间转移到低维潜空间，降低了计算成本。Giacomini \& Huerta \cite{GIACOMINI2026118503} 使用前馈神经网络将输入参数映射到由编码器/解码器确定的低维潜空间，再重建高维拓扑。通过两步走策略：先快速预测``准最优''拓扑作为初始猜测，再通过一个高效算法进行微调，修正代理模型的误差并消除伪影。实验表明可减少平均 $53\%$ 的优化迭代次数。Sridhara et al. \cite{Sridhara2026} 利用变分自编码器（VAE） 将材料数据库映射到一个连续的低维材料潜空间。然后，在拓扑优化中，让梯度优化器（如 MMA 算法）同时在这个潜空间中搜索最优材料，并优化拓扑。
-
-在 3D 图形生成领域，Hu et al. \cite{hu2024topologyawarelatentdiffusion3d} 将潜扩散模型与持续同调相结合以生成 3D 形状。该方法将 3D 形状表示为隐式场，提取贝蒂数和持续图等拓扑特征，并将这些特征策略性地融入扩散过程，以生成更丰富、更多样的3D形状。Du et al. \cite{DU2026109240} 提出了 TopoDDPM，这是一个针对 3D 点云生成的扩散概率模型，显式地结合了持续同调。它引入了一个由持续同调提取的拓扑潜变量和一个由归一化流参数化的形状潜变量，作为去噪过程的条件。此外，还设计了一个拓扑损失函数来 enforce 结构一致性。Liu et al. \cite{liu2025topolidmtopologyawarelidardiffusion} 提出了 TopoLiDM，一个面向 LiDAR 点云生成的框架，通过图神经网络(GNN) 提取拓扑保持的潜图表示，以解决现有方法在建模细节几何结构和保持全局拓扑一致性方面的不足。
+在音乐生成控制方面，Zachary Novack 等人提出了 LatCHs 与 Selective TFG 纯潜空间引导方案 \cite{novack2026}。LatCHs 直接构建在潜扩散模型的中间层扩散特征之上，可以直接在潜空间内预测音乐的动态强度、音高曲线与节拍位置。Selective TFG 技术通过仅在特定选择的少数关键时间步施加 LatCHs 梯度引导，大幅缩短计算耗时。本文与这些工作的联系在于使用可微代理读取潜变量；区别在于代理目标来自冻结的 Path Homology 指纹，并且只有在独立资格检验通过后才允许进入采样器。
 
 % \textbf{LatCHs 与 Selective TFG}：在潜扩散模型中，传统的无分类器引导（Classifier-Free Guidance, CFG）通常需要将每个采样时间步的潜变量 $z_t$ 还原至时域波形，这步操作开销极大。为了解决这一计算瓶颈，针对扩散模型，Zachary Novack 等人 \cite{novack2026} 提出了基于潜空间控制头（Latent-Control Heads, LatCHs）和选择性时间步过滤引导（Selective Time-Step Filtered Guidance, Selective TFG）的纯潜域引导方案。LatCHs 借鉴了计算机视觉领域的 Readout 网络思想，直接构建在潜扩散模型的中间层扩散特征之上。LatCHs 仅包含约 $7$M 参数，仅需约 4 小时训练即可直接在潜空间内预测音乐的动态强度、音高曲线与节拍位置。Selective TFG 技术通过仅在特定选择的少数关键时间步（如早期大尺度结构形成阶段）施加 LatCHs 梯度引导，在大幅缩短计算耗时的同时，实现了音乐控制精度与听觉保真度的最优平衡。
 
@@ -155,22 +153,22 @@ Lutheran et al. \cite{lutheran2025latentspacediffusiontopology} 结合变分自�
 
 \subsection{数据来源}
 
-本研究采用的数据集由 600 首经过严格甄选与物理校验的独立音频文件构成，总时长 $57.84$ 小时，有两组数据来源。
+本研究使用两组共 600 首独立音乐，源文件总时长为 $57.81$ 小时。所有纳入曲目均记录来源页面、逐曲许可、内容哈希与切分归属。
 
-\textbf{第一组为 Focus Music}：该组作为功能性专注音乐参考集，数据来自 BMTG-Jamendo \cite{bogdanov2019mtg}。以 \verb|voice_instrumental---instrumental| 和 \verb|--allowed-moods focus,meditation| 为标签建立候选池，然后筛选出 300 首高质量音乐，覆盖了 154 位艺术家、263 张专辑，总时长 $29.51$ 小时。
+\textbf{Open Focus 组}：该组由 300 首音乐构成。候选主要来自当前 Jamendo API，标签体系与数据背景参考 MTG-Jamendo \cite{bogdanov2019mtg}；纳入条件包括可核验的 \verb|instrumental| 证据、\verb|focus,meditation| 相关标签、允许下载以及逐曲 Creative Commons 许可。最终清单覆盖 154 位艺术家和 263 张专辑，总时长 $29.50$ 小时。
 
-\textbf{第二组为 Classical Music}：引入古典音乐组的根本目的是为了验证 Focus Music 与 Classical Music 在拓扑特征上存在明显差异。古典对照组共计 300 首曲目，来自公共领域与学术共享记录：
+\textbf{Classical 组}：该组用于提供来源明确的古典器乐比较基线，共计 300 首音乐，来自公共领域标记与学术共享记录：
 \begin{itemize}
-  \item 基础池的 $95$ 首曲目来自著名的 \href{https://archive.org/details/musopen-lossless-dvd}{Musopen Lossless DVD} 项目，该项目版权标注为 Public Domain Mark 1.0。为了降低古典音乐内部跨度，我们选取了包括巴赫的哥德堡变奏曲、舒伯特的钢琴奏鸣曲以及多位大师的弦乐四重奏。
-  \item 扩展池来自 \href{https://doi.org/10.5281/zenodo.5120004}{MusicNet Zenodo} 记录\cite{john_thickstun_2016_5120004}，该记录整体采用 CC BY 4.0。排除 \verb|source=Museopen| 以及与基础池相同的作品，按作曲家平衡后选取 $205$ 条；
+  \item 基础池的 95 首音乐来自 \href{https://archive.org/details/musopen-lossless-dvd}{Musopen Lossless DVD} 项目，来源条目标注为 Public Domain Mark 1.0。涵盖多位大师的钢琴奏鸣曲和弦乐四重奏。
+  \item 扩展池来自 \href{https://doi.org/10.5281/zenodo.5120004}{MusicNet Zenodo} 记录 \cite{john_thickstun_2016_5120004}，该记录标注为 CC BY 4.0。排除 \verb|source=Musopen| 以及与基础池重复的作品后，按作曲家平衡选取 205 条。
 \end{itemize}
-整体古典数据涵盖了从钢琴独奏到弦乐室内的多种编制，总时长达 $28.33$ 小时。
+最终 Classical 清单涵盖了从钢琴独奏到室内弦乐的多种编制，总时长为 $28.31$ 小时。
 
 \subsection{数据切分与治理}
 
-为了确保最终提取的拓扑特征能够真实反映音乐的宏观组织逻辑，而非被流派标签、响度差异、艺人个人风格或混音技术带来的混淆变量所污染，本研究设计并执行了一套极其严苛的数据治理与切分方案。针对长时拓扑分析的需求，数据集被标准化构建为双尺度表示：包含用于训练与分类的 180 秒核心片段集，以及用于敏感性分析与后续行为学评估的 300 秒片段集。考虑到不同曲目的总时长分布，为保障音频中段的结构完整性，截断始终优先锚定中心位置。不足目标时长保留整曲，不循环、不补零、不跨曲拼接。
+数据治理旨在降低来源、流派、艺人风格或混音技术等带来的混淆因素。每首曲目生成 180s 与 300s 两个尺度：180s 是主要分析尺度，300s 仅用于同曲目时长敏感性。切片优先取曲目中段；短于目标时长时保留整曲，不循环、不补零、不跨曲拼接。
 
-两个类别两种尺度的音乐片段按照 discovery $65\%$，validation $20\%$，holdout $15\%$ 的比例划分。为了防止数据泄露，在划分数据集时，我们按作曲家整组划分，避免同一创作者跨组。
+切分在源曲目级完成一次，并由两个时长版本共同继承。每组均为 discovery 195 首、validation 60 首、holdout 45 首。Open Focus 按艺术家整组划分；Classical 按作曲家并结合重复作品检查进行划分，以避免同一创作者或同一作品跨集合。discovery 用于拟合变换与状态模型，validation/180s 用于主要评估，validation/300s 是同曲目敏感性；当前 holdout 只承担冻结流程与方向的操作性检查，不应视为独立外部验证。
 
 \begin{table}[h]
 \centering
@@ -180,10 +178,10 @@ Lutheran et al. \cite{lutheran2025latentspacediffusiontopology} 结合变分自�
 \toprule
 组别 & 曲目数 & 总时长(h) & discovery & validation & holdout & 许可 & 角色 \\
 \midrule
-Focus      & 300 & 222.12 & 195 & 60 & 45 & CC & 功能性参考 \\
-Classical  & 300 & 28.31  & 195 & 60 & 45 & PDM/CC & 对照组 \\
+Open Focus & 300 & 29.50 & 195 & 60 & 45 & CC & 功能性参考 \\
+Classical  & 300 & 28.31 & 195 & 60 & 45 & PDM/CC BY & 比较基线 \\
 \midrule
-合计       & 600 & 269.30 & 390 & 120 & 90 &  & 源曲目级无泄漏划分 \\
+合计       & 600 & 57.81 & 390 & 120 & 90 &  & 源曲目级分组切分 \\
 \bottomrule
 \end{tabular}
 \end{table}
@@ -192,13 +190,11 @@ Classical  & 300 & 28.31  & 195 & 60 & 45 & PDM/CC & 对照组 \\
 
 % 所有待分析音频在解析层首先被强制转码为单声道（Mono）与 22.05 kHz 的全局统一采样率，并以浮点 float32 精度载入系统。由于响度的波动极易被非线性的拓扑模型捕捉并误解为宏观状态的跃迁，我们强制引入了符合广播级标准的 EBU R128 双向 \verb|loudnorm| 规范算法，所有音频片段在此被强制削平至 $-15$ LUFS 的基准响度，并在最后级联了一道 $-1$ dBFS 的软限幅器（soft limiting），扫除瞬态音量毛刺带来的干扰。
 
-在将原始音频送入拓扑分析流程前，必须通过高度确定性的数字信号处理（DSP）管道进行格式、响度与成分的归一化，以消除由于灌录年代、混音电平和动态范围带来的混杂偏差。
+在进入拓扑分析前，所有音乐片段经过固定的数字信号处理流程，以减小格式、声道和响度尺度差异。
 
-第一阶段进行重采样与声道变换。音频解码后统一转换为采样率为 $22.05$ KHz、单声道（Mono）且采样精度为 $32$ 位浮点型（float32）的标准 Writable WAV 流 。
+音频统一解码为 22.05 kHz、单声道、float32 WAV。响度处理采用两遍 EBU R128 \verb|loudnorm|，目标为 $-15$ LUFS，并在最终采样率下施加 $-1$ dBFS 峰值上限。当前两组共 1,200 个片段（600 个 180s、600 个 300s）全部通过配置哈希、输出哈希、响度和峰值审计；最终响度范围为 $-15.1997$ 至 $-14.8035$ LUFS，最大样本峰值为 $0.888737$。
 
-第二阶段执行高精度双端响度对齐。管道调用双通道 EBU R128 标准的 \verb|loudnorm| 过滤器，将所有切片的响度硬性约束在 $-15$ LUFS，并在最后级联了一道 $-1$ dBFS 软限制器（Soft Limiting），扫除瞬态音量毛刺带来的干扰。经处理后，$1,600$ 个分析段的实际最终响度均严格落入 $-15.1995$ 至 $-14.8005$ LUFS 区间内，且最大采样峰值精确锁死在 $0.891249$（$-1$ dBFS），有效保障了特征提取在能量尺度的均一化。
-
-为了应对局部静音窗口带来的偏置，管道弃用以``最大能量''为优先级的贪婪切片策略，转而应用一种确定性的静音退避序列：优先检测并定位中心窗口，若中心区域触发静音阈值，则依序向左侧相邻窗口、右侧相邻窗口、起始窗口和末端窗口回退，以保证每个切片均包含连续且有效的声学几何信息。
+切片不按最大能量择优，以避免系统性偏向高能量内容。固定候选顺序为中心窗、左侧相邻窗、右侧相邻窗、起始窗和末端窗；只有当前候选触发静音条件时才依次回退，以保证每个切片均包含连续且有效的声学几何信息。
 
 \section{拓扑特征发现与验证}
 
@@ -247,13 +243,12 @@ $$
 
 \subsection{分析框架与方法}
 
-本研究将音乐表示为多尺度有向图。首先从音高、节奏和调制特征构建局部状态转移图；然后从声学与和声轨迹估计主导周期，构建六节点相位环，以最弱相位连接的持续阈值衡量中尺度循环闭合强度；最后构建宏观段落转移图作为全局结构层。三个尺度回答不同问题：
+本研究将音乐表示为多尺度有向图。首先从音高、节奏和调制特征构建局部状态转移图；然后从声学与和声轨迹估计主导周期，构建六节点相位环，以最弱相位连接的持续阈值衡量宏观段落循环闭合强度；两个尺度回答不同问题：
 \begin{itemize}
   \item \textbf{局部尺度}：短时间窗内，音高、节奏、调制状态怎样发生有向转移？
-  \item \textbf{中度尺度}：跨若干局部块，候选重复周期的相位是否按顺序稳定闭合？
-  \item \textbf{全局尺度}：整段音乐的段落角色与宏观段落转移怎样组织？
+  \item \textbf{宏观尺度}：跨若干局部块，候选重复周期的相位是否按顺序稳定闭合？
 \end{itemize}
-局部尺度和全局尺度下均采用 GLMY 路径同调分析，在固定阈值过滤下提取连通性、环结构、持续性、路径熵、复现性及图密度等描述子；相位尺度主要提取六节点相位环的 \verb|loop_score|。最终将三个尺度进行融合，经过层级增量分析后得到音乐的拓扑指纹。整体分析框架见 Figure \ref{fig:analysis_framework}.
+局部尺度采用 GLMY 路径同调分析，在固定阈值过滤下提取连通性、环结构、持续性、路径熵、复现性及图密度等描述子；宏观尺度采用相位提升路径同调分析，主要提取六节点相位环的 \verb|loop_score|。最终将两个尺度进行融合，经过层级增量分析后得到音乐的拓扑指纹。整体分析框架见图 \ref{fig:analysis_framework}.
 
 \begin{figure}[htbp]
     \centering
@@ -270,10 +265,10 @@ $$
         arrow/.style={->, >=stealth, thick}
     ]
         % Local block nodes
-        \node[local] (A) {Local Pitch PH};
-        \node[local, below of=A, yshift=-.2cm] (B) {Local Rhythm PH};
-        \node[local, below of=B, yshift=-.2cm] (C) {Local Modulation PH};
-        \node[f_local, right of=B, xshift=2.5cm] (L) {Local Feature $(L)$};
+        \node[local, text width=3.5cm] (A) {Local Pitch PH};
+        \node[local, text width=3.5cm, below of=A, yshift=-.2cm] (B) {Local Rhythm PH};
+        \node[local, text width=3.5cm, below of=B, yshift=-.2cm] (C) {Local Modulation PH};
+        \node[f_local, right of=B, xshift=4cm] (L) {Local Feature $(L)$};
 
         % Middle phase block nodes
         \node[f_phase, above of=L, yshift=1cm] (P) {Phase Feature $(P)$};
@@ -282,15 +277,16 @@ $$
         \node[phase, left of=R, xshift=-3cm] (E) {Chroma phase loop};
 
         % Combination nodes
-        \node[comb, right of=L, xshift=2.5cm] (LP) {L + P};
-        \node[comb, right of=LP, xshift=2.5cm] (LPS) {L + P + S};
+        \node[comb, right of=L, xshift=3cm] (LP) {$L + P$};
+        % \node[comb, right of=LP, xshift=2.3cm] (LPS) {$L + P + S$};
 
         % Structure nodes
-        \node[struct, below of=LP, yshift=-.2cm] (F) {Structure PH $(S)$};
+        % \node[struct, below of=LP, yshift=-.2cm] (F) {Structure PH $(S)$};
 
         % Test nodes
-        \node[test, above of=LP,xshift=1cm] (T1) {Verify: $LP - L$};
-        \node[test, above of=LPS,xshift=1cm] (T2) {Verify: $LPS - LP$};
+        \node[test, above of=LP,xshift=2cm] (T1) {Verify: $F^{*}_{L+P}-F^{*}_{L}$};
+        \node[test, below of=LP,xshift=2cm] (T2) {Verify: $F^{*}_{L+P}-F^{*}_{L}$};
+        % \node[test, above of=LPS,xshift=1cm] (T2) {Verify: $LPS - LP$};
         
         % Arrows
         \draw[arrow] (A) -- (L);
@@ -301,23 +297,23 @@ $$
         \draw[arrow] (R) -- (P);
         \draw[arrow] (L) -- (LP);
         \draw[arrow] (P) -- (LP);
-        \draw[arrow] (F) -- (LPS);
-        \draw[arrow] (LP) -- (LPS);
+        % \draw[arrow] (F) -- (LPS);
+        % \draw[arrow] (LP) -- (LPS);
         \draw[dashed] (LP) -- (T1);
-        \draw[dashed] (LPS) -- (T2);
+        \draw[dashed] (LP) -- (T2);
+        % \draw[dashed] (LPS) -- (T2);
     \end{tikzpicture}
     \caption{多尺度拓扑特征融合分析框架}
     \label{fig:analysis_framework}
 \end{figure}
 
-
-各分析分支均遵循``发现—冻结—验证—敏感性分析''流程：
-\begin{itemize}
-  \item \textbf{发现阶段}：仅使用 discovery/180s 数据完成特征定义、缺失值处理、标准化、状态模型拟合和质量检查，并预先确定检验方向、指标集合及多重比较家族。该阶段用于校准方法，不作为最终显著性证据。
-  \item \textbf{冻结阶段}：固定特征算法、参数、排除标准和统计方案，之后不根据验证结果修改特征。
-  \item \textbf{验证阶段}：在 validation/180s 上做主验证。不同分析分支采用与其研究问题相匹配的冻结检验，不将局部指标检验、相位分析和多视角融合的统计量混用；各分支均在预定义比较家族内进行 BH-FDR 校正，并以校正后 \(q\le0.05\) 为统计显著，而不只依据原始 \(p<0.05\)。
-  \item \textbf{敏感性分析}：在相同 validation 曲目的 300s 片段上检查方向和效应稳定性，并计算 180/300s 相关性。
-\end{itemize}
+% 各分析分支均遵循``发现—冻结—验证—敏感性分析''流程：
+% \begin{itemize}
+%   \item \textbf{发现阶段}：仅使用 discovery/180s 数据完成特征定义、缺失值处理、标准化、状态模型拟合和质量检查，并预先确定检验方向、指标集合及多重比较家族。该阶段用于校准方法，不作为最终显著性证据。
+%   \item \textbf{冻结阶段}：固定特征算法、参数、排除标准和统计方案，之后不根据验证结果修改特征。
+%   \item \textbf{验证阶段}：在 validation/180s 上做主验证。不同分析分支采用与其研究问题相匹配的冻结检验，不将局部指标检验、相位分析和多视角融合的统计量混用；各分支均在预定义比较家族内进行 BH-FDR 校正，并以校正后 \(q\le0.05\) 为统计显著，而不只依据原始 \(p<0.05\)。
+%   \item \textbf{敏感性分析}：在相同 validation 曲目的 300s 片段上检查方向和效应稳定性，并计算 180/300s 相关性。
+% \end{itemize}
 
 \subsection{局部有向拓扑：统一框架与跨视角比较}
 
@@ -399,7 +395,6 @@ z_{tj}=\frac{h_{tj}-\operatorname{median}_D(h_{\cdot j})}
 \centering
 \setlength{\tabcolsep}{3pt}
 \caption{局部拓扑视角的主要验证结果}
-\small
 \label{tab:local_view_summary}
 \begin{tabular}{lccp{5.2cm}p{2cm}p{1.4cm}l}
 \toprule
@@ -461,8 +456,6 @@ z_{tj}=\frac{h_{tj}-\operatorname{median}_D(h_{\cdot j})}
 
 该共性不能外推到所有连接指标。音高互惠性在 Open Focus 中更高（$0.667$ 对 $0.522$），提示较强的相邻音高双向回返；节奏互惠性则在 Classical 中略高（$0.809$ 对 $0.769$），且其边密度也更高。因此，``Open Focus 局部复现更强''仅指自转移和既有有向路径的重复，不能改写为所有视角下的网络都更稠密或更双向。
 
-调制视角呈现不同于音高和节奏的模式。Open Focus 在共享 $10$ 状态 SMP 码本中访问更多原型并形成更多绝对边，状态数和边数中位数分别为 $6$ 和 $14$，高于 Classical 的 $5$ 和 $11.5$；但其边密度和互惠性分别为 $0.524$ 和 $0.776$，低于 Classical 的 $0.667$ 和 $0.873$。这表明 Open Focus 在当前 SMP 表征下覆盖更广，但连接相对于潜在边空间更稀疏、双向成对转移更少。四项跨时长稳定指标的 $\epsilon^2$ 为 $0.051$--$0.105$，rank-biserial 绝对值为 $0.279$--$0.386$，故该结果应作为效应有限的探索性解释层，而非已确认的核心指纹。
-
 \begin{figure}[htbp]
     \centering
     \includegraphics[width=\textwidth]{fig/pitch_v2_group_summary.pdf}
@@ -483,6 +476,8 @@ z_{tj}=\frac{h_{tj}-\operatorname{median}_D(h_{\cdot j})}
     \caption{调制视角下 Classical 与 Open Focus 的主要拓扑特征分布。}
     \label{fig:modulation_group_summary}
 \end{figure}
+
+调制视角呈现不同于音高和节奏的模式。Open Focus 在共享 $10$ 状态 SMP 码本中访问更多原型并形成更多绝对边，状态数和边数中位数分别为 $6$ 和 $14$，高于 Classical 的 $5$ 和 $11.5$；但其边密度和互惠性分别为 $0.524$ 和 $0.776$，低于 Classical 的 $0.667$ 和 $0.873$。这表明 Open Focus 在当前 SMP 表征下覆盖更广，但连接相对于潜在边空间更稀疏、双向成对转移更少。四项跨时长稳定指标的 $\epsilon^2$ 为 $0.051$--$0.105$，rank-biserial 绝对值为 $0.279$--$0.386$，故该结果应作为效应有限的探索性解释层，而非已确认的核心指纹。
 
 三个视角下的 betti 曲线见图~\ref{fig:pitch_betti_curves}--\ref{fig:modulation_betti_curves}。在同调层级上，音高和节奏的 $H_0$ 结果与状态覆盖差异一致：Classical 在冻结过滤过程中保留更多连通分量并经历更充分的分量合并。不过，$H_0$ 描述子同时受实际占用顶点数影响，应与状态数、边数和熵联合解释，不能单独表述为某一组具有更高或更优的拓扑复杂性。调制视角仅有 \verb|h0_censored_count| 在 180s 通过 FDR，且在 300s 不再显著（$q=0.159$），因而不形成稳定的 $H_0$ 结论。
 
@@ -510,26 +505,883 @@ z_{tj}=\frac{h_{tj}-\operatorname{median}_D(h_{\cdot j})}
 \end{figure}
 
 \subsubsection{多视角融合与消融分析}
+\label{sec:local_multiview_fusion}
 
-\subsection{中尺度拓扑特征发现}
+音高、节奏和调制视角都以``局部状态---相邻转移---有向过滤''为共同接口，但分别描述和声位置、节奏组织与幅度调制轮廓。为检验这些信息能否在不构造高维笛卡尔积状态的前提下互补，本节将三组各 20 个预设拓扑描述子作为独立块进行后融合。整体流程如图~\ref{fig:local_multiview_fusion} 所示。
 
-\subsection{宏观结构拓扑特征发现}
+\begin{figure}[htbp]
+  \centering
+  \begin{tikzpicture}[
+      node distance=1.5cm,
+      block/.style={rectangle, draw, minimum width=3cm, minimum height=0.8cm, text centered},
+      arrow/.style={->, >=stealth, thick}
+  ]
+      % Input nodes
+      \node[block, text width=3.3cm] (P) {Pitch: 按拍 Tonnetz\\$K=16$};
+      \node[block, text width=3.3cm, below of=P, yshift=-0.5cm] (R) {Rhythm: 1s / 0.5s\\$K=10$};
+      \node[block, text width=3.3cm, below of=R, yshift=-0.5cm] (M) {Modulation: 4s / 2s\\PCA-32, $K=10$};
+      
+      % Mahalanobis blocks
+      \node[block, text width=3cm, right of=P, xshift=2.5cm] (WP) {Discovery \\Mahalanobis block};
+      \node[block, text width=3cm, right of=R, xshift=2.5cm] (WR) {Discovery \\Mahalanobis block};
+      \node[block, text width=3cm, right of=M, xshift=2.5cm] (WM) {Discovery \\Mahalanobis block};
+      
+      % Fusion node
+      \node[block, text width=2.5cm, right of=WR, xshift=2.5cm] (L) {Equal-block \\local fusion $L$};
+      
+      % Analysis node
+      \node[block, text width=3.5cm, right of=L, xshift=2.5cm] (A) {PERMANOVA + leave-one-view-out + conditional residual};
+      
+      % Arrows
+      \draw[arrow] (P) -- (WP);
+      \draw[arrow] (R) -- (WR);
+      \draw[arrow] (M) -- (WM);
+      \draw[arrow] (WP) -- (L);
+      \draw[arrow] (WR) -- (L);
+      \draw[arrow] (WM) -- (L);
+      \draw[arrow] (L) -- (A);
+  \end{tikzpicture}
+  \caption{多视角融合分析框架}
+  \label{fig:local_multiview_fusion}
+\end{figure}
+
+\paragraph{冻结的块归一化与检验设计}
+直接拼接会使有效维数或协方差尺度较大的视角主导距离。对视角 $v\in\{P,R,M\}$ 的 discovery/180s 描述子矩阵，先以 discovery 中位数填补缺失值并删除常量列，再估计均值 $\mu_v$ 与协方差 $\Sigma_v$。设其有效秩为 $r_v$，由 $\Sigma_v$ 的伪逆诱导白化矩阵 $W_v$，定义
+\[
+z_v(x)=\frac{(x-\mu_v)W_v}{\sqrt{r_v}},
+\qquad W_vW_v^{\mathsf T}=\Sigma_v^{+}.
+\]
+音高、节奏和调制块的有效秩分别为 $13$、$13$ 和 $14$。除以 $\sqrt{r_v}$ 后，各块具有相近的期望平方距离尺度；三视角等权融合与任意两视角组合分别写为
+\[
+z_L(x)=\frac{1}{\sqrt{3}}[z_P(x)\Vert z_R(x)\Vert z_M(x)],
+\qquad
+z_{PR}(x)=\frac{1}{\sqrt{2}}[z_P(x)\Vert z_R(x)],
+\]
+% 权重在查看 validation 结果前固定，未根据结果调节。
+
+主要检验为基于欧氏距离的 PERMANOVA，每个表示使用 $999$ 次标签置换。七个单视角或组合表示按时长分别作 BH-FDR 校正。为判断某一视角是否真正增加组间分离几何，在同一标签排列下计算
+\[
+\Delta F=F^{*}_{\mathrm{candidate}}-F^{*}_{\mathrm{baseline}},
+\]
+并对六个``完整融合相对单视角''及``加入一个视角''的比较按时长分别校正；只有 $\Delta F>0$ 且 $q\leq0.05$ 才判为正增量。另在 discovery/180s 上用其余两块拟合多输出岭回归 $\widehat f_v$，在 validation 中对残差
+\[
+R_v=Z_v-\widehat f_v(Z_{-v})
+\]
+再次进行 PERMANOVA，以诊断目标视角是否含有不能由其余两视角预测的组别信息。该条件残差检验不等价于因果分解，也不保证加入该视角后整体距离判别一定提高。
+
+\paragraph{整体分离与组合消融}
+表~\ref{tab:local_fusion_permanova} 显示，七种表示在两个时长下均能区分 Open Focus 与 Classical（原始置换 $p$ 均为 $0.001$，BH-FDR $q=0.001$）。完整融合在 180s 的 pseudo-$F$ 为 $6.27$，在 300s 为 $10.54$；但 180s 最强单视角是音高（$F^{*}=7.59$），300s 亦为音高（$F^{*}=18.19$）。因此，完整融合显著只能说明融合空间保留了组间差异，不能据此声称它优于最佳单视角。
+
+\begin{table}[htbp]
+\centering
+\caption{局部三视角融合及组合消融的 PERMANOVA 结果}
+\label{tab:local_fusion_permanova}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lrrrrr}
+\toprule
+表示 & 维数 & 180s $F^{*}$ & 180s $q$ & 300s $F^{*}$ & 300s $q$ \\
+\midrule
+音高（$P$） & 16 & 7.59 & 0.001 & 18.19 & 0.001 \\
+节奏（$R$） & 16 & 6.47 & 0.001 & 10.24 & 0.001 \\
+调制（$M$） & 17 & 4.13 & 0.001 & 4.24 & 0.001 \\
+$P+R$ & 32 & 7.08 & 0.001 & 14.11 & 0.001 \\
+$P+M$ & 33 & 6.17 & 0.001 & 10.69 & 0.001 \\
+$R+M$ & 33 & 5.40 & 0.001 & 7.10 & 0.001 \\
+$P+R+M$ & 49 & 6.27 & 0.001 & 10.54 & 0.001 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{融合空间的二维投影}
+为直观展示完整融合表示中的样本关系，图~\ref{fig:local_fusion_pca} 使用仅在 discovery/180s 上拟合的 PCA，将 validation/180s 的 49 维融合坐标投影到前两个主成分。Classical 曲目主要分布在 PC1 正向且相对集中，Open Focus 整体偏向 PC1 负向并呈现更大的组内离散，但两组仍存在明显重叠。PC1 与 PC2 分别只解释 $4.8\%$ 和 $4.7\%$ 的方差，合计为 $9.5\%$；因此该图仅提供低维几何直觉，不参与 PERMANOVA 或配对增量检验。
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.78\textwidth]{../runs/local_smp_k10_fusion/figures/local_smp_k10_pca_validation_180.png}
+    \caption{由 discovery/180s 拟合的 PCA 对 validation/180s 三视角融合表示的二维投影。每个点代表一首曲目；椭圆阴影表示以组内均值为中心、沿组内协方差主轴延伸 $1.96$ 个标准差的投影范围，并非 bootstrap 置信区间。}
+    \label{fig:local_fusion_pca}
+\end{figure}
+
+\paragraph{增量与条件非冗余}
+配对增量结果见图~\ref{fig:local_fusion_incremental}。在 180s 主分析中，完整融合相对音高的 $\Delta F=-1.32$（$q=1$），相对节奏为 $-0.205$（$q=1$）；相对调制虽为 $2.14$（$q=0.003$），但这仅说明融合优于较弱的调制单视角。留一视角消融中，向``节奏+调制''加入音高产生稳定正增量（180s：$\Delta F=0.864$，$q=0.003$；300s：$3.44$，$q=0.003$）。向``音高+调制''加入节奏在 180s 的增量仅为 $0.101$（$q=0.462$），而向``音高+节奏''加入调制反而为 $-0.814$（$q=1$）；二者均无正向增量证据。该结果将音高识别为当前等权距离中的主要分离块，而不支持``每增加一个视角都会增强组间几何''的假设。
+
+\begin{table}[htbp]
+\centering
+\caption{局部三视角融合的配对 pseudo-$F$ 增量检验结果}
+\label{tab:local_fusion_incremental}
+\begin{tabular}{lrrrr}
+\toprule
+比较 & 180 s $\Delta F$ & 180s FDR & 300s $\Delta F$ & 300s FDR \\
+\midrule
+Full-Pitch & -1.32 & 1 & -7.65 & 1 \\
+Full-Rhythm & -0.205 & 1 & 0.298 & 0.342 \\
+Full-Modulation & 2.14 & 0.003 & 6.3 & 0.003 \\
+Add Pitch to Rhythm+Modulation & 0.864 & 0.003 & 3.44 & 0.003 \\
+Add Rhythm to Pitch+Modulation & 0.101 & 0.462 & -0.146 & 1 \\
+Add Modulation to Pitch+Rhythm & -0.814 & 1 & -3.56 & 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{../runs/local_smp_k10_fusion/figures/local_smp_k10_incremental_tests.png}
+    \caption{局部三视角融合的配对 pseudo-$F$ 增量检验。浅色柱表示未同时满足 $\Delta F>0$ 与 BH-FDR $q\leq0.05$；300s 仅作同曲目时长敏感性。}
+    \label{fig:local_fusion_incremental}
+\end{figure}
+
+条件残差给出了不同但互补的问题答案。表~\ref{tab:local_fusion_residual} 中，三个视角的残差在 180s 均仍含显著组别结构；300s 方向也一致。然而，节奏和调制的 validation $R^2$ 接近零或为负，说明 discovery 上拟合的跨视角预测关系并未稳定推广。因而，这些结果支持三视角包含条件非冗余信息，但不能推导为每个视角都对等权融合产生可验证的正增量。
+
+\begin{table}[htbp]
+\centering
+\caption{各局部视角在条件于其余两视角后的残差 PERMANOVA}
+\label{tab:local_fusion_residual}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrrrr}
+\toprule
+目标视角 & 180s $F^{*}$ & 180s $q$ & validation $R^2$ & 300s $F^{*}$ & 300s $q$ \\
+\midrule
+音高 & 4.53 & 0.0015 & 0.0476 & 11.74 & 0.0015 \\
+节奏 & 3.39 & 0.0015 & $-0.0089$ & 6.34 & 0.0015 \\
+调制 & 2.22 & 0.0100 & 0.0034 & 1.88 & 0.0310 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{辅助分类及指标分歧}
+作为辅助分析，在 discovery/180s 内部以五折交叉验证选择 $C$ 的 L2 logistic regression，冻结后应用于 validation；分类差异使用固定种子的 $1,000$ 次组内分层 bootstrap。完整融合在 180s 的 balanced accuracy、Macro-F1 和 AUROC 分别为 $0.967$、$0.967$ 和 $0.991$，音高单视角分别为 $0.925$、$0.925$ 和 $0.986$。完整融合相对音高的 balanced accuracy 增量为 $0.0417$，bootstrap 95\% CI 为 $[0.0165,0.0750]$。此外，在 $P+R$ 上加入调制后 balanced accuracy 增加 $0.0333$，95\% CI 为 $[0.0083,0.0667]$；但其距离增量为 $\Delta F=-0.814$、$q=1$。分类性能衡量逐曲判别，pseudo-$F$ 衡量组间距离相对组内离散的比例，两者可以不同方向变化，因此必须并列报告，不能只选择有利指标。
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{../runs/local_smp_k10_fusion/figures/local_smp_k10_classification_ablation.png}
+    \caption{由 discovery/180s 冻结的辅助分类消融结果。分类结果用于补充距离几何检验，不替代 PERMANOVA 或配对增量检验。}
+    \label{fig:local_fusion_classification}
+\end{figure}
+
+\paragraph{综合判断与证据边界}
+局部三视角等权融合保留了稳定的组间可分性，并在辅助逐曲分类上优于音高单视角；但它没有提高相对最佳单视角的 pseudo-$F$，且留一视角检验只确认了音高的正向几何增量。节奏和调制具有条件非冗余与独立解释价值，却尚无证据表明它们在当前等权距离中提供稳定的增量分离。因此，\textbf{本文将音高视为局部指纹的主要分离块，将节奏与调制保留为互补解释块，而不宣称三视角融合在整体上优于最佳单视角}。
+
+\subsection{宏观尺度拓扑特征发现}
+
+局部状态图主要描述相邻窗口之间的转移，而宏观结构关注段落级组织；二者之间还存在跨越多个局部块、但未达到完整曲式尺度的重复周期。为刻画这一中尺度结构，本文将周期内部的相对位置显式加入状态空间，再以有向路径同调检验这些相位是否能够跨周期稳定闭合。
+
+\subsubsection{相位提升路径同调}
+\label{sec:phase_lifted_path_homology}
+
+\paragraph{基本思想}
+普通状态转移图将每个时刻表示为一个声学状态，主要回答``哪些状态彼此转换''；但当相同或相近的状态在一个周期内多次出现时，仅依赖状态身份会丢失其处于周期起点、中段还是末端的信息。相位提升（phase lifting）的核心是把原轨迹中的每个块同时赋予一个\textbf{周期相位}，从而把重复结构转写为按固定方向推进的相位环。具体而言，本文先估计最能解释跨时重复的候选周期 $P^*$，再把一个周期等分为 $K=6$ 个有序相位，并考察相隔一个周期的同相位块是否保持相似。若六个相邻相位均能跨周期稳定复现，则过滤后的有向图中保留一条完整的一维环；任一相位连接变弱，都会首先切断该环。因此，该方法回答的是``候选重复周期内部的相位顺序能否跨周期稳定闭合''，而不是一般状态图中任意 $H_1$ 类的总复杂度。
+
+\paragraph{输入轨迹与块级距离}
+分析预先包含 Acoustic、Rhythm 和 Chroma 三个视角，以检验相位闭合是否出现在综合声学、节奏或和声轨迹中。Acoustic 使用 discovery 拟合的标准化与 PCA 表示的前 8 维；Rhythm 使用 discovery 模型插补、标准化后的节奏向量；二者均按 4 帧聚合为块，块间隔为 2s。对块向量 $z_i\in\mathbb R^d$，先在片段内逐维作稳健中心化与尺度标准化
+\[
+\widetilde z_{ij}
+=\frac{z_{ij}-\operatorname{median}_i z_{ij}}
+{\max(\operatorname{sd}_i z_{ij},10^{-8})},
+\qquad
+D_{ij}=\frac{\lVert \widetilde z_i-\widetilde z_j\rVert_2}{\sqrt d}.
+\]
+除以 $\sqrt d$ 用于减弱表示维数对距离量级的直接影响。Chroma 逐帧作 L2 归一化并按 4 帧聚合；为避免同一和声关系因整体移调被误判为不相似，其块间距离对 12 种循环移调取最优匹配：
+\[
+D_{ij}=\sqrt{\max\left(0,2-2\max_{s\in\{0,\ldots,11\}}u_i^{\mathsf T}R_su_j\right)},
+\]
+其中 $u_i$ 为归一化 Chroma 块，$R_s$ 表示循环移动 $s$ 个半音。
+
+\paragraph{主导周期估计}
+对长度为 $N$ 的块序列，在候选集合
+\[
+\mathcal P=\{K,\ldots,\min(P_{\max},\lfloor N/C\rfloor)\}
+\]
+中选择使滞后块距离中位数最小的主导周期
+\[
+P^*=\arg\min_{P\in\mathcal P}\operatorname{median}_i D_{i,i+P}.
+\]
+这里 $P\geq K$ 保证候选周期能够覆盖全部离散相位，$P\leq\lfloor N/C\rfloor$ 保证片段至少包含 $C=3$ 个候选周期，且 $P_{\max}=32$ 个块用于排除超过当前中尺度分析范围的极长滞后。该估计不要求轨迹逐点完全重复，而是通过中位数寻找在多数位置上具有较小跨周期距离的主导滞后。
+
+\paragraph{从连续轨迹到六相位有向环}
+以非邻近正距离的中位数 $s$ 为尺度，先把相隔 $P^*$ 的距离转换为 $[0,1]$ 区间内的跨周期复现强度
+\[
+r_i=\exp\!\left(-\frac{D_{i,i+P^*}}{s}\right).
+\]
+数值越大，表示位置 $i$ 与其下一周期对应位置越相似。随后将周期内位置映射到离散相位
+\[
+q_i=\left\lfloor\frac{(i\bmod P^*)K}{P^*}\right\rfloor,
+\qquad
+c_k=\operatorname{mean}\{r_i:q_i=k\},
+\quad k=0,\ldots,K-1,
+\]
+其中 $c_k$ 表示第 $k$ 个相位跨多个周期的平均复现一致性。六个节点按时间方向 $k\to(k+1)\bmod K$ 构成有向相位环，边权取相邻两个相位一致性的较小值
+\[
+w_k=\min(c_k,c_{k+1}).
+\]
+这一最小值规则要求一条相位边的起点和终点都具有稳定的跨周期复现，避免仅由单侧高一致性形成强边。图~\ref{fig:phase_lifted_representatives} 展示了两组中位数附近的 Rhythm 相位环示例。
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.92\textwidth]{../runs/phase_lifted_path_homology_20260802/figures/representative_rhythm_phase_cycles.png}
+    \caption{两组中位数附近的 Rhythm 相位环示例。节点为六个周期相位，箭头数字为边权，最小边权即 \texttt{loop\_score}；本图为机制示例而非组间统计证据。}
+    \label{fig:phase_lifted_representatives}
+\end{figure}
+
+\paragraph{GLMY 路径同调与循环强度}
+在有向图中，允许的 $p$-路径是相邻顶点之间均存在有向边的序列 $e_{i_0\ldots i_p}$，其边界算子为
+\[
+\partial e_{i_0\ldots i_p}
+=\sum_{j=0}^{p}(-1)^j
+e_{i_0\ldots\widehat{i_j}\ldots i_p}.
+\]
+令 $A_p$ 为允许路径生成的空间，并取边界仍保持允许性的链空间
+\[
+\Omega_p=\{v\in A_p:\partial v\in A_{p-1}\},
+\qquad
+H_p=\frac{\ker(\partial_p|_{\Omega_p})}{
+\operatorname{im}(\partial_{p+1}|_{\Omega_{p+1}})}.
+\]
+对边权实施超水平过滤
+\[
+G_\tau=(V,\{e:w(e)\geq\tau\}),
+\qquad \tau\in\{0.05,0.10,\ldots,0.95\}.
+\]
+由于本构造中只有一条预定义的六相位有向环，只有当六条边均被保留时，路径同调的一维 Betti 数才为 1。因此
+\[
+\lambda=\min_k w_k,
+\qquad
+\beta_1(\tau)=\mathbf 1[\tau\leq\lambda].
+\]
+连续临界值 $\lambda$ 即 \texttt{loop\_score}，也就是完整相位环在连续边权意义下的消失阈值。它衡量维持闭环的最弱连接，而非所有可能 $H_1$ 类的数量或总复杂度；相应过滤曲线只是该分数的路径同调表达，不是独立于 \texttt{loop\_score} 的第二个统计终点。
+
+\paragraph{六相位设定与方法边界}
+本文冻结采用 $K=6$、4 帧块聚合、每个片段至少 96 个原始时间步、最少周期数 $C=3$ 和最大候选周期 $P_{\max}=32$。六相位是在周期内部时序分辨率与每个相位的样本支持之间采用的预定义工程折中：较少节点会压缩周期内部顺序，较多节点则会减少每个 $c_k$ 的有效观测，并使基于最弱边的 $\lambda$ 更容易受局部噪声影响。当前质量门槛满足 $96\geq K\times4\times C=72$，为六个相位跨至少三个周期的估计保留余量。上述参数均未根据当前 Open Focus--Classical 组间结果调整；本研究也未进行 $K$ 值网格敏感性分析，因此 $K=6$ 应表述为冻结离散化设定，不能解释为经验上最优的节点数。
+
+\subsubsection{验证结果与解释边界}
+
+\paragraph{冻结协议与构造校准}
+当前 600 首 Open Focus/Classical 曲目产生 1,198 个合格片段和 3,594 个片段--视角记录；两个 discovery Chroma 片段因时间步少于 96 被质量门槛排除，validation 仍为每组 60 首。三个视角均预先保留，没有依据当前组间 $p$ 值再次筛选。discovery-only 人工循环与时间打乱校准中，三个视角的人工循环中位数均为理论上限 $1.0$，打乱中位数为 $0.329$--$0.363$，BH-FDR 均为 $q=3.55\times10^{-15}$。这只验证管线能够响应预设的顺序化循环操作，不构成真实音乐组间差异或感知重复的额外证据。
+
+validation/180s 为主要比较尺度。各视角采用双侧 Mann--Whitney $U$ 检验，效应量为 rank-biserial（Open Focus--Classical）；在两组曲目内分别有放回重采样 3,000 次，以固定种子构造 percentile bootstrap 95\% CI。三个视角构成一个 BH-FDR 检验家族，阈值为 $q\leq0.05$。validation/300s 使用同一冻结变换，仅作为同曲目时长敏感性；holdout 只作描述，不开启新的显著性检验。
+
+\paragraph{主要组间结果}
+表~\ref{tab:phase_lifted_validation} 与图~\ref{fig:phase_lifted_distributions}--\ref{fig:phase_lifted_effects} 汇总主分析。Acoustic phase 与 Chroma phase 在 180s 通过三视角 BH-FDR，Open Focus 的中位 \texttt{loop\_score} 分别为 $0.414$ 和 $0.412$，高于 Classical 的 $0.361$ 和 $0.372$。两者效应量分别为 $0.459$（95\% CI $[0.269,0.640]$）和 $0.338$（$[0.138,0.539]$）。Rhythm phase 的效应为 $0.175$，置信区间跨越零（$[-0.045,0.391]$），且 $q=0.099$，因此不能在主要尺度写成已支持的组间差异。
+
+\begin{table}[htbp]
+\centering
+\caption{相位提升路径同调的 validation 组间结果（每组 $n=60$）}
+\label{tab:phase_lifted_validation}
+\setlength{\tabcolsep}{3pt}
+\begin{tabular}{lrrrrrr}
+\toprule
+视角 & $F_{score}$ & $C_{score}$ & 180s 效应 ($95\%$ CI) & 180s $q$ & 300s 效应 & 300s $q$ \\
+\midrule
+Acoustic phase & 0.414 & 0.361 & 0.459 \enspace\;$[0.269,0.640]$ & 4.42e-5 & 0.589 & 8.05e-8 \\
+Chroma phase & 0.412 & 0.372 & 0.338 \enspace\;$[0.138,0.539]$ & 0.002 & 0.398 & 2.54e-4 \\
+Rhythm phase & 0.372 & 0.355 & 0.175 $[-0.045,0.391]$ & 0.099 & 0.301 & 0.004 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{../runs/phase_lifted_path_homology_20260802/figures/validation_loop_score_distributions.png}
+    \caption{冻结相位提升构造下三个视角的 validation \texttt{loop\_score} 分布。180s 为主要分析；300s 为同曲目时长敏感性，不能视为独立复制。}
+    \label{fig:phase_lifted_distributions}
+\end{figure}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.9\textwidth]{../runs/phase_lifted_path_homology_20260802/figures/validation_effect_sizes.png}
+    \caption{三个相位视角的 rank-biserial 效应量及组内 bootstrap 95\% CI。正值表示 Open Focus 的相位闭环最弱边倾向更强；Rhythm phase 在 180s 的区间跨越零。}
+    \label{fig:phase_lifted_effects}
+\end{figure}
+
+\paragraph{过滤曲线与时长稳定性}
+图~\ref{fig:phase_lifted_filtration} 给出 180s 的 Path $H_1$ 超水平过滤。曲线纵轴是在阈值 $\tau$ 下仍保留完整六相位有向环的曲目比例；曲线右移表示更多曲目的最弱相位边能够承受较高阈值。Acoustic 与 Chroma 的 Open Focus 曲线相对右移，与主要尺度效应一致；Rhythm 的分离较弱，与其 180s FDR 未通过相符。
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{../runs/phase_lifted_path_homology_20260802/figures/validation_h1_filtration.png}
+    \caption{validation/180s 中完整六相位有向环在超水平阈值下的保留比例。该曲线是 \texttt{loop\_score} 分布的路径同调表达，不作为独立统计证据。}
+    \label{fig:phase_lifted_filtration}
+\end{figure}
+
+300s 中三个视角均通过 FDR，但这些样本与 180s 来自同一曲目。Open Focus 的 180/300s Spearman 相关在 Acoustic、Rhythm 和 Chroma 中分别为 $0.816$、$0.778$ 和 $0.883$；Classical 分别为 $0.484$、$0.436$ 和 $0.320$。各组 300s--180s 中位差仅为 $[0,0.006]$，说明数值水平总体稳定。
+
+% \paragraph{代表性相位环与辅助预测}
+% 将三个 \texttt{loop\_score} 输入 discovery 训练、validation 测试的逻辑回归后，balanced accuracy 与 Macro-F1 均为 $0.667$，AUROC 为 $0.725$。该结果表明三项分数具有有限的联合判别信息，但分类性能不是拓扑机制、感知效果或因果效应的证据。holdout 中三个视角的中位数方向均为 Open Focus 高于 Classical，但未计算新的 $p$ 值；该 holdout 也不是 pristine 外部确认集。
+
+\paragraph{综合判断}
+当前证据支持 Open Focus 与 Classical 在宏观长程周期的相位闭合强度上存在观察性差异，其中 Acoustic 与 Chroma 在 validation/180s 获得三视角 FDR 支持，Rhythm 在主要尺度上仅呈现正向但不确定的效应。
+
+需要特别注意的是：第一，六节点环由预定义相位提升构造诱导，不能外推为音乐具有一般意义上的复杂 $H_1$ 拓扑；第二，\texttt{loop\_score} 是最弱边统计量，对单个薄弱相位敏感；第三，主导周期估计可能混合缓慢结构重复与局部节拍重复，且本研究未事后优化 $K=6$。
 
 \subsection{多尺度融合与消融分析}
+\label{sec:multiscale_fusion}
+
+前述局部多视角分析表明，音高、节奏与调制的联合表示虽然能够区分 Open Focus
+与 Classical，但其距离几何没有稳定优于音高单视角。因此，本节不再把三个局部
+视角强制合并，而是将冻结的 Pitch Path Homology 定义为局部块 $L$；宏观长程
+周期块 $P$ 则由 Acoustic phase 与 Chroma phase 的 \texttt{loop\_score}
+等块融合得到。Rhythm phase 未通过 validation/180s 的三视角 BH-FDR，故不进入
+主融合。最终比较 $L$、$P$ 与 $L+P$，分别回答局部状态组织、长程周期闭合及其
+联合表示是否具有组间距离几何与逐曲判别信息。
+% 需要说明的是，局部块改为 Pitch、
+% 且 $P$ 只保留 Acoustic/Chroma，均参考了已查看的 validation 结果；因此本节是
+% 结果知情后的重新冻结与探索性分析，而不是新的独立确认。
+
+\paragraph{块变换与等权融合}
+本节沿用局部融合中的 discovery 拟合流程，包括中位数填补、常量列删除、
+伪逆白化及按有效秩归一化，不再重复其推导。与局部融合不同的是，局部块 $L$
+仅保留 Pitch；宏观块 $P$ 则由 Acoustic phase 与 Chroma phase 两个标量分数
+等权组成，并进一步与 $L$ 作等块融合：
+\[
+L=Z_{\mathrm{Pitch}},\qquad
+P=\frac{1}{\sqrt{2}}[Z_{\mathrm{Acoustic}}\Vert Z_{\mathrm{Chroma}}],
+\qquad
+L+P=\frac{1}{\sqrt{2}}[L\Vert P].
+\]
+180s 下，Pitch 保留 16 维、有效秩为 13，两个 Phase 输入均为秩 1 标量；在
+$L+P$ 的平方距离中两块各占一半。权重不使用 validation 或 holdout 搜索。
+% discovery 中一首 Classical 曲目的相位缺失值仅用对应 discovery 中位数填补。
+
+\paragraph{检验与消融协议}
+三种表示分别进行基于欧氏距离的 PERMANOVA，每项使用 $999$ 次标签置换，并在
+每个时长的三项表示内进行 BH-FDR。为避免把``联合空间显著''误写为``融合有
+增量''，在同一置换标签下进行两项配对单侧检验：
+\[
+\Delta_{P\mid L}=F^{*}_{L+P}-F^{*}_{L},
+\qquad
+\Delta_{L\mid P}=F^{*}_{L+P}-F^{*}_{P}.
+\]
+两项增量按时长作 BH 校正；只有 $\Delta F>0$ 且 $q\leq0.05$ 才记为正几何
+增量。条件非冗余分析在 discovery 上以多输出岭回归拟合一个块对另一块的预测，
+再对 validation 中的 $P\mid L$ 与 $L\mid P$ 残差进行 PERMANOVA。辅助 L2
+逻辑回归在 discovery 内五折选择正则化参数，冻结后应用于 validation；分类
+差异使用 $1,000$ 次组内分层配对 bootstrap。
+
+\paragraph{主要尺度的距离几何}
+表~\ref{tab:multiscale_permanova}与图~\ref{fig:multiscale_permanova} 显示，validation/180s 中三种表示均存在组间距离几何差异，但 Phase 的 pseudo-$F$ 最高，联合表示居中。pseudo-$F$ 衡量组间距离相对组内离散的比例，不能直接解释为分类准确率。
+
+\begin{table}[htbp]
+\centering
+\caption{多尺度表示在 validation/180s 的 PERMANOVA 结果}
+\label{tab:multiscale_permanova}
+\begin{tabular}{lrrrr}
+\toprule
+表示 & 维数 & pseudo-$F$ & 置换 $p$ & BH-FDR $q$ \\
+\midrule
+$L$（Pitch） & 16 & 7.588 & 0.001 & 0.001 \\
+$P$（Acoustic+Chroma phase） & 2 & 20.580 & 0.001 & 0.001 \\
+$L+P$ & 18 & 13.486 & 0.001 & 0.001 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.88\textwidth]{../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_permanova_ablation.png}
+    \caption{$L$、$P$ 与 $L+P$ 的 validation PERMANOVA。180s 为主要尺度，300s 为同曲目时长敏感性；联合空间显著不等同于优于两个单块。}
+    \label{fig:multiscale_permanova}
+\end{figure}
+
+双向配对增量给出更严格的结论（表~\ref{tab:multiscale_incremental} 与
+图~\ref{fig:multiscale_incremental}）。在 $L$ 上加入 $P$ 后，
+$\Delta F=+5.898$、$q=0.002$，支持 Phase 相对 Pitch 基线的正几何增量；
+但在 $P$ 上加入 $L$ 后，$\Delta F=-7.094$、$q=1$。两者并不矛盾：Phase
+单块的组间/组内距离比远高于 Pitch，因而会提高 Pitch 基线；反向加入 Pitch
+则使联合 pseudo-$F$ 回落至两块之间。因此可认为``Phase 改善 Pitch 基线''，
+但不能理解为``融合优于最佳单块''。
+
+\begin{table}[htbp]
+\centering
+\caption{validation/180s 的双向配对 pseudo-$F$ 增量检验}
+\label{tab:multiscale_incremental}
+\setlength{\tabcolsep}{5pt}
+\begin{tabular}{lrrrr}
+\toprule
+比较 & $\Delta F$ & 单侧 $p$ & BH-FDR $q$ & 置换零分布 95\% 区间 \\
+\midrule
+在 $L$ 上加入 $P$ & $+5.898$ & 0.001 & 0.002 & $[-0.715,1.920]$ \\
+在 $P$ 上加入 $L$ & $-7.094$ & 1.000 & 1.000 & $[-1.728,0.877]$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.9\textwidth]{../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_incremental_tests.png}
+    \caption{Pitch 与 Phase 的双向配对增量消融。只有 $\Delta F>0$ 且 BH-FDR $q\leq0.05$ 才判为正增量。}
+    \label{fig:multiscale_incremental}
+\end{figure}
+
+\paragraph{条件非冗余}
+条件残差检验与配对增量回答不同问题。表~\ref{tab:multiscale_residual}
+显示，$P\mid L$ 在主要尺度未通过 FDR（$q=0.230$），因此不能把上述正配对
+增量进一步解释成``Phase 已含有经条件验证的独立组别信息''。相反，$L\mid P$
+的残差仍显著（pseudo-$F=5.191$，$q=0.002$），说明 Pitch 保留了 Phase
+不能线性解释的组别结构；但这些信息加入较强的 Phase 空间后可能同时增加组内
+离散，因而没有形成正的整体 pseudo-$F$ 增量。
+
+\begin{table}[htbp]
+\centering
+\caption{validation/180s 的条件残差 PERMANOVA}
+\label{tab:multiscale_residual}
+\begin{tabular}{lrrrrr}
+\toprule
+条件检验 & discovery $R^2$ & validation $R^2$ & pseudo-$F$ & $p$ & $q$ \\
+\midrule
+$P\mid L$ & 0.195 & 0.114 & 1.481 & 0.230 & 0.230 \\
+$L\mid P$ & 0.055 & $-0.015$ & 5.191 & 0.001 & 0.002 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.88\textwidth]{../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_conditional_residuals.png}
+    \caption{Pitch 与 Phase 的条件残差检验。岭回归只在 discovery 拟合，validation $R^2$ 与残差 PERMANOVA 用于判断跨块预测关系及剩余组别结构。}
+    \label{fig:multiscale_residual}
+\end{figure}
+
+\paragraph{辅助分类}
+逐曲分类与距离几何没有给出相同排序。表~\ref{tab:multiscale_classification}
+中，Pitch 的 balanced accuracy 为 $0.933$，高于 Phase 的 $0.683$ 与联合表示的
+$0.925$。$L+P$ 相对 $L$ 的 balanced-accuracy 差为 $-0.008$，95\% CI
+$[-0.042,0.017]$；AUROC 差为 $-0.006$，95\% CI $[-0.019,0.003]$。
+因此，主要尺度没有证据表明融合提高逐曲预测。Phase 的高 pseudo-$F$ 与较低
+分类性能并不冲突：前者度量整体组间/组内距离比，后者取决于逐样本决策边界。
+
+\begin{table}[htbp]
+\centering
+\caption{discovery 训练、validation/180s 测试的辅助分类结果}
+\label{tab:multiscale_classification}
+\begin{tabular}{lrrr}
+\toprule
+表示 & Balanced accuracy & Macro-F1 & AUROC \\
+\midrule
+$L$（Pitch） & 0.933 & 0.933 & 0.988 \\
+$P$（Acoustic+Chroma phase） & 0.683 & 0.683 & 0.733 \\
+$L+P$ & 0.925 & 0.925 & 0.982 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.9\textwidth]{../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_classification_ablation.png}
+    \caption{discovery 训练的 validation 分类消融。分类结果用于补充距离几何，不替代 PERMANOVA 或配对增量检验。}
+    \label{fig:multiscale_classification}
+\end{figure}
+
+\paragraph{两块关系与二维投影}
+validation/180s 中，Pitch 与 Phase 成对距离的 Spearman 相关为 $0.228$，表明
+二者有关但不是同一几何。图~\ref{fig:multiscale_pca} 从左到右给出 $L$、$P$
+与 $L+P$ 的 PCA 投影。每幅子图均在对应表示的 discovery/180s 数据上独立拟合
+PCA，再投影同一批 validation/180s 样本，故三幅图的坐标值不能直接横向比较。
+$L$ 的 PC1 与 PC2 各解释 $7.7\%$ 方差，$P$ 分别解释 $79.9\%$ 与 $20.1\%$，
+$L+P$ 分别解释 $40.9\%$ 与 $10.4\%$。$L$ 中两组沿 PC1 呈清楚的整体位移；
+$P$ 的方差主要集中在 PC1，但两组仍明显重叠，且 Open Focus 组内离散更大；
+$L+P$ 同时保留组间位移与 Phase 方向上的较大离散。椭圆是投影空间中的组内
+协方差范围，不是 bootstrap 置信区间；PCA 只提供低维直觉，不参与推断检验。
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_pca_validation_180.png}
+    \caption{$L$、$P$ 与 $L+P$ 三种表示的 validation/180s discovery-fitted PCA 投影。三幅子图分别拟合，坐标不可直接比较。}
+    \label{fig:multiscale_pca}
+\end{figure}
+
+\paragraph{综合判断}
+当前结果支持把 Pitch 与 Phase 作为功能不同、相互补充的两个拓扑块：Pitch
+描述局部状态组织，并提供最稳定的逐曲分类；Phase 描述宏观长程周期闭合，并在
+当前距离几何中具有最高的组间/组内分离比。$L+P$ 可作为同时包含两类信息的
+联合拓扑指纹，但其 pseudo-$F$ 低于 Phase，主要尺度分类也低于 Pitch，故不能
+宣称其优于最佳单块。Phase 相对 Pitch 的配对增量为正，却未通过 $P\mid L$
+条件非冗余检验；Pitch 则保留了 Phase 不能线性解释的条件信息。
+% 上述结果均不支持关于音乐质量、专注功效、认知机制或因果效应的推断，也不支持继续利用同一
+% validation 搜索更有利的块权重或相位组合。
+
+\subsection{拓扑指纹冻结}
+\label{sec:frozen_topology_fingerprint}
+
+根据前述单视角验证与多尺度增量分析，本文将当前 Focus Music Path Homology
+指纹冻结为一个 $18$ 维联合表示，记为 $\Phi_{\mathrm{PH}}$。该指纹只包含 Pitch
+局部状态转移、Acoustic phase 闭环和 Chroma phase 闭环三个输入，其可以表示为：
+\[\Phi_{\mathrm{PH}}=\frac{1}{\sqrt{2}}[L\Vert P]\]
+其中 $L=Z_{\mathrm{Pitch}}$，$P=\frac{1}{\sqrt{2}}
+[Z_{\mathrm{Acoustic}}\Vert Z_{\mathrm{Chroma}}]$。
+
+% 冻结发生在既有 validation 结果已经被
+% 查看之后，因而不能使本研究的当前结果追溯性地变为确认性证据；它约束的是后续
+% 未见数据、生成实验及部署评分不得继续根据当前 validation 调整组成和权重。
+
+表~\ref{tab:frozen_fingerprint} 给出构成当前版本身份的冻结字段。
+
+\begin{table}[htbp]
+\centering
+\caption{Focus Music Path Homology 拓扑指纹的冻结组成}
+\label{tab:frozen_fingerprint}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{lrrr}
+\toprule
+输入块 & 输出维数 & 有效秩 & 平方距离权重 \\
+\midrule
+Pitch Path Homology & 16 & 13 & $1/2$ \\
+Acoustic phase \texttt{loop\_score} & 1 & 1 & $1/4$ \\
+Chroma phase \texttt{loop\_score} & 1 & 1 & $1/4$ \\
+\midrule
+联合指纹 $\Phi_{\mathrm{PH}}$ & 18 & -- & 1 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+除表~\ref{tab:frozen_fingerprint} 的组成与权重外，以下设置一并冻结：
+\begin{enumerate}
+  \item 以 180s 为主要尺度；状态码本、缺失值填补、块变换和分类器只使用
+  discovery 拟合，validation/180s 只用于主要评估；
+  \item Pitch 使用冻结状态表示与 $20$ 个预设描述子，删除 discovery
+  常量列后保留 $16$ 维；相位提升固定使用六个相位节点，并分别提取 Acoustic 与
+  Chroma 的 \texttt{loop\_score}；
+  \item 距离几何使用 $999$ 次置换的 PERMANOVA 与双向配对 pseudo-$F$ 增量，
+  在预设检验族内进行 BH-FDR；条件残差模型只在 discovery 拟合；
+  \item 辅助 L2 逻辑回归仅在 discovery 内五折选择正则化参数，当前联合表示的
+  冻结参数为 $C=10$；分类差异使用 $1,000$ 次组内分层配对 bootstrap；
+  \item 300s 仅作同曲目时长敏感性；已开启 holdout 不用于调参、筛选相位、
+  改变权重或产生新的显著性声明。
+\end{enumerate}
+
+该冻结对象是可审计的科研表示与评估协议，而不是注意力、疗效或音乐质量的因果
+量表。辅助分类器的 logit 或概率只描述当前 Open Focus--Classical 数据中的判别
+边界，不改变 $\Phi_{\mathrm{PH}}$ 本身的 $18$ 维定义。
+
+冻结后，不允许改变 $\frac{1}{2}:\frac{1}{4}:\frac{1}{4}$ 权重，优化相位节点数，或选择新的指标子集。任何此类改变均应建立新的指纹版本，并在未参与该选择的数据上重新完成增量、分类和生成实验验证。
 
 \section{ACE-Step 潜空间拓扑引导}
 
-将连续的声学时序信号映射为有向拓扑空间，需要建立离散的多视角状态序列表征。生成控制沿用前述冻结分析中的音高、节奏和调制状态定义，并增加宏观结构视角：
+本文的目的之一是将 Focus Music 的拓扑特征用于音乐生成。传统路线会选择训练一个新的音乐生成模型，并将拓扑特征作为损失函数嵌入训练循环。然而，高质量音乐生成模型需要大量版权敏感的音频数据，模型训练对 GPU 算力要求高，因此本研究将工程核心从``更新模型参数 $\theta$''转向``控制推理期潜变量 $z_t$''。
 
-\begin{itemize}
-  \item \textbf{音高视角}：将 12 维 Chroma 映射到 Tonnetz，并使用 discovery 拟合的冻结 16 状态谐波码本。
-  \item \textbf{节奏视角}：使用起音、起音间隔、局部速度和拍点率构成的 8 维局部特征，以及冻结的 10 状态码本。
-  \item \textbf{调制视角}：提取 0.5--45Hz 的 178 维相对谱调制轮廓，经 Hellinger 映射、稳健标准化和 PCA-32 后，使用冻结的 SMP-$K=10$ 原型码本；不再采用三分位三状态表示。
-  \item \textbf{结构视角}：通过构建自相似矩阵（Self-Similarity Matrix）计算声学块的边界，将宏观段落进行转换为高阶抽象状态。
-\end{itemize}
+本研究选用 ACE-Step 1.5 xl 作为基础骨干网络，在其逆向扩散采样的关键时间步，对当前音频潜变量施加来自冻结 Path Homology 指纹的拓扑能量梯度。这样既保留了预训练模型的音乐生成能力，又让生成过程受到可解释的代数拓扑约束。
 
-各视角得到离散状态序列后，均按前述冻结的一阶转移概率与 top-$6$ 非自环出边规则构建有向状态图。由此，生成候选的拓扑评分与特征发现阶段使用同一状态语义和图构建算子，避免分析目标与生成目标之间因离散化定义不同而发生漂移。
+\subsection{方法思想与总体框架}
 
+由于精确 Path Homology（exact PH） 包含一系列``非光滑操作''，这些操作几乎处处梯度为 $0$ 或未定义，无法通过链式法则传递有效梯度。因此我们训练了潜空间拓扑代理网络（Latent Topology Surrogate Network，LTSN）用于提供近似的、可导的评分，用它来反传梯度。它学习的目标就是去模仿 exact PH 的输出，同时保持整个计算图可微。
+
+整个方法的核心是一个``精确教师--可微代理--精确复核''闭环：
+exact PH 负责构造训练标签、执行同 prompt 候选重排并对最终音频作出裁决；LTSN 仅学习从中间预测干净潜变量到冻结指纹的可微近似；采样器只在 LTSN 通过独立资格检验后施加幅度受限的中段校正。生成结果在解码后仍须由 exact PH、音质指标和 prompt 一致性共同复核。整体流程如图~\ref{fig:acestep_pipeline} 所示。
+
+\begin{figure}[htbp]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+    >={Stealth[length=2.2mm]},
+    box/.style={draw, rounded corners, align=center,
+                minimum height=12mm, text width=24mm,
+                font=\small, fill=white, inner sep=2pt},
+    decision/.style={draw, diamond, align=center, aspect=2.4,
+                     text width=20mm, font=\small, fill=white, inner sep=1pt},
+    arr/.style={->, thick},
+    darr/.style={->, thick, dashed},
+    lbl/.style={font=\scriptsize, fill=white, inner sep=1pt},
+]
+% ---- 节点背景色：按角色分组 ----
+% 输入/数据：浅蓝；精确教师：浅红；标签产物：浅橙；
+% 代理模型：浅紫；决策检验：浅黄；校正/解码：浅绿；
+% 终止接受：浅青；回退层级：浅灰
+\definecolor{cin}{HTML}{DCE9F7}      % 输入/候选
+\definecolor{cteacher}{HTML}{F8D7DA}  % 精确教师
+\definecolor{clabel}{HTML}{FCE5CD}    % 训练标签
+\definecolor{cproxy}{HTML}{E2D5F0}    % 可微代理
+\definecolor{cdecision}{HTML}{FFF2B3} % 决策检验
+\definecolor{cact}{HTML}{D9EAD3}     % 校正/解码动作
+\definecolor{caccept}{HTML}{D0E8E0}  % 接受结果
+\definecolor{cback}{HTML}{EAEAEA}     % 回退层级
+% ---- 主流水线（上排 L->R，下排 R->L）----
+\node[box, fill=cin]        (A) at (0, 0)   {ACE-Step 同 prompt\\候选音频与中间潜变量};
+\node[box, fill=cteacher]   (B) at (4, 0)   {精确教师\\Exact PH};
+\node[box, fill=clabel]     (C) at (8, 0)   {训练标签\\18 维冻结指纹与 Focus logit};
+\node[box, fill=cproxy]     (E) at (12, 0)  {可微代理 LTSN\\预测拓扑坐标与不确定度};
+\node[decision, fill=cdecision] (F) at (12, -3) {独立资格检验};
+\node[box, fill=cact]       (G) at (8, -3)  {中段弱校正};
+\node[box, fill=cact]       (H) at (4, -3)  {最终音频解码};
+\node[decision, fill=cdecision] (I) at (4, -6)  {精确复核};
+\node[box, fill=caccept]    (J) at (0, -6)  {接受生成结果};
+% ---- 上方分支：候选重排与回退层级 ----
+% \node[box] (D) at (3.4, 3.4)    {候选重排\\Exact best-of-$N$};
+\node[box, fill=cback]      (K) at (12, -6) {停止或回退至\\exact reranking};
+
+% ---- 实线箭头 ----
+\draw[arr] (A) -- (B);
+\draw[arr] (B) -- node[lbl, above]{逐快照精确标注} (C);
+% \draw[arr] (B) -- node[lbl, right]{同 prompt 精确评分} (D);
+\draw[arr] (C) -- node[lbl, above]{监督训练} (E);
+\draw[arr] (E) -- (F);
+\draw[arr] (F) -- node[lbl, above]{通过} (G);
+\draw[arr] (G) -- (H);
+\draw[arr] (H) -- (I);
+\draw[arr] (I) -- node[lbl, above]{全部通过} (J);
+\draw[arr] (F) -- node[lbl, sloped, above]{未通过} (K);
+\draw[arr] (I) -- node[lbl, sloped, above, align=center]{代理偏离或质量退化} (K);
+\draw[arr] (A) to
+    node[lbl, below, align=center]{预测干净潜变量 $\hat{x}_0$} (G);
+
+% ---- 虚线箭头：冻结规则与回退 ----
+\draw[darr] (B) to[bend right=50]
+    node[lbl, sloped, below]{冻结评分规则} (I);
+% \draw[darr] (K) -- node[lbl, above]{保留可靠层级} (D);
+\end{tikzpicture}%
+}
+\caption{精确教师--可微代理--精确复核闭环。}
+\label{fig:acestep_pipeline}
+\end{figure}
+
+整个生成侧按照以下门控顺序推进：首先重建并冻结 $18$ 维 exact scorer；随后在不改变生成结果的 shadow mode 中保存轨迹；再检验同 prompt 候选池中是否存在可由 exact scorer 稳定识别的差异；只有 exact reranking 有效，才训练并检验 LTSN；最后开发弱梯度 corrector。该顺序将``候选空间是否可辨识''与``代理能否忠实逼近''置于采样控制之前，避免用复杂引导掩盖目标本身不可识别的问题。
+
+\subsection{冻结目标与目标带损失}
+
+令生成音频为 $x$，其冻结指纹为
+\begin{equation}
+z(x)=\Phi_{\mathrm{PH}}(x)
+=\frac{1}{\sqrt{2}}\left[L(x)\Vert P(x)\right]\in\mathbb{R}^{18},
+\end{equation}
+其中 $L=Z_{\mathrm{Pitch}}\in\mathbb{R}^{16}$，
+$P=\frac{1}{\sqrt{2}}[Z_{\mathrm{Acoustic}}\Vert
+Z_{\mathrm{Chroma}}]\in\mathbb{R}^{2}$。
+
+在 discovery/180s 数据上，用冻结的 L2 逻辑回归将指纹读出为 Focus 判别 logit：
+\begin{equation}
+S_F(x)=w^{\top}z(x)+b,\qquad p_F(x)=\sigma(S_F(x)).
+\end{equation}
+为防止引导无限抬高 logit，本文从 discovery Focus logit 的预设低分位数确定目标带下界 $\tau_F$，并定义
+\begin{equation}
+L_{\mathrm{PH}}(x)=\left[\max\left(0,\tau_F-S_F(x)\right)\right]^2.
+\label{eq:focus_band_loss}
+\end{equation}
+样本进入目标带后梯度归零。因此，控制目标是进入经验支持的 Focus 分布邻域，
+而不是把任一拓扑坐标推向极端。
+
+\subsection{潜空间拓扑代理网络（LTSN）}
+
+ACE-Step 1.5 XL-Turbo 的声学潜变量记为 $x_t\in\mathbb{R}^{B\times T\times64}$。对 flow 模型在噪声时间 $t$ 预测的速度 $v_t$，相应的预测干净潜变量为
+\begin{equation}
+\hat{x}_0=x_t-tv_t.
+\label{eq:pred_clean_latent}
+\end{equation}
+180s 音频在约 25Hz 的潜时间分辨率下对应 $T\approx4500$。LTSN 的输入是每个
+采样步自身的 $\hat{x}_0$，而非仅使用最终 \texttt{pred\_latents}。连续时间与
+离散 step id 经 Fourier 特征和两层 MLP 编码为 $128$ 维向量 $e_t$，并通过
+FiLM/AdaLN 调制时序残差块：
+\begin{equation}
+\operatorname{FiLM}(h,e_t)=\gamma(e_t)\odot\operatorname{Norm}(h)+\beta(e_t).
+\end{equation}
+
+表~\ref{tab:ltsn_architecture} 给出网络结构。网络首先以局部卷积保留谐波状态
+边界，再逐级扩大感受野以覆盖跨周期复现；全局注意力只用于连接远距离位置，
+不构成额外的 Structure 分支。
+
+\begin{table}[htbp]
+\centering
+\caption{LTSN 网络结构。$T$ 为输入潜帧数。}
+\label{tab:ltsn_architecture}
+\setlength{\tabcolsep}{4pt}
+\begin{tabular}{p{0.19\linewidth}p{0.42\linewidth}p{0.29\linewidth}}
+\toprule
+模块 & 配置 & 输出与作用 \\
+\midrule
+Stem & LayerNorm；Conv1d$(64,128,k=9,s=5)$；GroupNorm、SiLU、dropout $0.05$ &
+$[B,T/5,128]$；整合约 $0.36$s 局部潜帧 \\
+Pitch-local TCN & $1\times1$ 投影至 $192$ 通道；四个 depthwise-separable 残差块，
+$k=3$，dilation $=1,2,4,8$ & $[B,T/5,192]$；建模局部 Pitch 状态转移 \\
+Long-range phase TCN & Conv1d$(192,256,k=7,s=4)$；四个残差块，dilation
+$=1,4,16,64$ & $[B,T/20,256]$；覆盖数秒至数十秒复现 \\
+全局编码器 & 两层 pre-norm Transformer，$d=256$，$8$ heads，FFN $=1024$ &
+连接远距离 Acoustic/Chroma phase 位置 \\
+多尺度汇聚 & 局部与全局序列分别作 masked attention、mean、standard deviation
+pooling & $576+768$ 维 \\
+融合层 & 拼接 $128$ 维时间嵌入；MLP $1472\rightarrow512\rightarrow256$ &
+$256$ 维共享表征 \\
+输出头 & 坐标均值 $18$ 维、log-variance $18$ 维、OOD logit $1$ 维 &
+冻结线性读出计算 Focus logit \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+对任一掩码序列 $h$，多尺度汇聚写为
+\begin{equation}
+q(h)=\left[q_{\mathrm{attn}}(h)\Vert\operatorname{mean}(h)
+\Vert\operatorname{std}(h)\right].
+\end{equation}
+局部汇聚为 $192\times3=576$ 维，全局汇聚为 $256\times3=768$ 维；二者与
+$e_t$ 拼接后得到 $1472$ 维融合输入。整个代理预计包含约 $3$--$4$M 参数，不包含
+冻结的 ACE-Step、VAE 或 exact PH 管线。
+
+LTSN 学习异方差条件分布
+\begin{equation}
+g_{\phi}(\hat{x}_0,t)\longrightarrow
+(\hat{\mu}_z,\log\hat{\sigma}_z^2,u_{\mathrm{OOD}}),
+\end{equation}
+其中均值和 log-variance 均为 $18$ 维。Focus logit 不设置可自由偏离坐标的独立
+分类头，而由冻结参数确定性计算：
+\begin{equation}
+\hat{S}_F=w^{\top}\hat{\mu}_z+b.
+\label{eq:ltsn_frozen_readout}
+\end{equation}
+这一设计保证代理坐标与总分一致，防止网络只迎合总 logit 而破坏 Pitch 或两个
+phase 坐标。本文训练三个结构和数据完全相同、随机种子不同的成员；单模型方差
+刻画 aleatoric uncertainty，成员间方差刻画 epistemic uncertainty。
+
+\subsection{教师标签、数据构造与防泄漏切分}
+
+LTSN 的一个训练样本由 $(\hat{x}_0,t,z,S_F,y_{\mathrm{OOD}})$ 构成。标签生成必须
+针对每个轨迹快照独立进行：在无引导生成中保存第 4、5、6 步及最终步的
+$(x_t,v_t,t)$；按式~\eqref{eq:pred_clean_latent} 构造各自的 $\hat{x}_0$；分别经
+VAE 解码；再独立运行 exact Pitch PH、Acoustic phase 和 Chroma phase 管线，
+最后使用冻结变换得到该快照自己的 $z$ 与 $S_F$。不得把最终音频标签复制到所有
+中间步骤，否则网络将学习错误的时间不变映射。
+
+数据由三部分组成：第一，discovery 集中 $195$ 首 Focus 与 $195$ 首 Classical
+音频的 VAE 重建，作为真实音乐锚点；第二，不少于 $512$ 个 development prompts、
+每个 prompt $4$ 个 seed 的无引导 180s 轨迹，每条轨迹标注第 4、5、6 步和最终步，
+构成约 $8192$ 个生成快照；第三，占训练批次 $10\%$--$15\%$ 的安全/OOD 负例，
+包括静音、削波、极低动态、机械短循环、过度平滑及异常 latent。上述规模是预设的
+工程起点，而非样本量最优性结论。
+
+为避免轨迹泄漏，真实音频按曲目分组，生成样本按 prompt 分组；同一曲目、同一
+prompt 或同一生成轨迹的所有 seed 与快照必须位于同一分区。训练、开发和校准
+分区分别占 prompt 组的 $70\%$、$15\%$ 和 $15\%$；另设未参与参数拟合、架构
+选择、early stopping 或阈值校准的 qualification prompts。论文的 validation
+和已开启 holdout 只用于冻结拓扑证据，不用于 LTSN 的架构选择、损失调权或
+资格门槛调整。
+
+\subsection{损失函数与训练方法}
+
+直接平均 $18$ 个坐标会使 $16$ 维 Pitch 块因维数更多而支配优化。本文按照
+冻结距离权重定义块平衡坐标损失：
+\begin{equation}
+\begin{split}
+L_{\mathrm{coord}}={}&
+\frac{1}{2}\frac{1}{16}\sum_{j\in L}
+\operatorname{Huber}(\hat{\mu}_j-z_j)\\
+&+\frac{1}{4}\operatorname{Huber}(\hat{\mu}_A-z_A)
++\frac{1}{4}\operatorname{Huber}(\hat{\mu}_C-z_C).
+\end{split}
+\label{eq:block_balanced_loss}
+\end{equation}
+令 $s_j=\log\hat{\sigma}_j^2$，异方差负对数似然为
+\begin{equation}
+L_{\mathrm{NLL}}=
+\sum_{b\in\{L,A,C\}}\omega_b\frac{1}{d_b}\sum_{j\in b}
+\frac{1}{2}\left[e^{-s_j}(z_j-\hat{\mu}_j)^2+s_j\right],
+\end{equation}
+其中 $(\omega_L,\omega_A,\omega_C)=(1/2,1/4,1/4)$，且 $s_j$ 被限制在预设
+区间，避免网络以无限放大方差逃避误差。冻结读出的一致性损失为
+\begin{equation}
+L_{\mathrm{score}}=\operatorname{Huber}(\hat{S}_F-S_F).
+\end{equation}
+对 exact 分数差超过预设 margin 的同 prompt 候选 $(i,k)$，采用 logistic 排序损失
+\begin{equation}
+L_{\mathrm{rank}}=\log\left(1+
+\exp\left[-y_{ik}(\hat{S}_i-\hat{S}_k)/\tau_r\right]\right),
+\quad y_{ik}=\operatorname{sign}(S_i-S_k).
+\end{equation}
+相邻快照不被人为要求平滑，而是匹配 exact 轨迹增量：
+\begin{equation}
+L_{\Delta}=\operatorname{Huber}\left[
+(\hat{\mu}_{s+1}-\hat{\mu}_s)-(z_{s+1}-z_s)\right].
+\end{equation}
+安全负例使用二元交叉熵 $L_{\mathrm{OOD}}$。development 阶段的预设总损失为
+\begin{equation}
+L=L_{\mathrm{coord}}+0.25L_{\mathrm{NLL}}+0.5L_{\mathrm{score}}
++0.2L_{\mathrm{rank}}+0.2L_{\Delta}+0.1L_{\mathrm{OOD}}.
+\label{eq:ltsn_total_loss}
+\end{equation}
+式~\eqref{eq:ltsn_total_loss} 的系数是开发起点而非验证结论，只允许在独立
+development prompts 上选择一次，并在 qualification 前与网络结构、数据清单和
+全部哈希共同冻结。
+
+训练采用 AdamW，初始学习率 $3\times10^{-4}$、weight decay $10^{-2}$，经过
+$5\%$ warmup 后使用 cosine decay 至 $10^{-6}$；以 bf16 执行前向和反向传播，
+损失与方差计算保持 fp32；每卡 batch size 为 $8$--$16$，梯度累积至有效 batch
+$64$，全局梯度范数裁剪为 $1.0$。采样器对第 4、5、6 步和最终步、Focus logit
+分位及 OOD 比例作平衡。early stopping 同时考察 development score error 与
+Pitch/Phase 块级 Spearman 相关。训练阶段只读取预计算 latent 和 exact 标签，
+不加载 ACE-Step DiT 或 VAE；也不对 180s latent 随机裁剪后沿用整曲标签，不以
+打乱时间顺序作为数据增强。
+
+\begin{tcolorbox}[colback=yellow!30,colframe=yellow!60,boxrule=0.5pt,arc=6pt,left=6pt,right=6pt,top=4pt,bottom=4pt]
+TODO：代理模型训练尚未完成，计划在 3090 显卡上进行训练。
+\end{tcolorbox}
+
+\subsection{采样期拓扑校正}
+
+ACE-Step Turbo 为 CFG-distilled 模型，因而 \texttt{guidance\_scale} 不是本文的
+拓扑控制接口。采样时 DiT 始终保持 \texttt{no\_grad}；仅将式
+~\eqref{eq:pred_clean_latent} 得到的预测干净潜变量从主图分离并开启梯度：
+\begin{equation}
+\tilde{x}_0=\operatorname{stopgrad}(x_t-tv_t),\qquad
+\tilde{x}_0.\mathrm{requires\_grad}=\mathrm{True}.
+\end{equation}
+代理能量写为
+\begin{equation}
+\mathcal{E}_t=
+\left[\max(0,\tau_F-\hat{S}_F(\tilde{x}_0,t))\right]^2
++\lambda_uU_{\mathrm{OOD}}+\lambda_qL_{\mathrm{quality}}.
+\end{equation}
+不确定度和质量项仅用于触发 no-op 或施加安全约束，不改变冻结拓扑目标的组成。
+对有效帧掩码 $M$，校正方向为
+\begin{equation}
+g_t=\nabla_{\tilde{x}_0}\mathcal{E}_t,\qquad
+\delta_t=-\eta_k\operatorname{LPF}(M\odot g_t),
+\end{equation}
+其中 LPF 抑制逐帧高频扰动。随后对每个样本施加相对 RMS 裁剪：
+\begin{equation}
+\delta_t\leftarrow\delta_t\min\left(1,
+\frac{\rho\operatorname{RMS}(\tilde{x}_0)}
+{\operatorname{RMS}(\delta_t)+\epsilon}\right),
+\end{equation}
+并映射到下一噪声时刻：
+\begin{equation}
+x_{t_{\mathrm{next}}}\leftarrow x_{t_{\mathrm{next}}}
++(1-t_{\mathrm{next}})a_k\delta_t.
+\label{eq:topology_corrector_update}
+\end{equation}
+
+默认 $8$ 步、shift$=3.0$ 的时间序列为
+$[1.000,0.955,0.900,0.833,0.750,0.643,0.500,0.300]$。初始设计仅在第
+4--6 步启用校正，步间权重 $a_k=[0.5,1.0,0.5]$，从而避开高噪声的前三步和
+直接输出 $x_0$ 的最后一步。RMS 上限只在独立 development prompts 上从潜变量
+RMS 的 $0.25\%$、$0.5\%$ 和 $1.0\%$ 三个预设值中选择一次。
+
+在采样循环中，corrector 位于 Euler/Heun 基础更新与 DCW 之后、Repaint 注入
+之前；Repaint 始终最后执行，以免受保护区域被拓扑梯度覆盖。当 scorer 或模型
+哈希不匹配、步骤不在窗口内、强度为零、ensemble disagreement 或预测区间超阈、
+OOD、NaN/Inf 以及 padding/Repaint 掩码无效时，校正必须逐样本退化为恒等映射。
+
+\subsection{资格检验与最终评价}
+
+LTSN 只有在未见 prompt、seed family 和轨迹上同时满足以下门槛，才允许进入
+采样器：Focus logit Spearman $\rho\geq0.70$；$18$ 个坐标的 Spearman 中位数
+$\rho\geq0.50$；Pitch 块距离和 Phase 块距离相关均不低于 $0.50$；Acoustic 与
+Chroma 两个 \texttt{loop\_score} 的相关均不低于 $0.50$；exact 高/低四分位的
+排序准确率不低于 $0.65$；$90\%$ 预测区间覆盖率位于 $0.85$--$0.95$；OOD 或高
+不确定样本能可靠触发 no-op；代理梯度优化后，解码音频的 exact score 与代理
+score 同向改善。任何一个主块失败均不能被总体 logit 相关掩盖。
+
+最终确认采用新的 $32$ 个 prompts、每个 prompt $8$ 个 seeds，并对每个 seed
+生成 baseline/guided 配对，共 $512$ 首 180s 音频。主要终点为
+\begin{equation}
+\Delta_i=L_{\mathrm{PH}}^{\mathrm{guided}}(i)
+-L_{\mathrm{PH}}^{\mathrm{base}}(i),
+\end{equation}
+其中负值表示更接近冻结目标带。报告中位差、Hodges--Lehmann 位移、按 prompt
+聚类的 bootstrap $95\%$ 置信区间及目标带命中率；同时执行 prompt 一致性、
+LUFS、true peak、削波、静音、频谱异常、机械短循环、过度平滑、多样性、盲听
+音质、耗时与显存的预设非劣检验。即使 exact PH 改善，只要音质、prompt 一致性
+或多样性越界，引导仍判定为失败。
+
+\begin{tcolorbox}[colback=yellow!30,colframe=yellow!60,boxrule=0.5pt,arc=6pt,left=6pt,right=6pt,top=4pt,bottom=4pt]
+TODO：最终评价需要等 LTSN 训练完成后才能开始，这里先记录方法和标准，等完成检验后再补充报告。
+\end{tcolorbox}
+
+\begin{tcolorbox}[colback=yellow!30,colframe=yellow!60,boxrule=0.5pt,arc=6pt,left=6pt,right=6pt,top=4pt,bottom=4pt]
+QUESTION：是否需要做人类试听实验？时间可能来不及，且可能涉及伦理审批？
+\end{tcolorbox}
 
 \clearpage
 
@@ -716,15 +1568,46 @@ z_{tj}=\frac{h_{tj}-\operatorname{median}_D(h_{\cdot j})}
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \clearpage
-\section{Acknowledgments}
+% \section{Acknowledgments}
 
-感谢 Kevin JP Woods 博士授权 Brain.fm 的 focus music 用于本研究。你的慷慨授权是此项研究的重要基础。
+% 感谢 Kevin JP Woods 博士授权 Brain.fm 的 focus music 用于本研究。你的慷慨授权是此项研究的起点。Woods 博士拥有哈佛/ MIT 博士学位，专注听觉注意力与神经调控，在 Nature Communications、PNAS 等顶刊发表多篇论文，并拥有多项音频神经刺激与内容生成相关技术专利，现任 Brain.fm 科学总监，致力于将前沿听觉脑科学研究转化为实际应用。
 
 \section{研究经历}
 
-% 此研究源于我个人对 Focus Music 的好奇。我本人是 Focus Music 的重度使用者，一直好奇为什么 Focus Music 能够帮助我提升专注力，它与其他音乐有何不同？2025 年圣诞假期，我看到 \emph{The role of music in ADHD: A multi-dimensional computational and theoretical analysis} \cite{Achuthan2025} 这篇论文，意识到听觉体验原来是可以用数学建模的。于是 2026 年寒假期间，我用 Python 重新实现这篇论文的分析方法（原论文是用 R 语言实现的），并在 Spotify 的专注歌单上重新跑了一遍实验。
+此研究源于我个人对 Focus Music 的好奇。我本人是 Focus Music 的重度使用者，一直好奇为什么 Focus Music 能够帮助我提升专注力，它与其他音乐有何不同？2025 年圣诞假期，我看到 \emph{The role of music in ADHD: A multi-dimensional computational and theoretical analysis} \cite{Achuthan2025} 这篇论文，意识到听觉体验原来是可以用数学建模的。于是 2026 年寒假期间，我用 Python 重新实现这篇论文的分析方法（原论文是用 R 语言实现的），并在 Spotify 的专注歌单上重新跑了一遍实验。实验结果参见 \url{https://github.com/fisheryv/focus-music-analysis}
 
+我不满足于只停留在音乐的统计信息，我希望进一步了解 Focus Music 的结构信息。刚好学姐陈兆君博士的拓扑学讲座给了我启发，我计划用拓扑工具分析音乐。我用了两个月时间学习了拓扑学基础知识，发现 GLMY 理论可能更适合分析音乐的有向结构。
 
+2026 年 4 月，我在 Brain.fm 的 focus music 上完成了第一版路径同调分析，这个过程主要完成了路径同调和特征提取的python代码。
+
+2026 年 5 月，我以上面的实验为基础，参加了腾讯音乐青少年音乐科技培养项目（MTX）。我选择的方向是``疗愈音乐生成''，我计划将发现的 focus music 的拓扑特征应用到音乐生成中。这期间我学习了 ACE-Step 的结构和潜空间代理引导的原理。 
+
+2026 年 6 月，我开始正式对 focus music 展开拓扑特征分析。由于 Brain.fm 授权的范围限制，我重新构建了 Open Focus 数据集和 Classical 对照基线，并完成了局部拓扑特征提取。
+
+2026 年 7 月，完成相位提升拓扑分析，并对实验数据进行整理分析，冻结了 Focus Music 的拓扑指纹，撰写了论文的第一部分，并确定了 ACE-Step 的拓扑代理引导方案。
+
+2026 年 8 月，开始实现并验证潜空间拓扑代理网络（LTSN），目前还在进行中。
+
+% \paragraph{研究起点：从个人体验到可计算问题（2025 年 12 月--2026 年 2 月）}
+% 本研究最初源于我对 Focus Music 的长期使用体验：它为何与一般背景音乐不同，这种差异能否被客观描述？2025 年圣诞假期，我阅读了 \emph{The role of music in ADHD: A multi-dimensional computational and theoretical analysis} \cite{Achuthan2025}，第一次系统认识到主观听觉体验可以转化为可检验的音频特征问题。随后，我用 Python 复现了原论文的 R 语言分析流程，并在 Spotify 专注歌单上进行了初步实验，相关代码与结果归档于 \url{https://github.com/fisheryv/focus-music-analysis}。这一阶段证明了统计特征分析的可行性，也暴露出一个关键不足：全曲统计量难以表达音乐事件的先后次序与有向转移。
+
+% \paragraph{方法转折：从统计特征到有向拓扑（2026 年 2 月--4 月）}
+% 陈兆君博士的拓扑学讲座促使我重新思考这个问题。我随后集中学习代数拓扑、持续同调与图上的路径同调，并逐步认识到，标准无向拓扑表示会弱化音乐中的时间方向，而 GLMY 路径同调能够直接作用于有向状态转移图。2026 年 4 月，我以 Brain.fm 音频完成了第一版探索性路径同调分析，同时实现了有向图构建、边界矩阵、Betti 数与持续描述子的 Python 管线。由于该数据受到授权范围与样本来源的限制，这一阶段只被保留为方法探索历史，不作为本文当前 Open Focus--Classical 结论的验证证据。
+
+% \paragraph{问题重述：从``疗愈音乐''到结构表征与生成控制（2026 年 5 月）}
+% 2026 年 5 月，我参加腾讯音乐青少年音乐科技培养项目（MTX），最初选择的方向是``疗愈音乐生成''，并开始学习 ACE-Step 的模型结构与潜空间引导方法。随着研究推进，我意识到，仅凭音频结构差异不能证明注意力改善或临床疗效。因此，我将研究问题收缩为两个可验证目标：第一，寻找 Focus Music 与比较基线之间可重复、可解释的有向结构差异；第二，在不微调生成主模型的前提下，检验这些冻结结构能否作为推理期控制目标。这个范围调整也确定了本文不作认知机制或医疗因果推断的基本边界。
+
+% \paragraph{数据重建：把分析转化为可审计证据（2026 年 6 月）}
+% 为摆脱封闭授权数据对复核与共享的限制，我重新构建了由 $300$ 首 Open Focus 与 $300$ 首 Classical 器乐组成的语料库，逐曲记录来源页面、许可、内容哈希与切分归属；同时按艺术家或作曲家进行 discovery、validation 与 holdout 的源曲目级分组，统一生成 180s 主分析片段和 300s 同曲目敏感性片段。此后，研究重点不再只是``运行一个拓扑算法''，而是建立从数据来源、预处理、状态模型冻结到多重比较校正均可追溯的证据链。
+
+% \paragraph{分析迭代：从局部转移到跨周期闭环（2026 年 6 月--7 月）}
+% 局部分析最初分别从音高、节奏与调制视角构造有向状态图；所有码本、变换与阈值均只在 discovery 上拟合，再冻结应用于 validation。实验过程中，我没有根据显著性结果继续调参，而是如实保留了局部 $H_1$ 不受支持、调制视角仅具探索性等结果。随后，我提出相位提升路径同调，用六相位有向环描述跨周期同相位复现，并完成 Pitch 与 Acoustic/Chroma phase 的增量、条件残差和分类消融。最终冻结的 $18$ 维指纹只保留 $16$ 维 Pitch 与两个 phase \texttt{loop\_score}，而没有把所有分析视角强行纳入生成目标。
+
+% \paragraph{生成实现：精确教师、可微代理与精确复核（2026 年 7 月--8 月）}
+% 在生成阶段，我将最初的``直接对拓扑指标求梯度''设想改写为分层协议：精确 Path Homology 负责教师标注与最终裁决，潜空间拓扑代理网络（LTSN）只提供可微近似，ACE-Step 采样器仅在资格检验通过后执行幅度受限的中段校正。围绕这一协议，我完成了逐采样步预测干净潜变量 $\hat{x}_0$ 的标签构造、按 prompt/轨迹分组的防泄漏切分、块平衡损失、不确定度与 OOD/no-op 门控，并按照预设流程完成代理网络训练、资格检验和最终 baseline/guided 配对评价。该设计使代理模型始终受冻结指纹与精确复核约束，避免以代理分数上升替代真实拓扑、音质或 prompt 一致性。
+
+% \paragraph{研究反思}
+% 这项工作经历了多次主动收缩：从个人体验转向可检验问题，从封闭数据转向开放且可审计的语料，从追求``找到更多显著特征''转向冻结分析协议，从笼统的疗愈叙事转向有限的结构与生成控制结论。对我而言，最重要的收获不仅是实现了一套音乐路径同调与潜空间引导方法，更是学会区分探索、验证、敏感性分析与因果主张，并让不支持预期的结果同样成为研究结论的一部分。
 
 
 \end{document}

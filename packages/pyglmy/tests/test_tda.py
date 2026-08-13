@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from pathhom_tda import (
+from pyglmy import (
     delay_embedding,
     normalize_distance_scale,
     persistence_descriptors,

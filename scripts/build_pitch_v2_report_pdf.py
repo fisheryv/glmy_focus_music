@@ -463,7 +463,7 @@ def build_pdf() -> Path:
     story.extend(
         [
             _p("11. 复现与产物", h1),
-            _p("PYTHONPATH=src;packages/pathhom_tda/src  python scripts/run_pitch_v2_analysis.py", formula),
+            _p("PYTHONPATH=src;packages/pyglmy/src  python scripts/run_pitch_v2_analysis.py", formula),
             _p("python scripts/render_pitch_v2_report.py", formula),
             _p(
                 "主要产物：features/models/pitch_v2_codebook.*、features/pitch_v2/、metadata/pitch_v2_topology_*.csv、pitch_v2_statistical_tests.csv、pitch_v2_pairwise_tests.csv 与 pitch_v2_summary.json。",

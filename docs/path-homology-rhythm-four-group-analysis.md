@@ -157,7 +157,7 @@ Focus–Focus Open 与 Focus Open–Pop 的关键两两比较（前 16 项；正
 ## 6. 复现与产物
 
 ```powershell
-$env:PYTHONPATH = "packages/pathhom_tda/src;src"
+$env:PYTHONPATH = "packages/pyglmy/src;src"
 python scripts/run_four_group_path_homology.py --workers 6
 python scripts/render_four_group_path_reports.py
 ```

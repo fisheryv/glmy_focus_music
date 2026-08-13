@@ -11,6 +11,8 @@ htmlcov/
 venv/
 build/
 dist/
+.cache/
+.mplconfig/
 
 # IDE / OS
 .idea/
@@ -78,6 +80,9 @@ ACE-Step-1.5/
 # Temporary render and cache files
 tmp/
 papers/tmp/
+
+# Generated Hugging Face release staging (includes hard-linked source audio)
+hf_release/
 
 # Office lock files
 **/~$*

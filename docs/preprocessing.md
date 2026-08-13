@@ -80,7 +80,7 @@ python -m data.preprocess --root . --workers 6
 `metadata/focus_open_duration_corrections.csv`，并在导出预处理索引时显式应用。
 
 ```powershell
-$env:PYTHONPATH = "packages/pathhom_tda/src;src"
+$env:PYTHONPATH = "packages/pyglmy/src;src"
 
 python -m data.focus_open prepare-preprocess metadata/focus_open_candidates.csv `
   --output-dir metadata/focus_open_preprocess `

@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from pathhom_tda.cli import main
+from pyglmy.cli import main
 
 
 def test_path_cli_writes_json(tmp_path: Path) -> None:

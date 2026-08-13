@@ -15,7 +15,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from pathhom_tda import vietoris_rips
+from pyglmy import vietoris_rips
 from scipy.stats import mannwhitneyu, spearmanr, wilcoxon
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression

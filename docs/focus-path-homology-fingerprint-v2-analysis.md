@@ -1,147 +1,101 @@
-# Focus Music 纯 Path Homology 拓扑指纹 v2
+# Focus Music 纯 Path Homology 拓扑指纹 v2：Pitch + 双相位更新
 
-生成日期：2026-08-03  
-指纹 ID：`focus_path_homology_fingerprint_v2`  
-冻结 JSON SHA-256：`9bf64f3c1d79c12ec428f1d9f552827d07e9f5c445d9236e7ab676699a62ef1f`  
-数据切分：每组 195 discovery / 60 validation / 45 holdout  
-主尺度：180 s
+更新日期：2026-08-07
+
+逻辑指纹 ID：`focus_path_homology_fingerprint_v2`
+
+数据切分：每组 195 discovery / 60 validation / 45 holdout
+
+主要尺度：180 s
+
+当前状态：分析规格已更新；旧 51 维冻结评分器尚未迁移
 
 ## 摘要
 
-本报告根据 2026-08-02 完成的最新 Path Homology 单视角、对称 holdout 与
-`L → L+P → L+P+S` 多尺度融合结果，重新提取 Focus Music 的拓扑指纹。新版指纹
-完全由 Path Homology 产生，不再使用历史方案中的两个 Vietoris–Rips TDA 端点。
+当前主指纹只使用三个输入：
 
-新版主指纹为 `L+P`：
+1. Pitch 局部状态转移 Path Homology 描述子；
+2. Acoustic phase 的六节点相位环 `loop_score`；
+3. Chroma phase 的六节点相位环 `loop_score`。
 
-- `L`：音高、节奏、调制三个局部状态转移 Path Homology 块等权融合；
-- `P`：Acoustic phase 与 Chroma phase 两个相位提升 Path Homology
-  `loop_score` 等权融合；
-- `S`：宏观结构 Path Homology 保留为独立辅助层，不进入主指纹。
+其中，Pitch 构成局部块 $L$，Acoustic/Chroma 两个相位分数先等权组成宏观
+长程周期块 $P$，再将 $L$ 与 $P$ 等块融合为 $L+P$。这不是三个原始输入
+直接各占三分之一：在联合平方距离中，Pitch 占 $1/2$，Acoustic phase 与
+Chroma phase 各占 $1/4$。
 
-每个局部视角使用预设的 20 个图与 Path Homology 描述子，经过仅用
-discovery/180 s 拟合的中位数填补、协方差白化和有效秩归一化。`L` 为 49 维，
-`P` 为 2 维，最终 `L+P` 为 51 维。随后仅在 discovery 上拟合 L2 正则的
-Focus-vs-Classical 逻辑判别器。
+当前方案不再把 Rhythm、Modulation 或 Structure 纳入主指纹。Rhythm 与
+Modulation 仍可作为独立解释通道；Structure 已从当前主方案删除。180 s 下，
+Pitch 删除 discovery 常量列后为 16 维，两个相位输入各为 1 维，因此当前
+$L+P$ 表示为 18 维，而不是旧报告中的 51 维。
 
-validation/180 s 上，新指纹 balanced accuracy 为 0.933，ROC-AUC 为 0.982。
-已开启 holdout 的描述性结果为 0.911 与 0.982。相位加入局部块后带来正的距离
-几何增量：Δpseudo-F=+6.910，单侧 p=0.001，FDR=0.002；结构加入 `L+P` 后
-Δpseudo-F=-4.477，p=1.000。因此结构不能并入主指纹。
+validation/180 s 中，Pitch、Phase 与 Pitch+Phase 的 PERMANOVA pseudo-$F$
+分别为 7.588、20.580 与 13.486，三者 BH-FDR $q=0.001$。在 Pitch 上加入
+Phase 的配对增量为 $+5.898$、$q=0.002$；反向在 Phase 上加入 Pitch 的
+增量为 $-7.094$、$q=1$。因此可以说 Phase 改善了 Pitch 基线的距离几何，
+但不能说融合优于最强单块 Phase。
 
-本方案仍属于探索性验证指纹：主相位块的 Acoustic/Chroma 选择参考过既有
-validation 结果，holdout 也不是 pristine 外部样本。它可以用于 exact scoring、
-shadow mode 和实验性 reranking；在没有生成实验和代理模型资格检验前，不能声称
-采样内引导有效。
+辅助分类给出不同排序：Pitch、Phase 与 Pitch+Phase 的 balanced accuracy
+分别为 0.933、0.683 与 0.925，AUROC 分别为 0.988、0.733 与 0.982。融合没有
+提高 Pitch 的逐曲预测性能。因此，$L+P$ 应被定义为联合拓扑描述空间，而不是
+“在所有指标上最优”的模型。
 
-![指纹组成](../runs/focus_path_homology_fingerprint_v2/figures/fingerprint_composition.png)
+本次局部块与相位组成是在查看既有 validation 结果后重新确定的，属于结果知情
+后的重新冻结与探索性重跑。300 s 仅是同曲目时长敏感性，已开启 holdout 仅作
+描述性审计，二者都不是新的独立确认。
 
-[指纹组成 SVG](../runs/focus_path_homology_fingerprint_v2/figures/fingerprint_composition.svg)
+## 1. 本次更新替换了什么
 
-## 1. 为什么必须替换历史指纹
+旧版 v2 报告把 Pitch、Rhythm 与 Modulation 等权融合成 49 维局部块，再加入
+两个相位分数得到 51 维指纹；同时把 Structure 作为辅助宏观层。当前分析已明确：
 
-历史 `focus_topology_fingerprint_open_v1` 的核心为：
+- 局部多视角融合没有稳定优于 Pitch，因此 $L$ 只保留 Pitch；
+- 180 s 主要相位分析支持 Acoustic phase 与 Chroma phase，不支持 Rhythm phase；
+- Structure 不再属于当前多尺度方案；
+- 主指纹由 51 维缩减为 18 维。
 
-1. Acoustic novelty delay 的 Vietoris–Rips H0；
-2. Rhythm trajectory 的 Vietoris–Rips H0；
-3. Acoustic phase Path Homology；
-4. Rhythm phase Path Homology。
-
-该版本来自项目早期 TDA 研究，并且其单类 Mahalanobis 中心距离没有通过
-Open Focus/Classical 资格检验。最新实验重新完成了音高、节奏、调制、结构和相位
-提升的 Path Homology 验证，不再需要用 TDA 端点填补局部尺度。因此旧指纹只应保留
-为历史审计产物，不能继续代表当前研究结论。
-
-新版与旧版的关系是：
-
-| 项目 | 历史 open_v1 | 新版 Path Homology v2 |
+| 项目 | 旧 v2 报告 | 当前 v2 分析规格 |
 |---|---|---|
-| 局部核心 | 2 个 TDA H0 | Pitch/Rhythm/Modulation PH 全块 |
-| 中尺度 | Acoustic/Rhythm phase | Acoustic/Chroma phase PH |
-| 宏观结构 | 未进入 | 独立辅助层 S |
-| 主评分 | Focus 单类中心距离 | discovery 训练的对比判别分数 |
-| validation | 核心距离资格失败 | BA 0.933，AUC 0.982 |
-| 用途 | 历史审计 | 当前 exact scoring 候选 |
+| 局部块 $L$ | Pitch+Rhythm+Modulation | Pitch only |
+| 相位块 $P$ | Acoustic+Chroma phase | Acoustic+Chroma phase |
+| Structure | 独立辅助层 | 从当前方案删除 |
+| 主表示维数 | 51 | 18 |
+| validation/180 s BA | 0.933 | 0.925 |
+| validation/180 s AUROC | 0.982 | 0.982 |
+| 主要几何增量 | $L+P-L=+6.910$ | $L+P-L=+5.898$ |
 
-## 2. 最新证据层级
+历史 `focus_topology_fingerprint_open_v1` 中的 Vietoris--Rips H0 端点仍只作为
+历史审计，不回到当前纯 Path Homology 指纹。
 
-### 2.1 数据
+## 2. 当前指纹组成
 
-| split | 每组数量 | 角色 |
-|---|---:|---|
-| discovery | 195 | 拟合状态模型、块变换和判别器 |
-| validation | 60 | 180 s 主检验；300 s 时长敏感性 |
-| holdout | 45 | 哈希门控后的单次操作性确认 |
+```mermaid
+flowchart LR
+    A["Pitch Path Homology\n16 coordinates"] --> L["Local block L"]
+    B["Acoustic phase\nloop_score"] --> P["Phase block P"]
+    C["Chroma phase\nloop_score"] --> P
+    L --> LP["L + P\n18 coordinates"]
+    P --> LP
+```
 
-状态模型只用 discovery/180 s 拟合。validation 与 holdout 不参与码本、三分位、
-白化矩阵或分类器拟合。
+### 2.1 Pitch 局部块
 
-Classical holdout 在旧切分中曾属于 discovery，因此不是 pristine 外部确认集。
-多尺度 `L+P` 方案也在查看既往单视角 validation 后形成，所以本指纹不能被包装成
-全新的确认性发现。
-
-### 2.2 单视角结果
-
-validation/180 s 的预设 20 指标中：
-
-| 视角 | FDR 发现 | 跨 180/300 s 稳定 | holdout 冻结方向复现 |
-|---|---:|---:|---:|
-| Pitch | 14 | 13 | 14/14 |
-| Rhythm | 14 | 14 | 14/14 |
-| Modulation | 12 | 10 个非零中位方向 | 10/10 |
-| Structure | 6 | 5 | 4/6 联合 FDR，5/6 同方向 |
-
-最新结论不支持稳定、普遍或 Focus 特异的普通状态图 H1/H2。调制 H1 恒为零，
-音高与节奏 H1 高度零膨胀；因此新版不把 H1/H2 指标单独设为“越高越好”的控制
-目标。
-
-## 3. Path Homology 原理
-
-### 3.1 有向状态图
-
-对状态序列 \(s_1,\ldots,s_T\)，构造条件转移权重图
-\(G=(V,E,w)\)。主过滤保留权重不小于阈值 \(\tau\) 的有向边：
-
-\[
-G_\tau=(V,\{(i,j):w_{ij}\ge\tau\}).
-\]
-
-允许的 \(p\)-路径必须沿有向边前进，其边界为
-
-\[
-\partial e_{i_0\ldots i_p}
-=\sum_{q=0}^{p}(-1)^q
-e_{i_0\ldots\widehat{i_q}\ldots i_p}.
-\]
-
-只保留边界仍由允许路径组成的链空间：
-
-\[
-\Omega_p=\{v\in A_p:\partial v\in A_{p-1}\},
-\qquad
-H_p=\ker\partial_p/\operatorname{im}\partial_{p+1}.
-\]
-
-各局部块在固定阈值 0.50–0.95 上汇总 20 个描述子：状态与边数量、密度、互惠、
+Pitch 使用冻结的 Pitch-v2 状态表示：beat-synchronous Chroma 映射到 Tonnetz，
+再由 discovery 拟合的 16 状态码本产生有向状态序列。对固定过滤阈值上的状态图
+计算 20 个预设图与 Path Homology 描述子，包括状态/边数量、密度、互惠、
 自转移、转移/路径熵、定向复现，以及 H0/H1 Betti 与 persistence 汇总。
 
-### 3.2 三个局部视角
+融合变换删除 discovery 内常量列后保留 16 个坐标，有效秩为 13。Pitch 是当前
+指纹中唯一的局部块；Rhythm 与 Modulation 的单视角结论不再进入主评分坐标。
 
-- Pitch：beat-synchronous chroma → Tonnetz → discovery 拟合的 16 状态码本；
-- Rhythm：8 维节奏窗口 → discovery 标准化与 10 状态聚类；
-- Modulation：谱调制能量 → discovery 平衡三分位 Low/Medium/High。
+### 2.2 Acoustic/Chroma 相位块
 
-三者共享同一 Path Homology 数学框架，但状态语义不同。
-
-### 3.3 相位提升 Path Homology
-
-相位块先从块级距离矩阵选择主周期：
+相位提升先从块级距离矩阵寻找主导周期：
 
 \[
 P^*=\arg\min_{P\in\mathcal P}\operatorname{median}_iD_{i,i+P}.
 \]
 
-周期位置映射到 6 个相位节点，并计算相邻相位边：
+周期位置映射到六个有序相位节点，并计算跨周期复现强度与相邻相位边权：
 
 \[
 q_i=\left\lfloor\frac{(i\bmod P^*)6}{P^*}\right\rfloor,
@@ -155,270 +109,215 @@ c_k=\operatorname{mean}\{r_i:q_i=k\},
 w_k=\min(c_k,c_{k+1}).
 \]
 
-预定义六相位有向环完整出现的临界值为
+六节点有向环在超水平过滤中完整保留的临界值为
 
 \[
-\lambda=\min_kw_k,
+\texttt{loop\_score}=\min_k w_k.
 \]
 
-即 `loop_score`。它属于相位提升 Path Homology，不是 Vietoris–Rips TDA；也不能
-被解释为普通状态图自然发现了普遍 H1。
+当前 $P$ 只含 Acoustic phase 与 Chroma phase。Rhythm phase 在 180 s 的
+BH-FDR $q=0.099$，未进入主要相位块。六节点环是预定义相位提升构造诱导的
+Path $H_1$，不能解释为普通状态图中自然发现的普遍环结构。
 
-## 4. 指纹构造
+## 3. 块变换与融合权重
 
-### 4.1 discovery 拟合的块坐标
-
-对原始块 \(X_b\)，仅用 discovery/180 s 拟合中位数填补、均值与协方差。删除
-常数列后，以协方差伪逆的特征分解构造白化矩阵 \(W_b\)：
-
-\[
-Z_b=\frac{(X_b-\mu_b)W_b}{\sqrt{r_b}},
-\qquad W_b^\top\Sigma_bW_b\approx I.
-\]
-
-\(r_b\) 是有效秩。主尺度有效秩为：
-
-| 块 | 有效秩 |
-|---|---:|
-| Pitch | 13 |
-| Rhythm | 13 |
-| Modulation | 14 |
-| Acoustic phase | 1 |
-| Chroma phase | 1 |
-| Structure | 13 |
-
-除以 \(\sqrt{r_b}\) 后，各块的期望平方距离不会仅因维数更高而变大。
-
-### 4.2 固定等权融合
-
-定义
+沿用局部融合的 discovery 拟合流程：对每个输入块执行中位数填补、常量列删除、
+伪逆白化及有效秩归一化。当前方案不同之处只在于块的组成：
 
 \[
-\operatorname{Eq}(B_1,\ldots,B_k)
-=\frac{1}{\sqrt{k}}[B_1|\cdots|B_k].
-\]
-
-则
-
-\[
-L=\operatorname{Eq}(Z_{pitch},Z_{rhythm},Z_{modulation}),
-\]
-
-\[
-P=\operatorname{Eq}(Z_{acoustic\ phase},Z_{chroma\ phase}),
-\]
-
-\[
-LP=\operatorname{Eq}(L,P).
-\]
-
-因此局部三块各占 `L` 距离贡献的 1/3，`L` 与 `P` 各占主指纹距离贡献的 1/2。
-所有权重固定，不使用 validation 或 holdout 调权。
-
-### 4.3 对比判别分数
-
-在 390 首 discovery/180 s 上拟合 L2 逻辑回归：
-
-\[
-S_F(x)=w^\top LP(x)+b,
+L=Z_{\mathrm{Pitch}},
 \qquad
-p_F(x)=\sigma(S_F(x)).
+P=\frac{1}{\sqrt 2}
+[Z_{\mathrm{Acoustic}}\mid Z_{\mathrm{Chroma}}],
 \]
-
-正类为 Open Focus，负类为 Classical，`C=10` 来自 discovery 内五折 CV 的固定
-网格。分类阈值为 \(p_F=0.5\)。完整的 51 维系数、截距、各块中位数、保留列、
-白化矩阵和有效秩已写入 JSON。
-
-为了未来生成控制不把分数无限推高，定义 discovery Focus logit 的第 10 百分位
-\(\tau_F\)，并使用分布带损失：
 
 \[
-L_{focus}(x)=\left[\max(0,\tau_F-S_F(x))\right]^2.
+LP=\frac{1}{\sqrt 2}[L\mid P].
 \]
 
-进入典型 Focus 判别带后损失归零，避免继续强化单个图指标。
+主尺度的坐标与距离权重为：
 
-## 5. 指纹组成的实证选择
-
-### 5.1 为什么选择 L+P
-
-validation/180 s：
-
-| 表示 | pseudo-F | p | Balanced accuracy | AUROC |
-|---|---:|---:|---:|---:|
-| L | 6.696 | 0.001 | 0.933 | 0.989 |
-| P | 20.580 | 0.001 | 0.683 | 0.733 |
-| L+P | 13.606 | 0.001 | 0.933 | 0.982 |
-| S | 2.503 | 0.008 | 0.633 | 0.656 |
-| L+P+S | 9.129 | 0.001 | 0.908 | 0.972 |
-
-相位加入局部块后的配对增量为：
-
-\[
-\Delta_P=F_{L+P}-F_L=+6.910,
-\quad p=0.001,
-\quad q=0.002.
-\]
-
-而相位在回归掉 `L` 后仍有残差分离：pseudo-F=4.712，p=0.020，FDR=0.040。
-这支持 `P` 提供非冗余中尺度几何信息。
-
-相位没有提高 balanced accuracy，且 AUROC 比 `L` 低 0.007。因此 `L+P` 的选择
-基于“多尺度拓扑指纹”的解释目标，不应写成预测性能优于 `L`。
-
-### 5.2 为什么结构只作辅助层
-
-\[
-\Delta_S=F_{L+P+S}-F_{L+P}=-4.477,
-\quad p=1.000.
-\]
-
-主要 180 s 条件残差 `S | L+P` 也不显著（p=0.107）。结构单块虽然可分，但加入
-主空间增加了更多组内方差，降低 pseudo-F 和分类表现。因此：
-
-- `S` 不替换 `P`；
-- `S` 不进入主判别分数；
-- `S` 可以独立报告、监测宏观退化，并作为未来新数据验证对象。
-
-![验证表现](../runs/focus_path_homology_fingerprint_v2/figures/fingerprint_validation.png)
-
-[验证表现 SVG](../runs/focus_path_homology_fingerprint_v2/figures/fingerprint_validation.svg)
-
-## 6. validation 与 holdout 表现
-
-### 6.1 当前主指纹
-
-重新使用冻结的 discovery 拟合步骤计算得到：
-
-| 数据层 | n | Balanced accuracy | ROC-AUC |
+| 输入 | 输出维数 | 有效秩 | 在 $LP$ 平方距离中的权重 |
 |---|---:|---:|---:|
-| validation/180 s | 120 | 0.933 | 0.982 |
-| opened holdout/180 s | 90 | 0.911 | 0.982 |
+| Pitch | 16 | 13 | 1/2 |
+| Acoustic phase | 1 | 1 | 1/4 |
+| Chroma phase | 1 | 1 | 1/4 |
+| 合计 | 18 | -- | 1 |
 
-这些数值与多尺度融合报告一致。holdout 只作描述性兼容核对，不能用来重新选择
-相位视角、C、阈值或权重。
+权重固定，不使用 validation 或 holdout 搜索。Pitch 输入完整；discovery 中一首
+Classical 曲目的 Acoustic/Chroma 相位值缺失，仅使用对应 discovery 中位数填补。
 
-![分数分布](../runs/focus_path_homology_fingerprint_v2/figures/focus_score_distribution.png)
+## 4. validation/180 s 证据
 
-[分数分布 SVG](../runs/focus_path_homology_fingerprint_v2/figures/focus_score_distribution.svg)
+### 4.1 单块与联合距离几何
 
-分数分布说明 `L+P` 的对比边界比旧单类中心距离更符合当前 Focus/Classical
-验证结果，但仍有少数重叠样本。它描述数据集中的拓扑差异，不是“专注效果”的
-概率。
+| 表示 | 维数 | pseudo-$F$ | 置换 $p$ | BH-FDR $q$ |
+|---|---:|---:|---:|---:|
+| $L$：Pitch | 16 | 7.588 | 0.001 | 0.001 |
+| $P$：Acoustic+Chroma phase | 2 | 20.580 | 0.001 | 0.001 |
+| $L+P$ | 18 | 13.486 | 0.001 | 0.001 |
 
-## 7. 可解释的方向性签名
+![Pitch、Phase 与联合表示的 PERMANOVA](../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_permanova_ablation.png)
 
-主指纹的 51 维判别器使用完整预设块；为了让其具有可审计解释，另冻结一组方向
-签名：Pitch 14 项、Rhythm 14 项、Modulation 10 项，加上两个 phase
-`loop_score`，共 40 项。
+[PERMANOVA SVG](../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_permanova_ablation.svg)
 
-总体方向是：
+三种表示均有组间距离差异，但 Phase 单块 pseudo-$F$ 最高，联合表示居中。
+联合空间显著只表示它保留组间结构，不表示它优于两个单块。
 
-- Focus 使用更少的局部状态与边；
-- Focus 的路径熵、转移熵及多项 H0 汇总量更低；
-- Focus 的自转移率与 directed recurrence 更高；
-- Pitch reciprocity 更高，但 Rhythm reciprocity 更低；
-- Pitch edge density 更高，但 Rhythm edge density 更低；
-- Acoustic/Chroma phase `loop_score` 更高。
+### 4.2 双向增量消融
 
-因此不能把“密度越高”“互惠越高”写成跨视角通用原则。状态表示不同，同名图指标
-可能有不同方向。实际评分必须使用冻结视角前缀和完整系数。
+| 比较 | \(\Delta F\) | 单侧 \(p\) | BH-FDR \(q\) | 零分布 95% 区间 |
+|---|---:|---:|---:|---:|
+| 在 Pitch 上加入 Phase | +5.898 | 0.001 | 0.002 | [-0.715, 1.920] |
+| 在 Phase 上加入 Pitch | -7.094 | 1.000 | 1.000 | [-1.728, 0.877] |
 
-![方向签名](../runs/focus_path_homology_fingerprint_v2/figures/directional_signature.png)
+![双向配对增量消融](../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_incremental_tests.png)
 
-[方向签名 SVG](../runs/focus_path_homology_fingerprint_v2/figures/directional_signature.svg)
+[增量消融 SVG](../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_incremental_tests.svg)
 
-## 8. 面向 ACE-Step 的正确使用
+当前证据支持“Phase 改善 Pitch 基线”，不支持“融合优于最强单块”。
 
-### 8.1 允许的当前用途
+### 4.3 条件非冗余
 
-- 对生成音频运行 exact Path Homology 并计算 `focus_logit`、`focus_probability`；
-- shadow mode：记录分数，不改变采样；
-- 同一 prompt/seed 候选池的实验性 exact reranking；
-- 作为 LTSN 的教师标签与最终 exact verifier；
-- Structure PH 作为独立宏观质量监测。
+| 条件检验 | discovery \(R^2\) | validation \(R^2\) | 残差 pseudo-\(F\) | \(p\) | \(q\) |
+|---|---:|---:|---:|---:|---:|
+| Phase \(\mid\) Pitch | 0.195 | 0.114 | 1.481 | 0.230 | 0.230 |
+| Pitch \(\mid\) Phase | 0.055 | -0.015 | 5.191 | 0.001 | 0.002 |
 
-### 8.2 尚未被证明的用途
+![Pitch 与 Phase 的条件残差](../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_conditional_residuals.png)
 
-- 不能直接声称该分数提高注意力或功能性；
-- 不能声称 L+P 比 L 有更高分类性能；
-- 不能声称采样期梯度引导已经有效；
-- 不能把 Structure 强行并入主损失；
-- 不能把 H1/H2 单独最大化；
-- 不能根据已开启 holdout 再调 C、权重、相位组成或目标分位数。
+[条件残差 SVG](../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_conditional_residuals.svg)
 
-采样期引导仍需完成：exact reranking 可辨识性、LTSN 未见轨迹资格、配对生成
-实验、音质非劣和 exact 复核。
+Phase \(\mid\) Pitch 未通过主要尺度 FDR，因此不能把正配对增量进一步写成
+“Phase 已含有经条件验证的独立组别信息”。Pitch \(\mid\) Phase 显著，说明
+Pitch 保留了 Phase 不能线性解释的信息；但这些信息加入 Phase 后没有提高整体
+pseudo-$F$。
 
-## 9. 证据地位
+### 4.4 辅助分类
 
-### 支持
+| 表示 | Balanced accuracy | Macro-F1 | AUROC |
+|---|---:|---:|---:|
+| Pitch | 0.933 | 0.933 | 0.988 |
+| Acoustic+Chroma phase | 0.683 | 0.683 | 0.733 |
+| Pitch+Phase | 0.925 | 0.925 | 0.982 |
 
-1. Open Focus 与 Classical 在局部 Pitch/Rhythm/Modulation Path Homology 上存在
-   稳定组间差异。
-2. 相位提升 Path Homology 为 `L` 增加了非冗余的中尺度距离几何。
-3. `L+P` discovery 判别器在 validation/180 s 有较强区分性能。
-4. 结构可独立描述宏观状态转移，但当前没有正融合增量。
+![辅助分类消融](../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_classification_ablation.png)
 
-### 不支持
+[辅助分类 SVG](../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_classification_ablation.svg)
 
-1. TDA H0 继续作为当前拓扑指纹核心。
-2. `L+P` 在分类上优于 `L`。
-3. `L+P+S` 优于 `L+P`。
-4. 稳定或普遍的普通状态图 H1/H2。
-5. 拓扑分数与注意力、疗效、生产率或生成质量之间的因果关系。
+Pitch+Phase 相对 Pitch 的 balanced-accuracy 差为 -0.008，95% CI
+[-0.042, 0.017]；AUROC 差为 -0.006，95% CI [-0.019, 0.003]。分类结果不支持
+融合提高逐曲预测。pseudo-$F$ 与分类性能回答不同问题，不能择优引用其中一项。
 
-## 10. 版本与迁移决定
+### 4.5 两块关系与二维投影
 
-| 版本 | 状态 | 决定 |
-|---|---|---|
-| `focus_topology_fingerprint_open_v1` | 历史、含 TDA、核心资格失败 | 保留审计，不再用于当前方案 |
-| `focus_path_homology_fingerprint_v2` | 当前纯 PH、探索性验证 | 用于 exact scoring/shadow/reranking |
+Pitch 与 Phase 的 validation/180 s 成对距离 Spearman 相关为 0.228，说明二者
+有关但并非同一几何。三联 PCA 分别在对应表示的 discovery/180 s 数据上拟合，
+再投影同一批 validation 样本；三幅图坐标不能直接横向比较。
 
-所有新 ACE-Step 文档和后续 surrogate 数据应记录 v2 JSON 的 SHA-256，不应只写
-“topology fingerprint”而不带版本。
+![L、P 与 L+P 的 PCA 投影](../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_pca_validation_180.png)
 
-## 11. 可复现产物
+[PCA SVG](../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_pca_validation_180.svg)
 
-配置与构建：
+$L$ 的 PC1/PC2 各解释 7.7%，$P$ 分别解释 79.9%/20.1%，$L+P$
+分别解释 40.9%/10.4%。椭圆是投影空间中的组内协方差范围，不是 bootstrap
+置信区间；PCA 只提供低维直觉，不参与 PERMANOVA 或增量检验。
+
+## 5. 时长敏感性与 holdout 边界
+
+300 s 与 180 s 来自同一曲目，仅作时长敏感性。300 s 中三种表示的主要距离
+几何排序与 180 s 一致：Phase 最高，Pitch+Phase 居中；在 Pitch 上加入 Phase
+仍为正增量，反向加入 Pitch 仍无正增量。该结果不是独立复制，也不用于重新选择
+权重或相位组成。
+
+holdout 已在既往研究中开启，不是 pristine 外部确认集。其描述值不用于新的
+显著性检验、超参数选择、相位筛选或权重调整，因此不进入当前主证据链。
+
+## 6. 指纹的解释方式
+
+当前 18 维指纹包含两类功能不同的信息：
+
+- Pitch 描述局部谐波状态的覆盖、转移、复现与连通结构，并提供当前最稳定的
+  逐曲分类；
+- Acoustic/Chroma phase 描述完整片段中的长程周期闭合，提供较强的组间距离
+  几何，但单独分类较弱；
+- $L+P$ 同时保存局部状态组织与宏观长程周期闭合，适合作为联合描述空间。
+
+Pitch 的主要单视角方向是：Open Focus 使用更少的局部状态与边，路径/转移熵及
+多项 H0 汇总量更低，自转移率与 directed recurrence 更高。Acoustic/Chroma
+phase 的 `loop_score` 在 Open Focus 中更高。上述方向用于解释，不应被简化成
+“所有图指标越高越好”；联合判别器中的系数还受白化与坐标相关性影响。
+
+Rhythm 与 Modulation 的独立分析结果仍可在论文中报告，但它们不再是当前主指纹
+坐标，也不能在生成评分时被悄然重新加入。
+
+## 7. 面向 ACE-Step 的使用边界
+
+### 当前允许
+
+- 将 18 维 Pitch+双相位表示作为 exact scoring 的候选规格；
+- shadow mode：只记录分数，不改变采样；
+- 在同一 prompt/seed 候选池中做实验性 exact reranking；
+- 作为未来 LTSN 的教师目标与最终 exact verifier。
+
+### 当前不允许声称
+
+- Pitch+Phase 在分类上优于 Pitch；
+- 联合空间优于 Phase 的距离几何；
+- 拓扑分数提高注意力、生产率、治疗效果或音乐质量；
+- 采样期梯度引导已经有效；
+- Rhythm、Modulation 或 Structure 仍属于当前主损失；
+- 可继续使用当前 validation/holdout 搜索更有利的权重、相位组成或阈值。
+
+采样期控制仍需完成 exact reranking 可辨识性、代理模型未见轨迹资格、配对生成
+实验、音质非劣与 exact 复核。
+
+## 8. 实现迁移状态
+
+当前分析结果由以下入口产生：
+
+- `scripts/run_pitch_phase_hierarchical_fusion_analysis.py`
+- `metadata/pitch_phase_hierarchical_permanova.csv`
+- `metadata/pitch_phase_hierarchical_incremental.csv`
+- `metadata/pitch_phase_hierarchical_residuals.csv`
+- `metadata/pitch_phase_hierarchical_classification.csv`
+- `metadata/pitch_phase_hierarchical_classification_deltas.csv`
+- `metadata/pitch_phase_hierarchical_correlations.csv`
+- `metadata/pitch_phase_hierarchical_summary.json`
+- `runs/pitch_phase_hierarchical_fusion/figures/`
+
+下列既有 v2 产物仍序列化旧 51 维方案，**不匹配本报告的当前 18 维定义**：
 
 - `configs/focus_path_homology_fingerprint_v2.toml`
 - `scripts/build_focus_path_homology_fingerprint.py`
-
-机器可读产物：
-
 - `metadata/focus_path_homology_fingerprint_v2.json`
 - `metadata/focus_path_homology_fingerprint_v2_scores.csv`
 - `metadata/focus_path_homology_fingerprint_v2_directions.csv`
 - `metadata/focus_path_homology_fingerprint_v2_summary.json`
-
-图形：
-
 - `runs/focus_path_homology_fingerprint_v2/figures/`
 
-JSON 冻结了所有块变换、51 维分类器系数与截距、目标 logit 分位数、验证指标、
-输入 SHA-256、排除项和用途边界。分数表覆盖全部 1,200 个片段。
+在重新构建并验证当前 18 维分类器系数、截距、块变换、目标分位数和新 SHA-256
+之前，不应把旧 JSON 用于 exact scoring、shadow mode、reranking 或生成控制。
 
-## 12. 最终结论
-
-根据最新验证，Focus Music 的当前拓扑指纹不再是“2 个 TDA H0 + 相位提升”。
-应更新为：
+## 9. 最终定义
 
 ```text
-局部 Path Homology L
-  = Pitch PH + Rhythm PH + Modulation PH
+局部块 L
+  = Pitch Path Homology（16 维，rank 13）
 
-中尺度相位 Path Homology P
-  = Acoustic phase loop_score + Chroma phase loop_score
+宏观长程周期块 P
+  = Acoustic phase loop_score
+  + Chroma phase loop_score
 
 当前主指纹
-  = L + P
+  = equal-block(L, P)
+  = 18 维 Pitch + 双相位 Path Homology 表示
 
-宏观 Structure PH
-  = 独立辅助层，不进入主分数
+平方距离权重
+  = Pitch 1/2
+  + Acoustic phase 1/4
+  + Chroma phase 1/4
 ```
 
-该 51 维纯 Path Homology 指纹在 validation/180 s 上达到 balanced accuracy
-0.933、ROC-AUC 0.982，并避免了旧单类 TDA 核心距离错误偏好 Classical 的问题。
-但它仍是探索性验证的声学拓扑指纹，而不是注意力因果指标或已经通过生成实验的
-采样控制器。
+当前证据支持把该表示称为同时包含局部状态组织和长程周期闭合的联合拓扑指纹；
+不支持宣称其优于最佳单块、是注意力因果指标，或已通过生成实验成为有效控制器。

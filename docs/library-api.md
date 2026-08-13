@@ -2,7 +2,7 @@
 
 > `focus_topology` 是音乐应用层。需要直接处理任意有向图、Path Complex、
 > Persistent Path Homology 或点云 Vietoris–Rips TDA 时，请使用独立的
-> [`pathhom_tda`](../packages/pathhom_tda/README.md) 底层包。
+> [`pyglmy`](../packages/pyglmy/README.md) 底层包。
 
 ## 1. 输入模型
 
@@ -115,7 +115,7 @@ JSON schema 当前版本为 `1`。顶点和边保留原状态值；无法直接�
 历史兼容入口仍可从 `focus_topology` 使用；新代码建议直接依赖底层包：
 
 ```python
-from pathhom_tda import WeightedDiGraph, path_homology, persistent_path_homology
+from pyglmy import WeightedDiGraph, path_homology, persistent_path_homology
 
 graph = WeightedDiGraph.from_edges(
     [(0, 1, 0.9), (1, 2, 0.9), (2, 0, 0.9)]

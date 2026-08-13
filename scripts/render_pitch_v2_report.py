@@ -737,7 +737,7 @@ Open Focus 与 Classical 在主尺度通过独立两两 FDR 的指标：
 ## 8. 复现入口与产物
 
 ```powershell
-$env:PYTHONPATH = "packages/pathhom_tda/src;src"
+$env:PYTHONPATH = "packages/pyglmy/src;src"
 python scripts/run_pitch_v2_analysis.py
 python scripts/render_pitch_v2_report.py
 ```

@@ -12,13 +12,13 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
-from pathhom_tda import TDAError as CoreTDAError
-from pathhom_tda import delay_embedding as _core_delay_embedding
-from pathhom_tda import finite_rows as _core_finite_rows
-from pathhom_tda import normalize_distance_scale as _core_normalize_distance_scale
-from pathhom_tda import persistence_descriptors as _core_persistence_descriptors
-from pathhom_tda import uniform_sample as _core_uniform_sample
-from pathhom_tda import vietoris_rips
+from pyglmy import TDAError as CoreTDAError
+from pyglmy import delay_embedding as _core_delay_embedding
+from pyglmy import finite_rows as _core_finite_rows
+from pyglmy import normalize_distance_scale as _core_normalize_distance_scale
+from pyglmy import persistence_descriptors as _core_persistence_descriptors
+from pyglmy import uniform_sample as _core_uniform_sample
+from pyglmy import vietoris_rips
 from scipy.stats import mannwhitneyu, spearmanr
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression

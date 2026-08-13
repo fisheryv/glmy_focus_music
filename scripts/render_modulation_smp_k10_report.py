@@ -541,7 +541,7 @@ Open Focus与Classical在主尺度通过独立两两FDR的指标：
 
 PowerShell：
 
-    $env:PYTHONPATH = "packages/pathhom_tda/src;src"
+    $env:PYTHONPATH = "packages/pyglmy/src;src"
     .\.venv\Scripts\python.exe scripts\run_modulation_smp_prototype_analysis.py
     .\.venv\Scripts\python.exe scripts\render_modulation_smp_k10_report.py
 

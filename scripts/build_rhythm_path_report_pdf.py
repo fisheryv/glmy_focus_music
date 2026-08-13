@@ -207,7 +207,7 @@ def build_pdf() -> Path:
         _p("10. 局限性与复现", h1),
         _p("- 八维手工特征不能完整表达拍号、重音层级、切分和复节奏。\n- BPM 和 IOI 依赖事件检测，稀疏音乐可能不稳定。\n- Discovery 训练不是严格等量，需补做 46,670/组重采样。\n- K=10 尚未进行 K=8/12/16 的稳定性复核。\n- 顶点数、H0 与状态覆盖率相关。\n- top-k 和阈值对低发生率 H1 敏感。\n- rhythm-only FDR 不能与四视角联合 FDR 数字直接混用。\n- 来源类别差异不等于功能性或因果效应。", body),
         _p("复现命令", h2),
-        _p("PYTHONPATH=src;packages/pathhom_tda/src python scripts/rerun_rhythm_path_homology.py\npython scripts/analyze_rhythm_results.py\npython scripts/render_rhythm_path_report.py", formula),
+        _p("PYTHONPATH=src;packages/pyglmy/src python scripts/rerun_rhythm_path_homology.py\npython scripts/analyze_rhythm_results.py\npython scripts/render_rhythm_path_report.py", formula),
         _p("参考文献", h1),
         _p("1. Ellis, D. P. W. (2007). Beat tracking by dynamic programming.\n2. Muller, M. (2015). Fundamentals of Music Processing. Springer.\n3. Grigor'yan, A. et al. (2012). Homologies of path complexes and digraphs.\n4. Chowdhury, S. and Memoli, F. (2018). Persistent path homology of directed networks. SODA.", body),
     ])

@@ -1,0 +1,168 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1120" viewBox="0 0 1800 1120">
+  <defs>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto">
+      <path d="M0,0 L11,5.5 L0,11 Z" fill="#344054"/>
+    </marker>
+    <marker id="arrow-purple" markerWidth="11" markerHeight="11" refX="10" refY="5.5" orient="auto">
+      <path d="M0,0 L11,5.5 L0,11 Z" fill="#6F52ED"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="3" stdDeviation="4" flood-color="#344054" flood-opacity="0.11"/>
+    </filter>
+    <style>
+      text { font-family: "Arial", "Helvetica Neue", sans-serif; fill: #172033; }
+      .panel-title { font-size: 38px; font-weight: 700; }
+      .node-title { font-size: 30px; font-weight: 700; }
+      .body { font-size: 26px; font-weight: 400; }
+      .small { font-size: 23px; font-weight: 400; }
+      .status { font-size: 22px; font-weight: 700; }
+      .arrow { fill: none; stroke: #344054; stroke-width: 3.2; marker-end: url(#arrow); }
+      .arrow-purple { fill: none; stroke: #6F52ED; stroke-width: 3.5; marker-end: url(#arrow-purple); }
+      .dash-arrow { fill: none; stroke: #344054; stroke-width: 3.5; marker-end: url(#arrow); stroke-dasharray: 5,3; }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1120" fill="#FFFFFF"/>
+
+  <!-- A. Analysis -->
+  <rect x="25" y="20" width="1750" height="410" rx="24" fill="#F8FAFD" stroke="#CCD7E7" stroke-width="2.5"/>
+  <rect x="25" y="20" width="1750" height="66" rx="24" fill="#EAF1FB"/>
+  <rect x="25" y="62" width="1750" height="24" fill="#EAF1FB"/>
+  <circle cx="560" cy="53" r="22" fill="#2F6FED"/>
+  <text x="560" y="62" text-anchor="middle" font-size="29" font-weight="700" fill="#FFFFFF">A</text>
+  <text x="600" y="66" class="panel-title">Topology Feature Discovery and Freezing</text>
+  <!-- <rect x="1502" y="37" width="235" height="34" rx="17" fill="#DFF4EA" stroke="#73BE9D" stroke-width="1.5"/>
+  <text x="1620" y="61" text-anchor="middle" class="status" fill="#176B4D">Analysis frozen</text> -->
+
+  <!-- A1 Dataset -->
+  <rect x="58" y="118" width="250" height="240" rx="17" fill="#FFFFFF" stroke="#8CAAE3" stroke-width="2.5" filter="url(#shadow)"/>
+  <circle cx="92" cy="151" r="20" fill="#2F6FED"/>
+  <text x="92" y="160" text-anchor="middle" font-size="25" font-weight="700" fill="#FFFFFF">1</text>
+  <text x="124" y="160" class="node-title">Dataset</text>
+  <text x="183" y="213" text-anchor="middle" font-size="34" font-weight="700">600 tracks</text>
+  <text x="183" y="260" text-anchor="middle" class="body">Open Focus 300</text>
+  <text x="183" y="303" text-anchor="middle" class="body">Classical 300</text>
+
+  <!-- A2 Preprocessing -->
+  <rect x="350" y="118" width="250" height="240" rx="17" fill="#FFFFFF" stroke="#8FC8BF" stroke-width="2.5" filter="url(#shadow)"/>
+  <circle cx="384" cy="151" r="20" fill="#36A888"/>
+  <text x="384" y="160" text-anchor="middle" font-size="25" font-weight="700" fill="#FFFFFF">2</text>
+  <text x="416" y="160" class="node-title">Protocol</text>
+  <text x="475" y="218" text-anchor="middle" class="body" font-weight="700">180s primary</text>
+  <text x="475" y="263" text-anchor="middle" class="body">300s sensitivity</text>
+  <text x="475" y="308" text-anchor="middle" class="body">Grouped split</text>
+
+  <!-- A3 Multiscale topology -->
+  <rect x="642" y="108" width="420" height="260" rx="17" fill="#FFFFFF" stroke="#7ABFB3" stroke-width="2.8" filter="url(#shadow)"/>
+  <circle cx="678" cy="143" r="20" fill="#36A888"/>
+  <text x="678" y="152" text-anchor="middle" font-size="25" font-weight="700" fill="#FFFFFF">3</text>
+  <text x="710" y="152" class="node-title">Multiscale Topology</text>
+  <rect x="672" y="183" width="360" height="67" rx="13" fill="#EEF5FF" stroke="#8CAAE3" stroke-width="1.8"/>
+  <text x="692" y="212" class="body" font-weight="700">Local Path Homology</text>
+  <rect x="886" y="218" width="142" height="29" rx="14" fill="#FDE8EB" stroke="#D89BA5"/>
+  <text x="1010" y="239" text-anchor="end" class="small">Pitch core</text>
+  <rect x="672" y="270" width="360" height="67" rx="13" fill="#F3EFFF" stroke="#A995E8" stroke-width="1.8"/>
+  <text x="692" y="299" class="body" font-weight="700">Phase-lifted PH</text>
+  <rect x="748" y="304" width="100" height="29" rx="14" fill="#FDE8EB" stroke="#D89BA5"/>
+  <rect x="860" y="304" width="160" height="29" rx="14" fill="#FDE8EB" stroke="#D89BA5"/>
+  <text x="1010" y="326" text-anchor="end" class="small">Acoustic + Chroma loops</text>
+
+  <!-- A4 Validation -->
+  <rect x="1104" y="118" width="280" height="240" rx="17" fill="#FFFFFF" stroke="#E6B46B" stroke-width="2.5" filter="url(#shadow)"/>
+  <circle cx="1138" cy="151" r="20" fill="#D98B2B"/>
+  <text x="1138" y="160" text-anchor="middle" font-size="25" font-weight="700" fill="#FFFFFF">4</text>
+  <text x="1170" y="160" class="node-title">Validation</text>
+  <text x="1244" y="215" text-anchor="middle" class="body" font-weight="700">Discovery fit → freeze</text>
+  <text x="1244" y="260" text-anchor="middle" class="body">Validation / 180s</text>
+  <text x="1244" y="305" text-anchor="middle" class="small">BH-FDR + PERMANOVA</text>
+
+  <!-- A5 Fingerprint -->
+  <rect x="1426" y="108" width="316" height="260" rx="17" fill="#FFFFFF" stroke="#8F79E8" stroke-width="3" filter="url(#shadow)"/>
+  <circle cx="1462" cy="143" r="20" fill="#6F52ED"/>
+  <text x="1462" y="152" text-anchor="middle" font-size="25" font-weight="700" fill="#FFFFFF">5</text>
+  <text x="1494" y="152" font-size="26" font-weight="700">Fingerprint</text>
+  <text x="1584" y="218" text-anchor="middle" font-size="42" font-weight="700" fill="#5D43C6">Φ<tspan baseline-shift="sub" font-size="25">PH</tspan> ∈ ℝ<tspan baseline-shift="super" font-size="25">18</tspan></text>
+  <text x="1584" y="268" text-anchor="middle" class="body">Pitch 16 + Acoustic 1</text>
+  <text x="1584" y="306" text-anchor="middle" class="body">+ Chroma 1</text>
+  <text x="1584" y="343" text-anchor="middle" class="small">weights 1/2 : 1/4 : 1/4</text>
+
+  <!-- A arrows -->
+  <path d="M308 238 H350" class="arrow"/>
+  <path d="M600 238 H642" class="arrow"/>
+  <path d="M1062 238 H1104" class="arrow"/>
+  <path d="M1384 238 H1426" class="arrow"/>
+
+  <!-- B. Application -->
+  <rect x="25" y="466" width="1750" height="626" rx="24" fill="#FBF9FF" stroke="#D5CDEA" stroke-width="2.5"/>
+  <rect x="25" y="466" width="1750" height="66" rx="24" fill="#F0ECFA"/>
+  <rect x="25" y="508" width="1750" height="24" fill="#F0ECFA"/>
+  <circle cx="560" cy="499" r="22" fill="#6F52ED"/>
+  <text x="560" y="508" text-anchor="middle" font-size="29" font-weight="700" fill="#FFFFFF">B</text>
+  <text x="600" y="512" class="panel-title">ACE-Step Topology-Guided Generation</text>
+  <!-- <rect x="1422" y="483" width="315" height="34" rx="17" fill="#FFF0D9" stroke="#E6B46B" stroke-width="1.5"/>
+  <text x="1580" y="507" text-anchor="middle" class="status" fill="#8A5716">Confirmation pending</text> -->
+
+  <!-- Fingerprint connection -->
+  <path d="M1584 368 V447 H490 V580" class="arrow-purple"/>
+  <text x="1030" y="420" text-anchor="middle" class="small" font-weight="700" fill="#5D43C6">Frozen Φ<tspan baseline-shift="sub" font-size="16">PH</tspan></text>
+
+  <!-- B1 Candidates -->
+  <rect x="58" y="585" width="240" height="180" rx="17" fill="#FFFFFF" stroke="#8CAAE3" stroke-width="2.5" filter="url(#shadow)"/>
+  <circle cx="91" cy="617" r="20" fill="#2F6FED"/>
+  <text x="91" y="626" text-anchor="middle" font-size="25" font-weight="700" fill="#FFFFFF">1</text>
+  <text x="123" y="626" class="node-title">Candidates</text>
+  <text x="178" y="684" text-anchor="middle" class="body" font-weight="700">ACE-Step</text>
+  <text x="178" y="728" text-anchor="middle" class="body">prompts × seeds</text>
+
+  <!-- B2 Exact teacher -->
+  <rect x="350" y="585" width="280" height="180" rx="17" fill="#FFFFFF" stroke="#C17C86" stroke-width="2.5" filter="url(#shadow)"/>
+  <circle cx="384" cy="617" r="20" fill="#B5475A"/>
+  <text x="384" y="626" text-anchor="middle" font-size="25" font-weight="700" fill="#FFFFFF">2</text>
+  <text x="416" y="626" font-size="25" font-weight="700">Exact PH Teacher</text>
+  <text x="490" y="684" text-anchor="middle" class="body">Score candidates</text>
+  <text x="490" y="728" text-anchor="middle" class="body" font-weight="700">Best-of-N rerank</text>
+  <!-- <rect x="399" y="735" width="142" height="29" rx="14" fill="#FDE8EB" stroke="#D89BA5"/>
+  <text x="470" y="757" text-anchor="middle" class="status" fill="#9E3045">Gate 1</text> -->
+
+  <!-- B3 LTSN -->
+  <rect x="692" y="585" width="280" height="180" rx="17" fill="#FFFFFF" stroke="#A995E8" stroke-width="2.5" filter="url(#shadow)"/>
+  <circle cx="726" cy="617" r="20" fill="#6F52ED"/>
+  <text x="726" y="626" text-anchor="middle" font-size="25" font-weight="700" fill="#FFFFFF">3</text>
+  <text x="758" y="626" font-size="25" font-weight="700">LTSN Surrogate</text>
+  <text x="832" y="684" text-anchor="middle" class="body">Differentiable</text>
+  <text x="832" y="726" text-anchor="middle" class="body">topology score</text>
+
+  <!-- B4 Qualification -->
+  <polygon points="842,840 1005,955 842,1070 679,955" fill="#FFF8E9" stroke="#E6B46B" stroke-width="2.8" filter="url(#shadow)"/>
+  <circle cx="842" cy="894" r="20" fill="#D98B2B"/>
+  <text x="842" y="903" text-anchor="middle" font-size="25" font-weight="700" fill="#FFFFFF">4</text>
+  <text x="842" y="962" text-anchor="middle" class="node-title">Qualification</text>
+  <text x="842" y="996" text-anchor="middle" class="body">Pass or not</text>
+
+  <!-- B5 Correction -->
+  <rect x="1100" y="865" width="300" height="180" rx="17" fill="#EAF7F1" stroke="#63B598" stroke-width="2.8" filter="url(#shadow)"/>
+  <circle cx="1134" cy="897" r="20" fill="#2E9D78"/>
+  <text x="1134" y="906" text-anchor="middle" font-size="25" font-weight="700" fill="#FFFFFF">5</text>
+  <text x="1176" y="906" font-size="24" font-weight="700">Latent Correction</text>
+  <text x="1250" y="965" text-anchor="middle" class="body" font-weight="700">Steps 4–6</text>
+  <text x="1250" y="1008" text-anchor="middle" class="body">bounded update</text>
+
+  <!-- B6 Audit -->
+  <rect x="1502" y="850" width="240" height="210" rx="17" fill="#FFFFFF" stroke="#C17C86" stroke-width="2.8" filter="url(#shadow)"/>
+  <circle cx="1536" cy="883" r="20" fill="#B5475A"/>
+  <text x="1536" y="892" text-anchor="middle" font-size="25" font-weight="700" fill="#FFFFFF">6</text>
+  <text x="1568" y="892" font-size="25" font-weight="700">Exact Audit</text>
+  <text x="1622" y="946" text-anchor="middle" class="small">Topology · quality</text>
+  <text x="1622" y="981" text-anchor="middle" class="small">· prompt alignment</text>
+  <text x="1622" y="1027" text-anchor="middle" class="body" font-weight="700">Accept / fallback</text>
+
+  <text x="1030" y="940" text-anchor="middle" class="small" font-weight="700">Pass</text>
+  <text x="650" y="940" text-anchor="middle" class="small" font-weight="700">NO</text>
+  <!-- B arrows -->
+  <path d="M298 675 H350" class="arrow"/>
+  <path d="M630 675 H692" class="arrow"/>
+  <path d="M842 765 V835" class="arrow"/>
+  <path d="M1005 955 H1100" class="arrow"/>
+  <path d="M1400 955 H1502" class="arrow"/>
+  <path d="M679 955 H490 V765" class="dash-arrow"/>
+</svg>

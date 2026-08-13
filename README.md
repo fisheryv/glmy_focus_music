@@ -11,48 +11,48 @@
 
 本仓库现在分为两个层次：
 
-- `packages/pathhom_tda`：领域无关的底层数学库，提供 GLMY Path Homology、Persistent Path Homology 和 Vietoris–Rips TDA；
+- `packages/pyglmy`：领域无关的底层数学库，提供 GLMY Path Homology、Persistent Path Homology 和 Vietoris–Rips TDA；
 - `focus_topology`：面向音乐状态序列和音频文件的应用层，负责构图、特征解释和 JSON 结果。
 
-音乐层现在通过兼容适配器调用 `pathhom_tda`，不再自行维护 Path Homology 或 Ripser 包装算法。
+音乐层现在通过兼容适配器调用 `pyglmy`，不再自行维护 Path Homology 或 Ripser 包装算法。
 
 ## 独立底层库
 
 只安装 Path Homology：
 
 ```powershell
-python -m pip install -e packages/pathhom_tda
+python -m pip install -e packages/pyglmy
 ```
 
 同时安装点云 TDA 后端：
 
 ```powershell
-python -m pip install -e "packages/pathhom_tda[tda]"
+python -m pip install -e "packages/pyglmy[tda]"
 ```
 
 底层库的独立 API、CLI、数学边界和示例见
-[packages/pathhom_tda/README.md](packages/pathhom_tda/README.md)。
+[packages/pyglmy/README.md](packages/pyglmy/README.md)。
 
 ## 安装
 
 从当前仓库以可编辑模式安装核心库：
 
 ```powershell
-python -m pip install -e packages/pathhom_tda
+python -m pip install -e packages/pyglmy
 python -m pip install -e .
 ```
 
 如果需要直接读取 WAV、FLAC 或其他 librosa/soundfile 支持的音频：
 
 ```powershell
-python -m pip install -e "packages/pathhom_tda[tda]"
+python -m pip install -e "packages/pyglmy[tda]"
 python -m pip install -e ".[audio]"
 ```
 
 开发和测试环境：
 
 ```powershell
-python -m pip install -e "packages/pathhom_tda[dev]"
+python -m pip install -e "packages/pyglmy[dev]"
 python -m pip install -e ".[audio,stats,dev]"
 pytest
 ```

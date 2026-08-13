@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from pathhom_tda import WeightedDiGraph
+from pyglmy import WeightedDiGraph
 
 
 def test_graph_supports_superlevel_and_sublevel_filtrations() -> None:

@@ -1,6 +1,6 @@
 import numpy as np
 
-from pathhom_tda import (
+from pyglmy import (
     PathHomology,
     WeightedDiGraph,
     build_path_complex,
