@@ -1246,12 +1246,12 @@ g_{\phi}(\hat{x}_0,t)\longrightarrow
 \begin{table}[htbp]
 \centering
 \caption{输出头}
-\begin{tabular}{lccr}
+\begin{tabular}{lccp{6cm}}
 \toprule
 name &  符号 & 维数 & 作用  \\
 \midrule
 \texttt{coordinate\_mean\_head}     & $\hat{\mu}_z$      & $18$    & 预测某个隐变量 $z$ 的均值   \\
-\texttt{coordinate\_logvar\_head}   & $\log\hat{\sigma}_z^2$      & $18$    & 预测每个坐标维度的对数方差，表示该模型对自身预测的不确定性。   \\
+\texttt{coordinate\_logvar\_head}   & $\log\hat{\sigma}_z^2$      & $18$    & 预测每个坐标维度的对数方差，表示该模型对自身预测的不确定性   \\
 \texttt{ood\_head}     & $u_{\mathrm{OOD}}$      & $1$        & 表示输入样本在分布外的概率     \\
 \bottomrule
 \end{tabular}
