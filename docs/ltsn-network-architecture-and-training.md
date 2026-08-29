@@ -1,35 +1,29 @@
 # LTSN 18 维网络架构与训练方案
 
-更新日期：2026-08-07
+更新日期：2026-08-17
 
 适用指纹：`focus_path_homology_fingerprint_v2`
 
 冻结规格：Pitch 16 维 + Acoustic phase 1 维 + Chroma phase 1 维
 
-状态：设计已更新；18 维 exact scorer、LTSN 训练与资格检验尚未完成
+状态：18 维 exact scorer 已签发；训练流水线代码已补齐并通过无 Torch 部分测试，真实标签/训练仍等待 exact reranking 效果门禁和 Linux/NVIDIA 实跑
 
 ## 摘要
 
-LTSN（Latent Topology Surrogate Network）是一个小型、时间条件化、可微的时序
-网络。它接收 ACE-Step 1.5 Turbo 某一步的预测干净潜变量
-
+LTSN（Latent Topology Surrogate Network）是一个小型、时间条件化、可微的时序网络。它接收 ACE-Step 1.5 Turbo 某一步的预测干净潜变量
 $$
-\hat x_0=x_t-tv_t,
+\hat{x_0}=x_t-tv_t,
 \qquad
-\hat x_0\in\mathbb R^{B\times T\times64},
+\hat{x_0}\in\mathbb R^{B\times T\times64},
 $$
 
-并预测冻结 Path Homology 指纹的 18 维坐标及其不确定度。18 维由 Pitch 16 个
-坐标、Acoustic phase `loop_score` 和 Chroma phase `loop_score` 组成。Rhythm、
-Modulation、Rhythm phase、Structure 和历史 Vietoris--Rips TDA 端点均不进入
+并预测冻结 Path Homology 指纹的 18 维坐标及其不确定度。18 维由 Pitch 16 个坐标、Acoustic phase `loop_score` 和 Chroma phase `loop_score` 组成。Rhythm、Modulation、Rhythm phase、Structure 和历史 Vietoris--Rips TDA 端点均不进入
 主输出、代理损失或采样梯度。
 
-LTSN 不是拓扑算法的替代品。Exact Path Homology 负责逐快照教师标签、候选重排
-和最终裁判；LTSN 只提供采样期所需的可微近似。任何代理改善都必须通过解码后的
-exact 18 维 scorer 复核，否则视为 proxy gaming。
+LTSN 不是拓扑算法的替代品。Exact Path Homology 负责逐快照教师标签、候选重排和最终裁判；LTSN 只提供采样期所需的可微近似。任何代理改善都必须通过解码后的 exact 18 维 scorer 复核，否则视为 proxy gaming。
 
-现有 51 维 scorer 和 LTSN 配图不匹配当前冻结指纹。在新 18 维 scorer 重建、
-验证并签发 SHA-256 之前，不得开始 LTSN 标注、训练或采样引导。
+旧 51 维 scorer 已归档并拒绝加载；当前 18 维 profile SHA-256 为
+`c76a94dc0d122420728f20be738f6817dc92186ea7b3482ed772d53a2018f592`。LTSN 配图仍有旧 51 维版本，不能引用。LTSN 标注还必须等待 exact reranking 效果门槛通过；训练、资格检验和采样引导均尚未完成。
 
 ## 1. 冻结学习目标
 
@@ -48,8 +42,7 @@ $$
 z=\Phi_{PH}=\frac{1}{\sqrt2}[L\mid P]\in\mathbb R^{18}.
 $$
 
-因此 LTSN 直接预测已经包含层级缩放的 18 维 $z$，而不是未加权的原始块拼接。
-坐标顺序必须固定为：
+因此 LTSN 直接预测已经包含层级缩放的 18 维 $z$，而不是未加权的原始块拼接。坐标顺序必须固定为：
 
 ```text
 0..15   Pitch whitened coordinates
@@ -72,15 +65,13 @@ g_\phi(\hat x_0,t)
 \rightarrow(\hat\mu_z,\log\hat\sigma_z^2,u_{OOD}),
 $$
 
-其中 $\hat\mu_z,\log\hat\sigma_z^2\in\mathbb R^{18}$，$u_{OOD}$ 为安全/OOD
-logit。Focus logit 不使用独立自由分类头，而由迁移后的冻结 scorer 确定性计算：
+其中 $\hat\mu_z,\log\hat\sigma_z^2\in\mathbb R^{18}$，$u_{OOD}$ 为安全/OOD logit。Focus logit 不使用独立自由分类头，而由迁移后的冻结 scorer 确定性计算：
 
 $$
 \hat S_F=w^\top\hat\mu_z+b.
 $$
 
-这样可以保证代理坐标与代理分数一致，避免网络只迎合总分而破坏 Pitch 或两个
-phase 坐标。
+这样可以保证代理坐标与代理分数一致，避免网络只迎合总分而破坏 Pitch 或两个 phase 坐标。
 
 ### 1.3 明确不学习的目标
 
@@ -100,15 +91,11 @@ $$
 T=180\times25=4500
 $$
 
-个潜帧。训练和引导使用每个采样步自己的 `x0_hat`，而不是只使用最终
-`pred_latents`。必须由真实的 $x_t$、速度 $v_t$ 和噪声时间 $t$ 构造
-$\hat x_0$。
+个潜帧。训练和引导使用每个采样步自己的 $\hat x_0$，而不是只使用最终`pred_latents`。必须由真实的 $x_t$、速度 $v_t$ 和噪声时间 $t$ 构造$\hat x_0$。
 
 ### 2.2 时间条件
 
-相同幅度的潜变量误差在不同噪声时间上含义不同，第 4 步与第 6 步的预测置信度
-也可能不同。因此将连续时间 $t$ 与离散 step id 编码为 128 维条件向量：
-
+相同幅度的潜变量误差在不同噪声时间上含义不同，第 4 步与第 6 步的预测置信度也可能不同。因此将连续时间 $t$ 与离散 step id 编码为 128 维条件向量：
 $$
 e_t=\operatorname{MLP}(\operatorname{Fourier}(t,\text{step}))
 \in\mathbb R^{128}.
@@ -151,8 +138,7 @@ Conv1d(64, 128, kernel=9, stride=5, padding=4)
 GroupNorm -> SiLU -> Dropout(0.05)
 ```
 
-输出长度约 900，每个 token 间隔约 0.2 s。kernel=9 在下采样前覆盖约 0.36 s，
-用于整合局部潜帧而不过早抹去谐波状态边界。
+输出长度约 900，每个 token 间隔约 0.2 s。kernel=9 在下采样前覆盖约 0.36 s，用于整合局部潜帧而不过早抹去谐波状态边界。
 
 ### 3.2 Pitch-local TCN
 
@@ -165,18 +151,13 @@ Stem 后用 1x1 卷积投影到 192 通道，再串联四个残差 TCN block：
 | 3 | 3 | 4 | 192 | 数秒局部组织 |
 | 4 | 3 | 8 | 192 | 较长局部上下文 |
 
-每个 block 使用 depthwise Conv1d、pointwise 1x1、FiLM、SiLU、dropout 0.1 与
-残差连接。该分支服务 Pitch 局部状态转移代理，不再承担 Rhythm 或 Modulation
-输出任务。
+每个 block 使用 depthwise Conv1d、pointwise 1x1、FiLM、SiLU、dropout 0.1 与残差连接。该分支服务 Pitch 局部状态转移代理，不再承担 Rhythm 或 Modulation 输出任务。
 
 ### 3.3 Long-range phase TCN
 
-局部特征再经 `Conv1d(192,256,kernel=7,stride=4)` 降至约 225 token，时间间隔
-约 0.8 s。随后使用 dilation 1/4/16/64 的四个 256 通道残差块，以覆盖数秒到
-数十秒的重复关系。
+局部特征再经 `Conv1d(192,256,kernel=7,stride=4)` 降至约 225 token，时间间隔约 0.8 s。随后使用 dilation 1/4/16/64 的四个 256通道残差块，以覆盖数秒到数十秒的重复关系。
 
-该分支学习 Acoustic/Chroma phase 的可微代理；exact `loop_score` 中的周期
-`argmin`、相位分箱和最弱边 `min` 仍只存在于教师管线。
+该分支学习 Acoustic/Chroma phase 的可微代理；exact `loop_score` 中的周期 `argmin`、相位分箱和最弱边 `min` 仍只存在于教师管线。
 
 ### 3.4 全局编码器
 
@@ -383,6 +364,13 @@ $$
 训练时不加载 ACE-Step DiT 或 VAE，只读取预计算 latent 与 exact 标签。主要成本在
 轨迹生成、逐快照 VAE 解码和 exact PH 标注。
 
+为限制 8192 个 FLOAT WAV 带来的峰值磁盘占用，exact 标注实现默认以 256 个快照为
+一批，按 reflink、hardlink、物理复制的顺序物化只读输入；每批 descriptor 与哈希收据
+原子提交后立即删除该批可重建的预处理 WAV、特征和 phase 中间文件。批次收据绑定
+trajectory manifest、音频/latent 哈希与样本标识，允许中断后验证并续跑，但不允许把
+其他数据集的批次结果混入当前标签表。ACE 生成器额外保存、且未被 manifest 引用的最终
+WAV 只能通过显式 `--discard-generator-final-audio` 删除；四个逐步快照和 latent 始终保留。
+
 不允许对 180 s latent 随机裁剪后沿用整曲标签，也不允许把时间打乱当作普通数据
 增强。若训练短片段模型，必须为每个片段重新计算 exact 标签，并作为不同尺度版本。
 
@@ -397,8 +385,10 @@ qualification 必须按 step 4/5/6/final 分层报告，不能只给所有步骤
 - Acoustic/Chroma 两个 `loop_score` Spearman 均 $\ge0.50$；
 - exact 高/低四分位排序准确率 $\ge0.65$；
 - 90% 预测区间覆盖率位于 0.85--0.95；
-- OOD 或高不确定样本可靠触发 no-op；
-- 在未见 latent 上按代理梯度优化后，解码音频的 exact score 同向改善。
+- 含预设安全负例的 qualification 上 OOD AUROC $\ge0.80$，且 OOD 或高不确定样本
+  触发 no-op；
+- 在未见 latent 上按代理梯度优化后，至少 65% 的代理改善样本在解码音频上 exact
+  score 同向改善，且其中位 exact 改善为正。
 
 还需报告 MAE、RMSE、每块/每坐标/每步误差、校准曲线、prompt-cluster bootstrap
 CI、OOD AUROC、推理耗时和显存。任何 Pitch 或 phase 主块失败都不能被总体 logit
@@ -428,8 +418,8 @@ $\Delta x=0$。每个 guided 输出仍须解码后执行 exact PH、质量检查
 
 ## 10. 实施顺序
 
-1. 归档旧 51 维 scorer 与 LTSN 图形，不覆盖审计记录；
-2. 重建并验证 18 维 exact scorer，签发新 SHA-256；
+1. 归档旧 51 维 scorer，不覆盖审计记录（已完成；旧 LTSN 图形仍待更新）；
+2. 重建并验证 18 维 exact scorer，签发新 SHA-256（已完成）；
 3. 完成 exact reranking 可辨识性实验；
 4. 增加 ACE-Step 中间轨迹记录，不改变采样结果；
 5. 建立带哈希的 18 维 latent/label 数据集；
@@ -456,6 +446,13 @@ scripts/build_ltsn_labels.py
 scripts/train_path_homology_surrogate.py
 tests/test_path_homology_surrogate.py
 ```
+
+上述边界现已落地为 `src/generation/ltsn_pipeline.py`、`ltsn_exact_labeling.py`、
+`ltsn_training.py`、`ltsn_evaluation.py` 和五个同名职责 CLI。Linux/NVIDIA 的完整
+命令、输入 schema、门禁与产物说明见
+`docs/ltsn-linux-training-and-evaluation.md`。当前 Windows 验证环境没有安装 Torch，
+因此只签认静态检查、非 Torch 单测和既有回归；CUDA 训练、calibration 和
+qualification 必须在目标 Linux 主机上执行后再更新状态。
 
 现有 `scripts/build_ltsn_architecture_figures.py` 和 `runs/ltsn_design/figures/` 仍包含
 旧 51 维、Rhythm 与 Modulation 标签，在更新前不得作为当前架构图引用。
@@ -506,5 +503,6 @@ vae_sha256
 `x0_hat` 快照单独解码和标注；按 prompt 防泄漏切分；使用 $1/2,1/4,1/4$ 的块
 平衡损失；在不确定或 OOD 时 no-op；并对代理优化结果执行 exact 复核。
 
-在 scorer 迁移、exact reranking、LTSN qualification 和配对生成验证全部完成前，
-LTSN 仍是待验证工程设计，不能描述为已经实现的 ACE-Step 采样期拓扑引导。
+scorer 迁移与训练流水线实现已经完成；在 exact reranking、Linux/NVIDIA 训练、LTSN
+qualification 和配对生成验证完成前，LTSN 仍是未获得效果资格的工程实现，不能描述
+为已经验证的 ACE-Step 采样期拓扑引导。

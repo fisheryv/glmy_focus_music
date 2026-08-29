@@ -1,0 +1,23 @@
+{
+  "archive_status": "immutable historical audit copy",
+  "archived_at": "2026-08-17",
+  "reason": "replaced by frozen Pitch 16-D plus Acoustic/Chroma phase 18-D scorer",
+  "legacy_dimensions": 51,
+  "legacy_profile_sha256": "9bf64f3c1d79c12ec428f1d9f552827d07e9f5c445d9236e7ab676699a62ef1f",
+  "files_sha256": {
+    "build_focus_path_homology_fingerprint.py": "92e006abd77c3715f35afbe74a3da012abd914308b2bc647b655525318d0d608",
+    "figures/directional_signature.png": "1df9bb08ec15fb9c65fe5376381c952e72f047a4feaf9f436009f8603522466d",
+    "figures/directional_signature.svg": "62307ffb9fa3dab8314d7239bf9172bae72262d2fcc2a4830117fd7067370f16",
+    "figures/fingerprint_composition.png": "9ef815f0b9e2d20b4168157cac859520fb7b7ef52bf9b8de4783456ca0a7f003",
+    "figures/fingerprint_composition.svg": "953a6913fd4bbef92d64f69f59aedb70eff73afd432921b49679284946b3e94d",
+    "figures/fingerprint_validation.png": "f6aba936228af2f03c13ff632012634613e102c47bec027568690ddd8d457dcf",
+    "figures/fingerprint_validation.svg": "7b293756f894fde3f5cbe0b5eb3beec0193b75e36783fb581fdbca8f03e053d9",
+    "figures/focus_score_distribution.png": "2131c446c76a40bcece5d65dd75c4d5c8dd251a006047757c11b293d5a72bf96",
+    "figures/focus_score_distribution.svg": "7ca411a0bc8ac7504e87805ae7832ab50f408ec07be1efeaebc0a7049dbd3571",
+    "focus_path_homology_fingerprint_v2.toml": "7d2326897447829bf5b7788536749dc17a0060d0edf87702b759fcbcc122d31f",
+    "focus_path_homology_fingerprint_v2.json": "9bf64f3c1d79c12ec428f1d9f552827d07e9f5c445d9236e7ab676699a62ef1f",
+    "focus_path_homology_fingerprint_v2_scores.csv": "978f19b59b2ca794064e7b0f36395f4e577392f4290095578ceb6491d4d7685c",
+    "focus_path_homology_fingerprint_v2_directions.csv": "079faed78c0425b8b3bc34daa19fc16e881bafd882f68121797b483cb6a9abec",
+    "focus_path_homology_fingerprint_v2_summary.json": "a3cf0bedd8165ea5f4c0e03952810aa050c525db138d0d1b12cfd4bc0de06561"
+  }
+}

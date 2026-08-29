@@ -1,3 +1,4 @@
-# 在每次正式实验启动前，用具体根仓库和 ACE-Step 子仓库 commit hash 替换本说明。
-root_commit=UNRECORDED
-ace_step_commit=UNRECORDED
+# 根仓库必须使用 `git rev-parse HEAD` 记录实际发布提交；它不能在自身提交内自指。
+root_commit=RUN_git_rev-parse_HEAD
+ace_step_commit=a5632cda3084f1088e69b2057dde7047e1bb4839
+pyglmy_commit=49bd5ea7617906f09940dcc9b9718bbfc1482d6f

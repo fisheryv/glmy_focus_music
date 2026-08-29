@@ -1,0 +1,6 @@
+from __future__ import annotations
+
+from generation.ltsn_cli import collect_main
+
+if __name__ == "__main__":
+    raise SystemExit(collect_main())

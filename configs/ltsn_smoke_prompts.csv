@@ -1,0 +1,5 @@
+prompt_id,caption,split,seed
+smoke_train,"instrumental ambient study music, no vocals",train,101
+smoke_development,"soft instrumental focus music, no vocals",development,102
+smoke_calibration,"calm acoustic concentration music, no vocals",calibration,103
+smoke_qualification,"minimal instrumental reading music, no vocals",qualification,104

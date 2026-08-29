@@ -1,5 +1,7 @@
 [fingerprint]
 fingerprint_id = "focus_path_homology_fingerprint_v2"
+spec_revision = "2026-08-17-frozen-18d"
+dimensions = 18
 reference_scale_seconds = 180.0
 reference_split = "discovery"
 positive_group = "focus"
@@ -7,13 +9,29 @@ negative_group = "classical"
 random_seed = 20260716
 
 [blocks]
-local_views = ["pitch", "rhythm", "modulation"]
+local_views = ["pitch"]
 phase_views = ["path_acoustic_phase", "path_chroma_phase"]
-auxiliary_views = ["structure"]
-local_view_weight = 0.3333333333333333
-phase_view_weight = 0.5
-lp_local_weight = 0.5
-lp_phase_weight = 0.5
+feature_order = [
+  "pitch_whitened_00",
+  "pitch_whitened_01",
+  "pitch_whitened_02",
+  "pitch_whitened_03",
+  "pitch_whitened_04",
+  "pitch_whitened_05",
+  "pitch_whitened_06",
+  "pitch_whitened_07",
+  "pitch_whitened_08",
+  "pitch_whitened_09",
+  "pitch_whitened_10",
+  "pitch_whitened_11",
+  "pitch_whitened_12",
+  "pitch_whitened_13",
+  "pitch_whitened_14",
+  "pitch_whitened_15",
+  "path_acoustic_phase__loop_score",
+  "path_chroma_phase__loop_score",
+]
+distance_weights = [0.5, 0.25, 0.25]
 
 [classifier]
 kind = "l2_logistic_regression"
@@ -23,14 +41,21 @@ max_iter = 5000
 decision_threshold = 0.5
 focus_target_logit_quantile = 0.10
 
+[release]
+primary_statistics_tolerance = 1.0e-9
+legacy_profile_sha256 = "9bf64f3c1d79c12ec428f1d9f552827d07e9f5c445d9236e7ab676699a62ef1f"
+legacy_archive = "metadata/archive/focus_path_homology_fingerprint_v2_legacy_51d_9bf64f3c1d79"
+
 [evidence]
 primary = "validation/180s"
-duration_sensitivity = "validation/300s"
+duration_sensitivity = "validation/300s same-track sensitivity only"
 holdout = "opened descriptive compatibility check only"
-status = "exploratory_validated_path_homology_fingerprint"
+status = "post-validation refreeze; exact scorer issued for generation development"
 
 [exclusions]
+rhythm = true
+modulation = true
+rhythm_phase = true
+structure = true
 tda_features = true
-structure_from_primary = true
-rhythm_phase_from_primary = true
-h1_h2_targets = true
+h1_h2_directional_targets = true

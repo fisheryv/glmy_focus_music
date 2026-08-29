@@ -1,0 +1,5 @@
+prompt_id,caption,split,seed,bpm,keyscale,timesignature
+train_example,Instrumental ambient focus music with a steady pulse and no vocals,train,2026071601,72,C major,4/4
+development_example,Instrumental minimal piano and soft synth textures for sustained concentration,development,2026071701,68,A minor,4/4
+calibration_example,Instrumental calm electronic music with restrained dynamics and no vocals,calibration,2026071801,76,D major,4/4
+qualification_example,Instrumental spacious focus music with gentle repetition and no vocals,qualification,2026071901,70,E minor,4/4

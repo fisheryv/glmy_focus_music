@@ -125,7 +125,7 @@
   \item 我们将拓扑特征发现过程中使用的代码封装成了一个 Python 库，名为 \texttt{pyglmy}，可在 \url{https://github.com/fisheryv/pyglmy} 上获取。
 \end{itemize}
 
-本研究完整的可复现代码已上传至 \url{https://github.com/fisheryv/focus\_music\_topology}。
+本研究完整的可复现代码已上传至 \url{https://github.com/fisheryv/glmy_focus_music}。
 
 \section{Related Work}
 
@@ -285,7 +285,7 @@ $$
 
         % Test nodes
         \node[test, above of=LP,xshift=2cm] (T1) {Verify: $F^{*}_{L+P}-F^{*}_{L}$};
-        \node[test, below of=LP,xshift=2cm] (T2) {Verify: $F^{*}_{L+P}-F^{*}_{L}$};
+        \node[test, below of=LP,xshift=2cm] (T2) {Verify: $F^{*}_{L+P}-F^{*}_{P}$};
         % \node[test, above of=LPS,xshift=1cm] (T2) {Verify: $LPS - LP$};
         
         % Arrows
@@ -815,46 +815,30 @@ Rhythm phase & 0.372 & 0.355 & 0.175 $[-0.045,0.391]$ & 0.099 & 0.301 & 0.004 \\
 \subsection{多尺度融合与消融分析}
 \label{sec:multiscale_fusion}
 
-前述局部多视角分析表明，音高、节奏与调制的联合表示虽然能够区分 Open Focus
-与 Classical，但其距离几何没有稳定优于音高单视角。因此，本节不再把三个局部
-视角强制合并，而是将冻结的 Pitch Path Homology 定义为局部块 $L$；宏观长程
-周期块 $P$ 则由 Acoustic phase 与 Chroma phase 的 \texttt{loop\_score}
-等块融合得到。Rhythm phase 未通过 validation/180s 的三视角 BH-FDR，故不进入
-主融合。最终比较 $L$、$P$ 与 $L+P$，分别回答局部状态组织、长程周期闭合及其
-联合表示是否具有组间距离几何与逐曲判别信息。
+前述局部多视角分析表明，音高、节奏与调制的联合表示虽然能够区分 Open Focus 与 Classical，但其距离几何没有稳定优于音高单视角。因此，本节不再把三个局部视角强制合并，而是将冻结的 Pitch Path Homology 定义为局部块 $L$；宏观长程周期块 $P$ 则由 Acoustic phase 与 Chroma phase 的 \texttt{loop\_score} 等块融合得到。Rhythm phase 未通过 validation/180s 的三视角 BH-FDR，故不进入主融合。最终比较 $L$、$P$ 与 $L+P$，分别回答局部状态组织、长程周期闭合及其联合表示是否具有组间距离几何与逐曲判别信息。
 % 需要说明的是，局部块改为 Pitch、
 % 且 $P$ 只保留 Acoustic/Chroma，均参考了已查看的 validation 结果；因此本节是
 % 结果知情后的重新冻结与探索性分析，而不是新的独立确认。
 
 \paragraph{块变换与等权融合}
-本节沿用局部融合中的 discovery 拟合流程，包括中位数填补、常量列删除、
-伪逆白化及按有效秩归一化，不再重复其推导。与局部融合不同的是，局部块 $L$
-仅保留 Pitch；宏观块 $P$ 则由 Acoustic phase 与 Chroma phase 两个标量分数
-等权组成，并进一步与 $L$ 作等块融合：
+本节沿用局部融合中的 discovery 拟合流程，包括中位数填补、常量列删除、伪逆白化及按有效秩归一化，不再重复其推导。与局部融合不同的是，局部块 $L$ 仅保留 Pitch；宏观块 $P$ 则由 Acoustic phase 与 Chroma phase 两个标量分数等权组成，并进一步与 $L$ 作等块融合：
 \[
 L=Z_{\mathrm{Pitch}},\qquad
 P=\frac{1}{\sqrt{2}}[Z_{\mathrm{Acoustic}}\Vert Z_{\mathrm{Chroma}}],
 \qquad
 L+P=\frac{1}{\sqrt{2}}[L\Vert P].
 \]
-180s 下，Pitch 保留 16 维、有效秩为 13，两个 Phase 输入均为秩 1 标量；在
-$L+P$ 的平方距离中两块各占一半。权重不使用 validation 或 holdout 搜索。
+180s 下，Pitch 保留 $16$ 维、有效秩为 $13$，两个 Phase 输入均为秩 $1$ 标量；在 $L+P$ 的平方距离中两块各占一半。权重不使用 validation 或 holdout 搜索。
 % discovery 中一首 Classical 曲目的相位缺失值仅用对应 discovery 中位数填补。
 
 \paragraph{检验与消融协议}
-三种表示分别进行基于欧氏距离的 PERMANOVA，每项使用 $999$ 次标签置换，并在
-每个时长的三项表示内进行 BH-FDR。为避免把``联合空间显著''误写为``融合有
-增量''，在同一置换标签下进行两项配对单侧检验：
+三种表示分别进行基于欧氏距离的 PERMANOVA，每项使用 $999$ 次标签置换，并在每个时长的三项表示内进行 BH-FDR。为避免把``联合空间显著''误写为``融合有增量''，在同一置换标签下进行两项配对单侧检验：
 \[
 \Delta_{P\mid L}=F^{*}_{L+P}-F^{*}_{L},
 \qquad
 \Delta_{L\mid P}=F^{*}_{L+P}-F^{*}_{P}.
 \]
-两项增量按时长作 BH 校正；只有 $\Delta F>0$ 且 $q\leq0.05$ 才记为正几何
-增量。条件非冗余分析在 discovery 上以多输出岭回归拟合一个块对另一块的预测，
-再对 validation 中的 $P\mid L$ 与 $L\mid P$ 残差进行 PERMANOVA。辅助 L2
-逻辑回归在 discovery 内五折选择正则化参数，冻结后应用于 validation；分类
-差异使用 $1,000$ 次组内分层配对 bootstrap。
+两项增量按时长作 BH 校正；只有 $\Delta F>0$ 且 $q\leq0.05$ 才记为正几何增量。条件非冗余分析在 discovery 上以多输出岭回归拟合一个块对另一块的预测，再对 validation 中的 $P\mid L$ 与 $L\mid P$ 残差进行 PERMANOVA。辅助 L2 逻辑回归在 discovery 内五折选择正则化参数，冻结后应用于 validation；分类差异使用 $1,000$ 次组内分层配对 bootstrap。
 
 \paragraph{主要尺度的距离几何}
 表~\ref{tab:multiscale_permanova}与图~\ref{fig:multiscale_permanova} 显示，validation/180s 中三种表示均存在组间距离几何差异，但 Phase 的 pseudo-$F$ 最高，联合表示居中。pseudo-$F$ 衡量组间距离相对组内离散的比例，不能直接解释为分类准确率。
@@ -881,13 +865,7 @@ $L+P$ & 18 & 13.486 & 0.001 & 0.001 \\
     \label{fig:multiscale_permanova}
 \end{figure}
 
-双向配对增量给出更严格的结论（表~\ref{tab:multiscale_incremental} 与
-图~\ref{fig:multiscale_incremental}）。在 $L$ 上加入 $P$ 后，
-$\Delta F=+5.898$、$q=0.002$，支持 Phase 相对 Pitch 基线的正几何增量；
-但在 $P$ 上加入 $L$ 后，$\Delta F=-7.094$、$q=1$。两者并不矛盾：Phase
-单块的组间/组内距离比远高于 Pitch，因而会提高 Pitch 基线；反向加入 Pitch
-则使联合 pseudo-$F$ 回落至两块之间。因此可认为``Phase 改善 Pitch 基线''，
-但不能理解为``融合优于最佳单块''。
+双向配对增量给出更严格的结论（表~\ref{tab:multiscale_incremental} 与图~\ref{fig:multiscale_incremental}）。在 $L$ 上加入 $P$ 后，$\Delta F=+5.898$、$q=0.002$，支持 Phase 相对 Pitch 基线的正几何增量；但在 $P$ 上加入 $L$ 后，$\Delta F=-7.094$、$q=1$。两者并不矛盾：Phase 单块的组间/组内距离比远高于 Pitch，因而会提高 Pitch 基线；反向加入 Pitch 则使联合 pseudo-$F$ 回落至两块之间。因此可认为``Phase 改善 Pitch 基线''，但不能理解为``融合优于最佳单块''。
 
 \begin{table}[htbp]
 \centering
@@ -912,12 +890,7 @@ $\Delta F=+5.898$、$q=0.002$，支持 Phase 相对 Pitch 基线的正几何增�
 \end{figure}
 
 \paragraph{条件非冗余}
-条件残差检验与配对增量回答不同问题。表~\ref{tab:multiscale_residual}
-显示，$P\mid L$ 在主要尺度未通过 FDR（$q=0.230$），因此不能把上述正配对
-增量进一步解释成``Phase 已含有经条件验证的独立组别信息''。相反，$L\mid P$
-的残差仍显著（pseudo-$F=5.191$，$q=0.002$），说明 Pitch 保留了 Phase
-不能线性解释的组别结构；但这些信息加入较强的 Phase 空间后可能同时增加组内
-离散，因而没有形成正的整体 pseudo-$F$ 增量。
+条件残差检验与配对增量回答不同问题。表~\ref{tab:multiscale_residual} 显示，$P\mid L$ 在主要尺度未通过 FDR（$q=0.230$），因此不能把上述正配对增量进一步解释成``Phase 已含有经条件验证的独立组别信息''。相反，$L\mid P$ 的残差仍显著（pseudo-$F=5.191$，$q=0.002$），说明 Pitch 保留了 Phase 不能线性解释的组别结构；但这些信息加入较强的 Phase 空间后可能同时增加组内离散，因而没有形成正的整体 pseudo-$F$ 增量。
 
 \begin{table}[htbp]
 \centering
@@ -941,12 +914,7 @@ $L\mid P$ & 0.055 & $-0.015$ & 5.191 & 0.001 & 0.002 \\
 \end{figure}
 
 \paragraph{辅助分类}
-逐曲分类与距离几何没有给出相同排序。表~\ref{tab:multiscale_classification}
-中，Pitch 的 balanced accuracy 为 $0.933$，高于 Phase 的 $0.683$ 与联合表示的
-$0.925$。$L+P$ 相对 $L$ 的 balanced-accuracy 差为 $-0.008$，95\% CI
-$[-0.042,0.017]$；AUROC 差为 $-0.006$，95\% CI $[-0.019,0.003]$。
-因此，主要尺度没有证据表明融合提高逐曲预测。Phase 的高 pseudo-$F$ 与较低
-分类性能并不冲突：前者度量整体组间/组内距离比，后者取决于逐样本决策边界。
+逐曲分类与距离几何没有给出相同排序。表~\ref{tab:multiscale_classification} 中，Pitch 的 balanced accuracy 为 $0.933$，高于 Phase 的 $0.683$ 与联合表示的 $0.925$。$L+P$ 相对 $L$ 的 balanced-accuracy 差为 $-0.008$，95\% CI $[-0.042,0.017]$；AUROC 差为 $-0.006$，95\% CI $[-0.019,0.003]$。因此，主要尺度没有证据表明融合提高逐曲预测。Phase 的高 pseudo-$F$ 与较低分类性能并不冲突：前者度量整体组间/组内距离比，后者取决于逐样本决策边界。
 
 \begin{table}[htbp]
 \centering
@@ -970,16 +938,8 @@ $L+P$ & 0.925 & 0.925 & 0.982 \\
     \label{fig:multiscale_classification}
 \end{figure}
 
-\paragraph{两块关系与二维投影}
-validation/180s 中，Pitch 与 Phase 成对距离的 Spearman 相关为 $0.228$，表明
-二者有关但不是同一几何。图~\ref{fig:multiscale_pca} 从左到右给出 $L$、$P$
-与 $L+P$ 的 PCA 投影。每幅子图均在对应表示的 discovery/180s 数据上独立拟合
-PCA，再投影同一批 validation/180s 样本，故三幅图的坐标值不能直接横向比较。
-$L$ 的 PC1 与 PC2 各解释 $7.7\%$ 方差，$P$ 分别解释 $79.9\%$ 与 $20.1\%$，
-$L+P$ 分别解释 $40.9\%$ 与 $10.4\%$。$L$ 中两组沿 PC1 呈清楚的整体位移；
-$P$ 的方差主要集中在 PC1，但两组仍明显重叠，且 Open Focus 组内离散更大；
-$L+P$ 同时保留组间位移与 Phase 方向上的较大离散。椭圆是投影空间中的组内
-协方差范围，不是 bootstrap 置信区间；PCA 只提供低维直觉，不参与推断检验。
+\paragraph{二者关系与二维投影}
+validation/180s 中，Pitch 与 Phase 成对距离的 Spearman 相关为 $0.228$，表明二者有关但不是同一几何。图~\ref{fig:multiscale_pca} 从左到右给出 $L$、$P$ 与 $L+P$ 的 PCA 投影。每幅子图均在对应表示的 discovery/180s 数据上独立拟合 PCA，再投影同一批 validation/180s 样本，故三幅图的坐标值不能直接横向比较。$L$ 的 PC1 与 PC2 各解释 $7.7\%$ 方差，$P$ 分别解释 $79.9\%$ 与 $20.1\%$，$L+P$ 分别解释 $40.9\%$ 与 $10.4\%$。$L$ 中两组沿 PC1 呈清楚的整体位移；$P$ 的方差主要集中在 PC1，但两组仍明显重叠，且 Open Focus 组内离散更大；$L+P$ 同时保留组间位移与 Phase 方向上的较大离散。椭圆是投影空间中的组内协方差范围，不是 bootstrap 置信区间；PCA 只提供低维直觉，不参与推断检验。
 
 \begin{figure}[htbp]
     \centering
@@ -989,21 +949,14 @@ $L+P$ 同时保留组间位移与 Phase 方向上的较大离散。椭圆是投�
 \end{figure}
 
 \paragraph{综合判断}
-当前结果支持把 Pitch 与 Phase 作为功能不同、相互补充的两个拓扑块：Pitch
-描述局部状态组织，并提供最稳定的逐曲分类；Phase 描述宏观长程周期闭合，并在
-当前距离几何中具有最高的组间/组内分离比。$L+P$ 可作为同时包含两类信息的
-联合拓扑指纹，但其 pseudo-$F$ 低于 Phase，主要尺度分类也低于 Pitch，故不能
-宣称其优于最佳单块。Phase 相对 Pitch 的配对增量为正，却未通过 $P\mid L$
-条件非冗余检验；Pitch 则保留了 Phase 不能线性解释的条件信息。
+当前结果支持把 Pitch 与 Phase 作为功能不同、相互补充的两个拓扑块：Pitch 描述局部状态组织，并提供最稳定的逐曲分类；Phase 描述宏观长程周期闭合，并在当前距离几何中具有最高的组间/组内分离比。$L+P$ 可作为同时包含两类信息的联合拓扑指纹，但其 pseudo-$F$ 低于 Phase，主要尺度分类也低于 Pitch，故不能宣称其优于最佳单块。Phase 相对 Pitch 的配对增量为正，却未通过 $P\mid L$ 条件非冗余检验；Pitch 则保留了 Phase 不能线性解释的条件信息。
 % 上述结果均不支持关于音乐质量、专注功效、认知机制或因果效应的推断，也不支持继续利用同一
 % validation 搜索更有利的块权重或相位组合。
 
 \subsection{拓扑指纹冻结}
 \label{sec:frozen_topology_fingerprint}
 
-根据前述单视角验证与多尺度增量分析，本文将当前 Focus Music Path Homology
-指纹冻结为一个 $18$ 维联合表示，记为 $\Phi_{\mathrm{PH}}$。该指纹只包含 Pitch
-局部状态转移、Acoustic phase 闭环和 Chroma phase 闭环三个输入，其可以表示为：
+根据前述单视角验证与多尺度增量分析，本文将当前 Focus Music Path Homology 指纹冻结为一个 $18$ 维联合表示，记为 $\Phi_{\mathrm{PH}}$。该指纹只包含 Pitch 局部状态转移、Acoustic phase 闭环和 Chroma phase 闭环三个输入，其可以表示为：
 \[\Phi_{\mathrm{PH}}=\frac{1}{\sqrt{2}}[L\Vert P]\]
 其中 $L=Z_{\mathrm{Pitch}}$，$P=\frac{1}{\sqrt{2}}
 [Z_{\mathrm{Acoustic}}\Vert Z_{\mathrm{Chroma}}]$。
@@ -1047,21 +1000,19 @@ Chroma phase \texttt{loop\_score} & 1 & 1 & $1/4$ \\
   改变权重或产生新的显著性声明。
 \end{enumerate}
 
-该冻结对象是可审计的科研表示与评估协议，而不是注意力、疗效或音乐质量的因果
-量表。辅助分类器的 logit 或概率只描述当前 Open Focus--Classical 数据中的判别
-边界，不改变 $\Phi_{\mathrm{PH}}$ 本身的 $18$ 维定义。
+该冻结对象是可审计的科研表示与评估协议，而不是注意力、疗效或音乐质量的因果量表。辅助分类器的 logit 或概率只描述当前 Open Focus--Classical 数据中的判别边界，不改变 $\Phi_{\mathrm{PH}}$ 本身的 $18$ 维定义。
 
 冻结后，不允许改变 $\frac{1}{2}:\frac{1}{4}:\frac{1}{4}$ 权重，优化相位节点数，或选择新的指标子集。任何此类改变均应建立新的指纹版本，并在未参与该选择的数据上重新完成增量、分类和生成实验验证。
 
 \section{ACE-Step 潜空间拓扑引导}
 
-本文的目的之一是将 Focus Music 的拓扑特征用于音乐生成。传统路线会选择训练一个新的音乐生成模型，并将拓扑特征作为损失函数嵌入训练循环。然而，高质量音乐生成模型需要大量版权敏感的音频数据，模型训练对 GPU 算力要求高，因此本研究将工程核心从``更新模型参数 $\theta$''转向``控制推理期潜变量 $z_t$''。
+本文的目的之一是将 Focus Music 的拓扑特征用于音乐生成。传统路线会选择训练一个新的音乐生成模型，并将拓扑特征作为损失函数嵌入训练循环。然而，高质量音乐生成模型的训练需要大量版权敏感的音频数据，并且对 GPU 算力要求高，因此本研究将工程核心从``更新模型参数 $\theta$''转向``控制推理期潜变量 $z_t$''。
 
-本研究选用 ACE-Step 1.5 xl 作为基础骨干网络，在其逆向扩散采样的关键时间步，对当前音频潜变量施加来自冻结 Path Homology 指纹的拓扑能量梯度。这样既保留了预训练模型的音乐生成能力，又让生成过程受到可解释的代数拓扑约束。
+本研究选用 ACE-Step 1.5 XL-Turbo 作为基础骨干网络，在其逆向扩散采样的关键时间步，对当前音频潜变量施加来自冻结 Path Homology 指纹的拓扑能量梯度。这样既保留了预训练模型的音乐生成能力，又让生成过程受到可解释的代数拓扑约束。
 
 \subsection{方法思想与总体框架}
 
-由于精确 Path Homology（exact PH） 包含一系列``非光滑操作''，这些操作几乎处处梯度为 $0$ 或未定义，无法通过链式法则传递有效梯度。因此我们训练了潜空间拓扑代理网络（Latent Topology Surrogate Network，LTSN）用于提供近似的、可导的评分，用它来反传梯度。它学习的目标就是去模仿 exact PH 的输出，同时保持整个计算图可微。
+由于精确 Path Homology（exact PH） 包含一系列``非光滑操作''，这些操作几乎处处梯度为 $0$ 或未定义，无法通过链式法则传递有效梯度。因此我们训练了潜空间拓扑代理网络（Latent Topology Surrogate Network，LTSN）用于提供近似的、可导的评分，用它来反向传播梯度。它学习的目标就是去模仿 exact PH 的输出，同时保持整个计算图可微。
 
 整个方法的核心是一个``精确教师--可微代理--精确复核''闭环：
 exact PH 负责构造训练标签、执行同 prompt 候选重排并对最终音频作出裁决；LTSN 仅学习从中间预测干净潜变量到冻结指纹的可微近似；采样器只在 LTSN 通过独立资格检验后施加幅度受限的中段校正。生成结果在解码后仍须由 exact PH、音质指标和 prompt 一致性共同复核。整体流程如图~\ref{fig:acestep_pipeline} 所示。
@@ -1153,114 +1104,190 @@ S_F(x)=w^{\top}z(x)+b,\qquad p_F(x)=\sigma(S_F(x)).
 L_{\mathrm{PH}}(x)=\left[\max\left(0,\tau_F-S_F(x)\right)\right]^2.
 \label{eq:focus_band_loss}
 \end{equation}
-样本进入目标带后梯度归零。因此，控制目标是进入经验支持的 Focus 分布邻域，
-而不是把任一拓扑坐标推向极端。
+样本进入目标带后梯度归零。因此，控制目标是进入经验支持的 Focus 分布邻域，而不是把任一拓扑坐标推向极端。
 
-\subsection{潜空间拓扑代理网络（LTSN）}
+\subsection{输入与时间条件}
 
-ACE-Step 1.5 XL-Turbo 的声学潜变量记为 $x_t\in\mathbb{R}^{B\times T\times64}$。对 flow 模型在噪声时间 $t$ 预测的速度 $v_t$，相应的预测干净潜变量为
+ACE-Step 1.5 XL-Turbo 的声学潜变量为 $64$ 维，声学潜变量记为 $x_t\in\mathbb{R}^{B\times T\times64}$。180s 音频在约 25Hz 的潜时间分辨率下对应 $T= 180 \times 25 = 4500$。LTSN 的输入是每个采样步自身的 $\hat{x}_0$，而非仅使用最终 \texttt{pred\_latents}。输入必须由真实的 $x_t$、速度 $v_t$ 和噪声时间 $t$ 构造 $\hat x_0$。对 flow matching 模型，相应的预测干净潜变量为
 \begin{equation}
 \hat{x}_0=x_t-tv_t.
 \label{eq:pred_clean_latent}
 \end{equation}
-180s 音频在约 25Hz 的潜时间分辨率下对应 $T\approx4500$。LTSN 的输入是每个
-采样步自身的 $\hat{x}_0$，而非仅使用最终 \texttt{pred\_latents}。连续时间与
-离散 step id 经 Fourier 特征和两层 MLP 编码为 $128$ 维向量 $e_t$，并通过
-FiLM/AdaLN 调制时序残差块：
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=0.8\textwidth]{fig/time_conditioning.png}
+    \caption{LTSN 时间条件模块。}
+    \label{fig:time_conditioning}
+\end{figure}
+
+相同幅度的潜变量误差在不同噪声时间上含义不同，因此将连续时间 $t$ 与离散 step id 经 Fourier 特征和两层 MLP 编码为 $128$ 维条件向量：
+\begin{equation}
+e_t=\operatorname{MLP}(\operatorname{Fourier}(t,\text{step}))
+\in\mathbb R^{128},
+\end{equation}
+并通过 FiLM/AdaLN 调制时序残差块：
 \begin{equation}
 \operatorname{FiLM}(h,e_t)=\gamma(e_t)\odot\operatorname{Norm}(h)+\beta(e_t).
 \end{equation}
 
-表~\ref{tab:ltsn_architecture} 给出网络结构。网络首先以局部卷积保留谐波状态
-边界，再逐级扩大感受野以覆盖跨周期复现；全局注意力只用于连接远距离位置，
-不构成额外的 Structure 分支。
+\subsection{潜空间拓扑代理网络（LTSN）}
+
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig/architecture.png}
+    \caption{LTSN 架构图。}
+    \label{fig:ltsn_architecture}
+\end{figure}
+
+% \begin{table}[htbp]
+% \centering
+% \caption{LTSN 网络结构。$T$ 为输入潜帧数。}
+% \label{tab:ltsn_architecture}
+% \setlength{\tabcolsep}{4pt}
+% \begin{tabular}{p{0.19\linewidth}p{0.42\linewidth}p{0.29\linewidth}}
+% \toprule
+% 模块 & 配置 & 输出与作用 \\
+% \midrule
+% Stem & LayerNorm；Conv1d$(64,128,k=9,s=5)$；GroupNorm、SiLU、dropout $0.05$ &
+% $[B,T/5,128]$；整合约 $0.36$s 局部潜帧 \\
+% Pitch-local TCN & $1\times1$ 投影至 $192$ 通道；四个 depthwise-separable 残差块，
+% $k=3$，dilation $=1,2,4,8$ & $[B,T/5,192]$；建模局部 Pitch 状态转移 \\
+% Long-range phase TCN & Conv1d$(192,256,k=7,s=4)$；四个残差块，dilation
+% $=1,4,16,64$ & $[B,T/20,256]$；覆盖数秒至数十秒复现 \\
+% 全局编码器 & 两层 pre-norm Transformer，$d=256$，$8$ heads，FFN $=1024$ &
+% 连接远距离 Acoustic/Chroma phase 位置 \\
+% 多尺度汇聚 & 局部与全局序列分别作 masked attention、mean、standard deviation
+% pooling & $576+768$ 维 \\
+% 融合层 & 拼接 $128$ 维时间嵌入；MLP $1472\rightarrow512\rightarrow256$ &
+% $256$ 维共享表征 \\
+% 输出头 & 坐标均值 $18$ 维、log-variance $18$ 维、OOD logit $1$ 维 &
+% 冻结线性读出计算 Focus logit \\
+% \bottomrule
+% \end{tabular}
+% \end{table}
+
+\subsubsection{Stem}
+
+Stem 的结构可以概括为：
+\[\hat{x}_0 \to \texttt{LayerNorm} \to \texttt{Conv1d} \to \texttt{GroupNorm} \to \texttt{SiLU} \to \texttt{Dropout(0.05)}\]
+它主要完成两个任务：
+\begin{itemize}
+    \item 将 $64$ 维声学潜变量扩展到 $128$ 维特征；
+    \item 将 25 Hz 的潜变量下采样到 5 Hz。
+\end{itemize}
+\verb|Conv1d| 卷积参数为 \verb|(64, 128, kernel=9, stride=5, padding=4)|。\verb|kernel = 9|，在 25 Hz 下对应：$9/25=0.36 \text{s}=360 \text{ms}$，\verb|stride = 5|，对应：$5/25=0.2s=200ms$。所以每个输出帧大约覆盖 $360$ ms 的输入上下文，输出帧之间间隔 $200$  ms。最终输出特征为 $[B, T/5, 128]$。
+
+\subsubsection{Pitch-local TCN}
+
+Stem 后用 $1 \times 1$ 卷积投影到 $192$ 通道，再串联四个残差 TCN 块：
 
 \begin{table}[htbp]
 \centering
-\caption{LTSN 网络结构。$T$ 为输入潜帧数。}
-\label{tab:ltsn_architecture}
-\setlength{\tabcolsep}{4pt}
-\begin{tabular}{p{0.19\linewidth}p{0.42\linewidth}p{0.29\linewidth}}
+\caption{Pitch-local TCN 残差块配置}
+\begin{tabular}{lrrrr}
 \toprule
-模块 & 配置 & 输出与作用 \\
+block & \texttt{kernel} & \texttt{dilation} & 通道 & 作用  \\
 \midrule
-Stem & LayerNorm；Conv1d$(64,128,k=9,s=5)$；GroupNorm、SiLU、dropout $0.05$ &
-$[B,T/5,128]$；整合约 $0.36$s 局部潜帧 \\
-Pitch-local TCN & $1\times1$ 投影至 $192$ 通道；四个 depthwise-separable 残差块，
-$k=3$，dilation $=1,2,4,8$ & $[B,T/5,192]$；建模局部 Pitch 状态转移 \\
-Long-range phase TCN & Conv1d$(192,256,k=7,s=4)$；四个残差块，dilation
-$=1,4,16,64$ & $[B,T/20,256]$；覆盖数秒至数十秒复现 \\
-全局编码器 & 两层 pre-norm Transformer，$d=256$，$8$ heads，FFN $=1024$ &
-连接远距离 Acoustic/Chroma phase 位置 \\
-多尺度汇聚 & 局部与全局序列分别作 masked attention、mean、standard deviation
-pooling & $576+768$ 维 \\
-融合层 & 拼接 $128$ 维时间嵌入；MLP $1472\rightarrow512\rightarrow256$ &
-$256$ 维共享表征 \\
-输出头 & 坐标均值 $18$ 维、log-variance $18$ 维、OOD logit $1$ 维 &
-冻结线性读出计算 Focus logit \\
+\#1     & $3$      & $1$        & $192$  & 局部相邻 token    \\
+\#2     & $3$      & $2$        & $192$  & 短时谐波状态变化  \\
+\#3     & $3$      & $4$        & $192$  & 数秒局部组织     \\
+\#4     & $3$      & $8$        & $192$  & 较长局部上下文   \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-对任一掩码序列 $h$，多尺度汇聚写为
+每个块的内部结构为：
+\begin{figure}[htbp]
+    \centering
+    \includegraphics[width=\textwidth]{fig/tcn_block.png}
+    \caption{TCN 残差块架构。}
+    \label{fig:tcn_block}
+\end{figure}
+
+随着 \verb|dilation| 增加，感受野不断增长。四个块串联后，最深能看到约 $3.4$ 秒的上下文，对应``数秒局部组织''和``局部上下文''。
+
+\subsubsection{Long-range phase TCN}
+
+Long-range phase TCN 接在 Pitch-local TCN 之后，用于捕捉更长时间尺度上的重复结构和相位关系。局部特征先经 \texttt{Conv1d(192,256,kernel=7,stride=4)} 下采样到 $1.25$ Hz，时间间隔约 $4 \times 0.2 = 0.8s$；随后串联四个 $256$ 通道残差 TCN 块，结构与 Pitch-local TCN 的一致，\texttt{dilation} 分别为 $1, 4, 16, 64$。经过四个残差块后，感受野可以覆盖从几秒到上百秒的重复结构和相位关系。Long-range phase TCN 最终输出特征为 $[B, T/20, 256]$。
+
+\subsubsection{全局编码器}
+
+经过 Stem 下采样到 $900$ token，再经过 Long-range phase TCN 下采样到约 $225$ token，就可以低成本地用 Transformer 做全长自注意力，以捕捉相距很远的重复关系。这里使用两个 pre-norm Transformer encoder block：
+\[\underbrace{\texttt{d\_model=256, heads=8, FFN=1024, dropout=0.1, pre-norm}}_{\times 2}\]
+每个 block 不改变序列长度和特征维度，所以输出形状仍为：$[B, T/20, 256]$。
+
+\subsubsection{多尺度汇聚与共享表征}
+
+前面的网络产生了两个不同尺度的序列：
+\begin{itemize}
+    \item \textbf{局部序列}：时间分辨率高，擅长捕捉几秒内的细节；输出格式 $[B, T/5, 192]$;
+    \item \textbf{全局序列}：时间分辨率低，擅长捕捉数十秒甚至全曲的结构；输出格式 $[B, T/20, 256]$。
+\end{itemize}
+该模块把这两个序列分别汇聚成紧凑的向量，再拼上时间嵌入 $e_t \in \mathbb{R}^{128}$，经过一个小型 MLP，得到共享表征，用于后续任务。
+
+对任一对局部序列或全局序列 $h$，多尺度汇聚写为
 \begin{equation}
-q(h)=\left[q_{\mathrm{attn}}(h)\Vert\operatorname{mean}(h)
+p(h)=\left[p_{\mathrm{attn}}(h)\Vert\operatorname{mean}(h)
 \Vert\operatorname{std}(h)\right].
 \end{equation}
-局部汇聚为 $192\times3=576$ 维，全局汇聚为 $256\times3=768$ 维；二者与
-$e_t$ 拼接后得到 $1472$ 维融合输入。整个代理预计包含约 $3$--$4$M 参数，不包含
-冻结的 ACE-Step、VAE 或 exact PH 管线。
+局部汇聚为 $192\times3=576$ 维，全局汇聚为 $256\times3=768$ 维；二者与 $e_t$ 拼接后得到 $576+768+128=1472$ 维融合输入。拼接后的 $1472$ 维向量经过两层线性层：
+\[\texttt{Linear(1472,512)} \to \texttt{SiLU} \to \texttt{Dropout(0.1)} \to \texttt{Linear(512,256)} \to \texttt{SiLU}\]
+最终得到 $256$ 维共享表征。
+
+\subsubsection{输出头与冻结读出}
 
 LTSN 学习异方差条件分布
 \begin{equation}
 g_{\phi}(\hat{x}_0,t)\longrightarrow
 (\hat{\mu}_z,\log\hat{\sigma}_z^2,u_{\mathrm{OOD}}),
 \end{equation}
-其中均值和 log-variance 均为 $18$ 维。Focus logit 不设置可自由偏离坐标的独立
-分类头，而由冻结参数确定性计算：
+其中：
+\begin{table}[htbp]
+\centering
+\caption{输出头}
+\begin{tabular}{lccr}
+\toprule
+name &  符号 & 维数 & 作用  \\
+\midrule
+\texttt{coordinate\_mean\_head}     & $\hat{\mu}_z$      & $18$    & 预测某个隐变量 $z$ 的均值   \\
+\texttt{coordinate\_logvar\_head}   & $\log\hat{\sigma}_z^2$      & $18$    & 预测每个坐标维度的对数方差，表示该模型对自身预测的不确定性。   \\
+\texttt{ood\_head}     & $u_{\mathrm{OOD}}$      & $1$        & 表示输入样本在分布外的概率     \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Focus logit 不设置可自由偏离坐标的独立分类头，而由冻结参数确定性计算：
 \begin{equation}
 \hat{S}_F=w^{\top}\hat{\mu}_z+b.
 \label{eq:ltsn_frozen_readout}
 \end{equation}
-这一设计保证代理坐标与总分一致，防止网络只迎合总 logit 而破坏 Pitch 或两个
-phase 坐标。本文训练三个结构和数据完全相同、随机种子不同的成员；单模型方差
-刻画 aleatoric uncertainty，成员间方差刻画 epistemic uncertainty。
+这一设计保证代理坐标与总分一致，防止网络只迎合总 logit 而破坏 Pitch 或两个 phase 坐标。
+
+本文训练三个结构和数据完全相同、随机种子不同的成员；单模型方差刻画 aleatoric uncertainty，成员间方差刻画 epistemic uncertainty。
 
 \subsection{教师标签、数据构造与防泄漏切分}
 
-LTSN 的一个训练样本由 $(\hat{x}_0,t,z,S_F,y_{\mathrm{OOD}})$ 构成。标签生成必须
-针对每个轨迹快照独立进行：在无引导生成中保存第 4、5、6 步及最终步的
-$(x_t,v_t,t)$；按式~\eqref{eq:pred_clean_latent} 构造各自的 $\hat{x}_0$；分别经
-VAE 解码；再独立运行 exact Pitch PH、Acoustic phase 和 Chroma phase 管线，
-最后使用冻结变换得到该快照自己的 $z$ 与 $S_F$。不得把最终音频标签复制到所有
-中间步骤，否则网络将学习错误的时间不变映射。
+LTSN 的一个训练样本由 $(\hat{x}_0,t,z,S_F,y_{\mathrm{OOD}})$ 构成。标签生成必须针对每个轨迹快照独立进行：在无引导生成中保存第 4、5、6 步及最终步的 $(x_t,v_t,t)$；按式~\eqref{eq:pred_clean_latent} 构造各自的 $\hat{x}_0$；分别经 VAE 解码；再独立运行 exact Pitch PH、Acoustic phase 和 Chroma phase 管线，最后使用冻结变换得到该快照自己的 $z$ 与 $S_F$。不得把最终音频标签复制到所有中间步骤，否则网络将学习错误的时间不变映射。
 
-数据由三部分组成：第一，discovery 集中 $195$ 首 Focus 与 $195$ 首 Classical
-音频的 VAE 重建，作为真实音乐锚点；第二，不少于 $512$ 个 development prompts、
-每个 prompt $4$ 个 seed 的无引导 180s 轨迹，每条轨迹标注第 4、5、6 步和最终步，
-构成约 $8192$ 个生成快照；第三，占训练批次 $10\%$--$15\%$ 的安全/OOD 负例，
-包括静音、削波、极低动态、机械短循环、过度平滑及异常 latent。上述规模是预设的
-工程起点，而非样本量最优性结论。
+数据由三部分组成：
+\begin{enumerate}
+    \item discovery 集中 $195$ 首 Focus 与 $195$ 首 Classical 音频的 VAE 重建，作为真实音乐锚点；
+    \item 不少于 $512$ 个 development prompts、每个 prompt $4$ 个 seed 的无引导 180s 轨迹，每条轨迹标注第 4、5、6 步和最终步，构成约 $8192$ 个生成快照；
+    \item 占训练批次 $10\%$--$15\%$ 的安全/OOD 负例，包括静音、削波、极低动态、机械短循环、过度平滑及异常 latent。
+\end{enumerate}
 
-为避免轨迹泄漏，真实音频按曲目分组，生成样本按 prompt 分组；同一曲目、同一
-prompt 或同一生成轨迹的所有 seed 与快照必须位于同一分区。训练、开发和校准
-分区分别占 prompt 组的 $70\%$、$15\%$ 和 $15\%$；另设未参与参数拟合、架构
-选择、early stopping 或阈值校准的 qualification prompts。论文的 validation
-和已开启 holdout 只用于冻结拓扑证据，不用于 LTSN 的架构选择、损失调权或
-资格门槛调整。
+为避免轨迹泄漏，真实音频按曲目分组，生成样本按 prompt 分组；同一曲目、同一 prompt 或同一生成轨迹的所有 seed 与快照必须位于同一分区。训练、开发和校准分区分别占 prompt 组的 $70\%$、$15\%$ 和 $15\%$；另设未参与参数拟合、架构选择、early stopping 或阈值校准的 qualification prompts。论文的 validation 和已开启 holdout 只用于冻结拓扑证据，不用于 LTSN 的架构选择、损失调权或资格门槛调整。
 
 \subsection{损失函数与训练方法}
 
-直接平均 $18$ 个坐标会使 $16$ 维 Pitch 块因维数更多而支配优化。本文按照
-冻结距离权重定义块平衡坐标损失：
+直接平均 $18$ 个坐标会使 $16$ 维 Pitch 块因维数更多而支配优化。本文按照冻结距离权重定义块平衡坐标损失：
 \begin{equation}
-\begin{split}
-L_{\mathrm{coord}}={}&
-\frac{1}{2}\frac{1}{16}\sum_{j\in L}
-\operatorname{Huber}(\hat{\mu}_j-z_j)\\
-&+\frac{1}{4}\operatorname{Huber}(\hat{\mu}_A-z_A)
+L_{\mathrm{coord}}={}
+\frac{1}{2} \times \frac{1}{16}\sum_{j\in L}
+\operatorname{Huber}(\hat{\mu}_j-z_j)
++\frac{1}{4}\operatorname{Huber}(\hat{\mu}_A-z_A)
 +\frac{1}{4}\operatorname{Huber}(\hat{\mu}_C-z_C).
-\end{split}
 \label{eq:block_balanced_loss}
 \end{equation}
 令 $s_j=\log\hat{\sigma}_j^2$，异方差负对数似然为
@@ -1269,8 +1296,7 @@ L_{\mathrm{NLL}}=
 \sum_{b\in\{L,A,C\}}\omega_b\frac{1}{d_b}\sum_{j\in b}
 \frac{1}{2}\left[e^{-s_j}(z_j-\hat{\mu}_j)^2+s_j\right],
 \end{equation}
-其中 $(\omega_L,\omega_A,\omega_C)=(1/2,1/4,1/4)$，且 $s_j$ 被限制在预设
-区间，避免网络以无限放大方差逃避误差。冻结读出的一致性损失为
+其中 $(\omega_L,\omega_A,\omega_C)=(1/2,1/4,1/4)$，且 $s_j$ 被限制在预设区间，避免网络以无限放大方差逃避误差。冻结读出的一致性损失为
 \begin{equation}
 L_{\mathrm{score}}=\operatorname{Huber}(\hat{S}_F-S_F).
 \end{equation}
@@ -1291,18 +1317,10 @@ L=L_{\mathrm{coord}}+0.25L_{\mathrm{NLL}}+0.5L_{\mathrm{score}}
 +0.2L_{\mathrm{rank}}+0.2L_{\Delta}+0.1L_{\mathrm{OOD}}.
 \label{eq:ltsn_total_loss}
 \end{equation}
-式~\eqref{eq:ltsn_total_loss} 的系数是开发起点而非验证结论，只允许在独立
-development prompts 上选择一次，并在 qualification 前与网络结构、数据清单和
+式~\eqref{eq:ltsn_total_loss} 的系数是开发起点而非验证结论，只允许在独立 development prompts 上选择一次，并在 qualification 前与网络结构、数据清单和
 全部哈希共同冻结。
 
-训练采用 AdamW，初始学习率 $3\times10^{-4}$、weight decay $10^{-2}$，经过
-$5\%$ warmup 后使用 cosine decay 至 $10^{-6}$；以 bf16 执行前向和反向传播，
-损失与方差计算保持 fp32；每卡 batch size 为 $8$--$16$，梯度累积至有效 batch
-$64$，全局梯度范数裁剪为 $1.0$。采样器对第 4、5、6 步和最终步、Focus logit
-分位及 OOD 比例作平衡。early stopping 同时考察 development score error 与
-Pitch/Phase 块级 Spearman 相关。训练阶段只读取预计算 latent 和 exact 标签，
-不加载 ACE-Step DiT 或 VAE；也不对 180s latent 随机裁剪后沿用整曲标签，不以
-打乱时间顺序作为数据增强。
+训练采用 AdamW，初始学习率 $3\times10^{-4}$、weight decay $10^{-2}$，经过 $5\%$ warmup 后使用 cosine decay 至 $10^{-6}$；以 bf16 执行前向和反向传播，损失与方差计算保持 fp32；每卡 batch size 为 $8$--$16$，梯度累积至有效 batch $64$，全局梯度范数裁剪为 $1.0$。采样器对第 4、5、6 步和最终步、Focus logit 分位及 OOD 比例作平衡。early stopping 同时考察 development score error 与 Pitch/Phase 块级 Spearman 相关。训练阶段只读取预计算 latent 和 exact 标签，不加载 ACE-Step DiT 或 VAE；也不对 180s latent 随机裁剪后沿用整曲标签，不以打乱时间顺序作为数据增强。
 
 \begin{tcolorbox}[colback=yellow!30,colframe=yellow!60,boxrule=0.5pt,arc=6pt,left=6pt,right=6pt,top=4pt,bottom=4pt]
 TODO：代理模型训练尚未完成，计划在 3090 显卡上进行训练。
@@ -1310,9 +1328,7 @@ TODO：代理模型训练尚未完成，计划在 3090 显卡上进行训练。
 
 \subsection{采样期拓扑校正}
 
-ACE-Step Turbo 为 CFG-distilled 模型，因而 \texttt{guidance\_scale} 不是本文的
-拓扑控制接口。采样时 DiT 始终保持 \texttt{no\_grad}；仅将式
-~\eqref{eq:pred_clean_latent} 得到的预测干净潜变量从主图分离并开启梯度：
+ACE-Step Turbo 为 CFG-distilled 模型，因而 \texttt{guidance\_scale} 不是本文的拓扑控制接口。采样时 DiT 始终保持 \texttt{no\_grad}；仅将式 ~\eqref{eq:pred_clean_latent} 得到的预测干净潜变量从主图分离并开启梯度：
 \begin{equation}
 \tilde{x}_0=\operatorname{stopgrad}(x_t-tv_t),\qquad
 \tilde{x}_0.\mathrm{requires\_grad}=\mathrm{True}.
@@ -1323,8 +1339,7 @@ ACE-Step Turbo 为 CFG-distilled 模型，因而 \texttt{guidance\_scale} 不是
 \left[\max(0,\tau_F-\hat{S}_F(\tilde{x}_0,t))\right]^2
 +\lambda_uU_{\mathrm{OOD}}+\lambda_qL_{\mathrm{quality}}.
 \end{equation}
-不确定度和质量项仅用于触发 no-op 或施加安全约束，不改变冻结拓扑目标的组成。
-对有效帧掩码 $M$，校正方向为
+不确定度和质量项仅用于触发 no-op 或施加安全约束，不改变冻结拓扑目标的组成。对有效帧掩码 $M$，校正方向为
 \begin{equation}
 g_t=\nabla_{\tilde{x}_0}\mathcal{E}_t,\qquad
 \delta_t=-\eta_k\operatorname{LPF}(M\odot g_t),
@@ -1343,37 +1358,20 @@ x_{t_{\mathrm{next}}}\leftarrow x_{t_{\mathrm{next}}}
 \end{equation}
 
 默认 $8$ 步、shift$=3.0$ 的时间序列为
-$[1.000,0.955,0.900,0.833,0.750,0.643,0.500,0.300]$。初始设计仅在第
-4--6 步启用校正，步间权重 $a_k=[0.5,1.0,0.5]$，从而避开高噪声的前三步和
-直接输出 $x_0$ 的最后一步。RMS 上限只在独立 development prompts 上从潜变量
-RMS 的 $0.25\%$、$0.5\%$ 和 $1.0\%$ 三个预设值中选择一次。
+$[1.000,0.955,0.900,0.833,0.750,0.643,0.500,0.300]$。初始设计仅在第 4--6 步启用校正，步间权重 $a_k=[0.5,1.0,0.5]$，从而避开高噪声的前三步和直接输出 $x_0$ 的最后一步。RMS 上限只在独立 development prompts 上从潜变量 RMS 的 $0.25\%$、$0.5\%$ 和 $1.0\%$ 三个预设值中选择一次。
 
-在采样循环中，corrector 位于 Euler/Heun 基础更新与 DCW 之后、Repaint 注入
-之前；Repaint 始终最后执行，以免受保护区域被拓扑梯度覆盖。当 scorer 或模型
-哈希不匹配、步骤不在窗口内、强度为零、ensemble disagreement 或预测区间超阈、
-OOD、NaN/Inf 以及 padding/Repaint 掩码无效时，校正必须逐样本退化为恒等映射。
+在采样循环中，corrector 位于 Euler/Heun 基础更新与 DCW 之后、Repaint 注入之前；Repaint 始终最后执行，以免受保护区域被拓扑梯度覆盖。当 scorer 或模型哈希不匹配、步骤不在窗口内、强度为零、ensemble disagreement 或预测区间超阈、OOD、NaN/Inf 以及 padding/Repaint 掩码无效时，校正必须逐样本退化为恒等映射。
 
 \subsection{资格检验与最终评价}
 
-LTSN 只有在未见 prompt、seed family 和轨迹上同时满足以下门槛，才允许进入
-采样器：Focus logit Spearman $\rho\geq0.70$；$18$ 个坐标的 Spearman 中位数
-$\rho\geq0.50$；Pitch 块距离和 Phase 块距离相关均不低于 $0.50$；Acoustic 与
-Chroma 两个 \texttt{loop\_score} 的相关均不低于 $0.50$；exact 高/低四分位的
-排序准确率不低于 $0.65$；$90\%$ 预测区间覆盖率位于 $0.85$--$0.95$；OOD 或高
-不确定样本能可靠触发 no-op；代理梯度优化后，解码音频的 exact score 与代理
-score 同向改善。任何一个主块失败均不能被总体 logit 相关掩盖。
+LTSN 只有在未见 prompt、seed family 和轨迹上同时满足以下门槛，才允许进入采样器：Focus logit Spearman $\rho\geq0.70$；$18$ 个坐标的 Spearman 中位数 $\rho\geq0.50$；Pitch 块距离和 Phase 块距离相关均不低于 $0.50$；Acoustic 与 Chroma 两个 \texttt{loop\_score} 的相关均不低于 $0.50$；exact 高/低四分位的排序准确率不低于 $0.65$；$90\%$ 预测区间覆盖率位于 $0.85$--$0.95$；OOD 或高不确定样本能可靠触发 no-op；代理梯度优化后，解码音频的 exact score 与代理 score 同向改善。任何一个主块失败均不能被总体 logit 相关掩盖。
 
-最终确认采用新的 $32$ 个 prompts、每个 prompt $8$ 个 seeds，并对每个 seed
-生成 baseline/guided 配对，共 $512$ 首 180s 音频。主要终点为
+最终确认采用新的 $32$ 个 prompts、每个 prompt $8$ 个 seeds，并对每个 seed 生成 baseline/guided 配对，共 $512$ 首 180s 音频。主要终点为
 \begin{equation}
 \Delta_i=L_{\mathrm{PH}}^{\mathrm{guided}}(i)
 -L_{\mathrm{PH}}^{\mathrm{base}}(i),
 \end{equation}
-其中负值表示更接近冻结目标带。报告中位差、Hodges--Lehmann 位移、按 prompt
-聚类的 bootstrap $95\%$ 置信区间及目标带命中率；同时执行 prompt 一致性、
-LUFS、true peak、削波、静音、频谱异常、机械短循环、过度平滑、多样性、盲听
-音质、耗时与显存的预设非劣检验。即使 exact PH 改善，只要音质、prompt 一致性
-或多样性越界，引导仍判定为失败。
+其中负值表示更接近冻结目标带。报告中位差、Hodges--Lehmann 位移、按 prompt 聚类的 bootstrap $95\%$ 置信区间及目标带命中率；同时执行 prompt 一致性、LUFS、true peak、削波、静音、频谱异常、机械短循环、过度平滑、多样性、盲听音质、耗时与显存的预设非劣检验。即使 exact PH 改善，只要音质、prompt 一致性或多样性越界，引导仍判定为失败。
 
 \begin{tcolorbox}[colback=yellow!30,colframe=yellow!60,boxrule=0.5pt,arc=6pt,left=6pt,right=6pt,top=4pt,bottom=4pt]
 TODO：最终评价需要等 LTSN 训练完成后才能开始，这里先记录方法和标准，等完成检验后再补充报告。

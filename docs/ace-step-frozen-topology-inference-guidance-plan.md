@@ -1,6 +1,6 @@
 # ACE-Step 冻结 18 维 Path Homology 指纹推理期引导方案
 
-更新日期：2026-08-07
+更新日期：2026-08-17
 
 逻辑指纹 ID：`focus_path_homology_fingerprint_v2`
 
@@ -8,7 +8,8 @@
 
 适用生成：ACE-Step 1.5 Turbo、PyTorch、180 s text-to-music
 
-当前工程状态：18 维科学规格已冻结；机器可读评分产物尚待重建
+当前工程状态：18 维机器可读 scorer 已重建、复现并签发；exact scoring 与 shadow
+已解锁，experimental reranking 待效果门槛，LTSN 与采样引导仍保持阻断
 
 ## 摘要
 
@@ -40,9 +41,8 @@ Pitch 加入 Phase 的增量为 $-7.094$、$q=1$。辅助分类中三者 balance
 5. 在 ACE-Step 中段步骤施加弱、可撤销的代理梯度；
 6. 解码后使用 exact scorer 复核，并执行音质和 prompt 一致性非劣检验。
 
-在第 1 步完成并产生新 SHA-256 之前，旧 51 维 JSON 不得用于 exact scoring、
-shadow、reranking、代理训练或采样引导。当前只冻结了研究规格，没有验证采样期
-引导有效。
+第 1 步已完成并产生新 SHA-256；旧 51 维 JSON 已归档且运行时拒绝加载。当前仍
+没有验证 exact reranking、LTSN 或采样期引导有效。
 
 ## 1. 冻结拓扑目标
 
@@ -112,9 +112,9 @@ holdout 再搜索。
 
 [分类消融 SVG](../runs/pitch_phase_hierarchical_fusion/figures/pitch_phase_classification_ablation.svg)
 
-## 2. 阶段 -1：重建 18 维 exact scorer
+## 2. 阶段 -1：18 维 exact scorer（已完成）
 
-现有以下产物仍序列化旧 51 维方案，不能视为当前冻结指纹：
+以下产物已经迁移并由 release manifest 签发：
 
 - `configs/focus_path_homology_fingerprint_v2.toml`；
 - `scripts/build_focus_path_homology_fingerprint.py`；
@@ -123,7 +123,14 @@ holdout 再搜索。
 - `metadata/focus_path_homology_fingerprint_v2_directions.csv`；
 - `metadata/focus_path_homology_fingerprint_v2_summary.json`。
 
-正式运行任何 ACE-Step 实验前必须完成：
+新增签发清单为 `metadata/focus_path_homology_fingerprint_v2_release.json`。当前
+profile SHA-256 为
+`c76a94dc0d122420728f20be738f6817dc92186ea7b3482ed772d53a2018f592`，分类器
+SHA-256 为 `c23c39ddfeb25b59781f561146018dd05eb257fd6e533a89b3a9d7102144ce03`。
+旧 51 维产物已归档至
+`metadata/archive/focus_path_homology_fingerprint_v2_legacy_51d_9bf64f3c1d79/`。
+
+本次签发已经完成并记录：
 
 1. 归档旧 51 维 JSON 与 SHA-256，不覆盖其审计记录；
 2. 将 `local_views` 固定为 `['pitch']`，将 `phase_views` 固定为 Acoustic/Chroma，
@@ -399,7 +406,8 @@ flowchart LR
 
 ### 阶段 -1：评分产物迁移
 
-完成第 2 节全部迁移、回归测试与新 SHA 签发。失败则停止，不能进入 shadow。
+第 2 节全部迁移、回归测试与新 SHA 签发已经通过；允许进入 shadow 与 exact
+reranking，但这不等于 reranking 效果已通过。
 
 ### 阶段 0：Shadow mode
 
@@ -522,7 +530,7 @@ RMS clip 和质量非劣共同限制该风险。
 - `docs/focus-path-homology-fingerprint-v2-analysis.md`；
 - `runs/pitch_phase_hierarchical_fusion/figures/`。
 
-必须先迁移：
+已迁移并签发：
 
 - `configs/focus_path_homology_fingerprint_v2.toml`；
 - `scripts/build_focus_path_homology_fingerprint.py`；
@@ -564,17 +572,18 @@ tests/test_path_homology_surrogate.py
 当前冻结目标是 18 维 Pitch+双相位 Path Homology 指纹，而不是旧 51 维
 Pitch/Rhythm/Modulation+双相位指纹。Structure 不再是辅助主层或 no-op gate。
 
-在新 scorer 构建、复现和签发 SHA 前，推荐状态为：
+签发后的当前状态为：
 
 ```text
 frozen_18d_spec = enabled
 legacy_51d_scorer = reject
-exact_scoring = blocked_until_18d_artifact
-shadow_mode = blocked_until_18d_artifact
-experimental_reranking = blocked_until_18d_artifact
+exact_scoring = enabled
+shadow_mode = enabled
+experimental_reranking = enabled_pending_separate_effect_gate
+ltsn_labeling = blocked_until_exact_reranking_gate
 sampling_guidance = disabled_until_all_gates_pass
 ```
 
-下一步不是训练 LTSN 或修改 ACE-Step 采样器，而是完成阶段 -1：归档旧 51 维产物，
-重建并验证 18 维 exact scorer，签发新的配置与模型哈希。只有这一硬门完成后，
-才能进入 shadow 和 exact reranking。
+下一步不是直接训练 LTSN 或开启采样器，而是运行阶段 0 shadow 与阶段 1 exact
+reranking，验证同 prompt 候选空间的冻结拓扑差异和质量非劣。只有 reranking
+效果门槛通过后，才能用本次签发 scorer 构建 LTSN 标签。

@@ -43,6 +43,16 @@ class AceStepAdapter:
             raise FileNotFoundError(f"ACE-Step checkout not found at {self.checkout}")
         self._handler: Any | None = None
         self._api: tuple[Any, Any, Any] | None = None
+        self._topology_corrector: Any | None = None
+
+    def set_topology_corrector(self, corrector: Any | None) -> None:
+        """Install a qualified experimental corrector on the PyTorch ACE backend."""
+
+        if corrector is not None and not callable(corrector):
+            raise TypeError("topology corrector must be callable or None")
+        self._topology_corrector = corrector
+        if self._handler is not None:
+            self._handler.set_topology_corrector(corrector)
 
     def _import_api(self) -> tuple[Any, Any, Any, Any]:
         checkout_text = str(self.checkout)
@@ -81,6 +91,7 @@ class AceStepAdapter:
         )
         if not success:
             raise RuntimeError(f"ACE-Step initialization failed: {status}")
+        handler.set_topology_corrector(self._topology_corrector)
         self._handler = handler
         self._api = (params_cls, generation_config_cls, generate_music)
 
@@ -149,3 +160,32 @@ class AceStepAdapter:
             final_latent=extra.get("pred_latents"),
             metadata=metadata,
         )
+
+    def decode_latent_to_audio(self, latent: Any, output_path: Path) -> Path:
+        """Decode one recorded ``[T,64]`` x0 estimate with the initialized ACE VAE."""
+
+        self.initialize()
+        assert self._handler is not None
+        try:
+            import numpy as np
+            import soundfile
+            import torch
+        except ImportError as exc:
+            raise RuntimeError("snapshot decoding requires torch, numpy, and soundfile") from exc
+        values = np.asarray(latent, dtype=np.float32)
+        if values.ndim != 2 or values.shape[1] != 64 or not np.isfinite(values).all():
+            raise ValueError("recorded snapshot latent must have finite shape [T,64]")
+        device = torch.device(self.config.device)
+        tensor = torch.from_numpy(values).unsqueeze(0).to(device)
+        waveforms, _, _ = self._handler._decode_generate_music_pred_latents(
+            pred_latents=tensor,
+            progress=None,
+            use_tiled_decode=True,
+            time_costs={"total_time_cost": 0.0},
+        )
+        audio = waveforms[0].detach().float().cpu().numpy().T
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = output_path.with_suffix(".part.wav")
+        soundfile.write(str(temporary), audio, int(self._handler.sample_rate), subtype="FLOAT")
+        temporary.replace(output_path)
+        return output_path.resolve()

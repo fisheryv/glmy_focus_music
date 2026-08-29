@@ -1,0 +1,41 @@
+schema_version = 1
+project_repository = "https://github.com/fisheryv/glmy_focus_music.git"
+python = "3.11"
+platform = "linux-x86_64"
+
+[hardware]
+cpu = "2 x Intel Xeon Silver 4514Y"
+memory_gib = 256
+gpu = "2 x NVIDIA L40S"
+minimum_local_nvme_tib = 2
+recommended_local_nvme_tib = 4
+
+[sources.pyglmy]
+repository = "https://github.com/fisheryv/pyglmy.git"
+revision = "49bd5ea7617906f09940dcc9b9718bbfc1482d6f"
+
+[sources.ace_step]
+repository = "https://github.com/fisheryv/ACE-Step-1.5.git"
+revision = "a5632cda3084f1088e69b2057dde7047e1bb4839"
+patch = "patches/ace-step-1.5-topology-corrector.patch"
+
+[sources.dataset]
+repository = "fisheryv/open-focus-classical-600"
+revision = "main"
+audio_files = 600
+sha256s_sha256 = "8b767b8d0d85fb3ef9ba5340ff6b5288d1e7681a5f37b71e2230f30c825ada20"
+tracks_csv_sha256 = "0636ddf6cb5b4ee418829dcd24578d7abe49ac2479719d36874b3b1ae5fd2e97"
+licenses_csv_sha256 = "4dc811a6fa31c772903cbf1178a478b56fc6f0896bb30096397426f116a9d66c"
+
+[scorer]
+fingerprint_id = "focus_path_homology_fingerprint_v2"
+spec_revision = "2026-08-17-frozen-18d"
+dimensions = 18
+release_manifest = "metadata/focus_path_homology_fingerprint_v2_release.json"
+profile_sha256 = "c76a94dc0d122420728f20be738f6817dc92186ea7b3482ed772d53a2018f592"
+legacy_51d = "reject"
+
+[qualification]
+reranking_gate = "exact_reranking_effect_v1"
+engineering_smoke_qualifies = false
+sampling_guidance_default = "disabled"

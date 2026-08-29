@@ -1,6 +1,6 @@
 # Focus Music 纯 Path Homology 拓扑指纹 v2：Pitch + 双相位更新
 
-更新日期：2026-08-07
+更新日期：2026-08-17
 
 逻辑指纹 ID：`focus_path_homology_fingerprint_v2`
 
@@ -8,7 +8,7 @@
 
 主要尺度：180 s
 
-当前状态：分析规格已更新；旧 51 维冻结评分器尚未迁移
+当前状态：18 维 exact scorer 已重建、回归验证并签发；旧 51 维评分器已归档并拒绝加载
 
 ## 摘要
 
@@ -255,7 +255,7 @@ Rhythm 与 Modulation 的独立分析结果仍可在论文中报告，但它们�
 
 ### 当前允许
 
-- 将 18 维 Pitch+双相位表示作为 exact scoring 的候选规格；
+- 使用已签发的 18 维 Pitch+双相位 scorer 执行 exact scoring；
 - shadow mode：只记录分数，不改变采样；
 - 在同一 prompt/seed 候选池中做实验性 exact reranking；
 - 作为未来 LTSN 的教师目标与最终 exact verifier。
@@ -272,7 +272,7 @@ Rhythm 与 Modulation 的独立分析结果仍可在论文中报告，但它们�
 采样期控制仍需完成 exact reranking 可辨识性、代理模型未见轨迹资格、配对生成
 实验、音质非劣与 exact 复核。
 
-## 8. 实现迁移状态
+## 8. 实现与签发状态
 
 当前分析结果由以下入口产生：
 
@@ -286,7 +286,7 @@ Rhythm 与 Modulation 的独立分析结果仍可在论文中报告，但它们�
 - `metadata/pitch_phase_hierarchical_summary.json`
 - `runs/pitch_phase_hierarchical_fusion/figures/`
 
-下列既有 v2 产物仍序列化旧 51 维方案，**不匹配本报告的当前 18 维定义**：
+下列 v2 产物已于 2026-08-17 迁移为当前 18 维定义：
 
 - `configs/focus_path_homology_fingerprint_v2.toml`
 - `scripts/build_focus_path_homology_fingerprint.py`
@@ -294,10 +294,20 @@ Rhythm 与 Modulation 的独立分析结果仍可在论文中报告，但它们�
 - `metadata/focus_path_homology_fingerprint_v2_scores.csv`
 - `metadata/focus_path_homology_fingerprint_v2_directions.csv`
 - `metadata/focus_path_homology_fingerprint_v2_summary.json`
+- `metadata/focus_path_homology_fingerprint_v2_release.json`
 - `runs/focus_path_homology_fingerprint_v2/figures/`
 
-在重新构建并验证当前 18 维分类器系数、截距、块变换、目标分位数和新 SHA-256
-之前，不应把旧 JSON 用于 exact scoring、shadow mode、reranking 或生成控制。
+签发的 profile SHA-256 为
+`c76a94dc0d122420728f20be738f6817dc92186ea7b3482ed772d53a2018f592`，分类器
+SHA-256 为 `c23c39ddfeb25b59781f561146018dd05eb257fd6e533a89b3a9d7102144ce03`。
+validation/180s 的 Pitch、Phase、联合 pseudo-$F$、双向增量、联合 BA 与 AUROC
+均在 $10^{-9}$ 容差内复现冻结报告，实际最大绝对误差低于 $1.8\times10^{-15}$。
+
+旧 51 维 profile 及其配置、构建器、表格和配图保存在
+`metadata/archive/focus_path_homology_fingerprint_v2_legacy_51d_9bf64f3c1d79/`；旧
+profile SHA-256 为 `9bf64f3c1d79c12ec428f1d9f552827d07e9f5c445d9236e7ab676699a62ef1f`，
+运行时必须拒绝加载。当前允许 exact scoring 与 shadow mode；experimental reranking
+仍需单独通过效果门槛，LTSN 标签构建在该门槛前保持阻断，采样引导继续关闭。
 
 ## 9. 最终定义
 

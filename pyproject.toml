@@ -8,12 +8,13 @@ version = "0.3.0"
 description = "Directed persistent path homology for musical state sequences and audio"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { text = "Research-only scaffold; data licenses are tracked separately" }
+license = { text = "MIT" }
 authors = [{ name = "Focus Music GLMY research team" }]
 keywords = ["music information retrieval", "topological data analysis", "path homology"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
   "Topic :: Multimedia :: Sound/Audio :: Analysis",
@@ -21,7 +22,7 @@ classifiers = [
 ]
 dependencies = [
   "numpy>=1.26,<3",
-  "pyglmy>=0.1.0,<0.2",
+  "pyglmy @ git+https://github.com/fisheryv/pyglmy.git@49bd5ea7617906f09940dcc9b9718bbfc1482d6f",
 ]
 
 [project.optional-dependencies]
@@ -54,6 +55,12 @@ dev = [
   "pytest-cov>=5",
   "ruff>=0.6",
 ]
+topology-guidance = [
+  "torch>=2.7,<3",
+]
+repro = [
+  "huggingface-hub>=0.34,<2",
+]
 
 [project.scripts]
 focus-topology = "focus_topology.cli:main"
@@ -68,6 +75,12 @@ focus-repetition = "repetition.analysis:main"
 focus-repetition-strengthened = "repetition.strengthened:main"
 focus-multiscale-delay = "repetition.multiscale_delay:main"
 focus-ace-rerank = "generation.rerank_cli:main"
+focus-ltsn-collect = "generation.ltsn_cli:collect_main"
+focus-ltsn-labels = "generation.ltsn_cli:labels_main"
+focus-ltsn-train = "generation.ltsn_cli:train_main"
+focus-ltsn-qualify = "generation.ltsn_cli:qualification_main"
+focus-ltsn-guidance-eval = "generation.ltsn_cli:guidance_main"
+focus-prepare-data = "data.hf_release:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}

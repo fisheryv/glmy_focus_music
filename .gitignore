@@ -84,6 +84,10 @@ papers/tmp/
 # Generated Hugging Face release staging (includes hard-linked source audio)
 hf_release/
 
+# Downloaded immutable dataset snapshots and external source checkouts
+datasets/
+external/
+
 # Office lock files
 **/~$*
 

@@ -1,0 +1,11 @@
+{
+  "gate": "exact_reranking_effect_v1",
+  "status": "blocked_template_not_evidence",
+  "fingerprint_json_sha256": "c76a94dc0d122420728f20be738f6817dc92186ea7b3482ed772d53a2018f592",
+  "median_loss_improvement_fraction": 0.0,
+  "bootstrap_ci95_low": 0.0,
+  "target_band_hit_rate_improved": false,
+  "quality_noninferior": false,
+  "prompt_noninferior": false,
+  "diversity_preserved": false
+}

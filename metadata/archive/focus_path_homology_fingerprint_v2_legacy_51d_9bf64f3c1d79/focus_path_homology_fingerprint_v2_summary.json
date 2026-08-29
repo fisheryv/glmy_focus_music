@@ -1,0 +1,56 @@
+{
+  "generated_at": "2026-08-03",
+  "fingerprint_id": "focus_path_homology_fingerprint_v2",
+  "profile_sha256": "9bf64f3c1d79c12ec428f1d9f552827d07e9f5c445d9236e7ab676699a62ef1f",
+  "contains_tda_features": false,
+  "primary_representation": "L+P",
+  "dimensions": 51,
+  "validation_180": {
+    "n": 120,
+    "balanced_accuracy": 0.9333333333333333,
+    "roc_auc": 0.9819444444444444
+  },
+  "opened_holdout_180_descriptive": {
+    "n": 90,
+    "balanced_accuracy_descriptive": 0.9111111111111111,
+    "roc_auc_descriptive": 0.9822222222222222
+  },
+  "phase_increment": {
+    "delta_pseudo_f": 6.910057511334833,
+    "p_value_one_sided": 0.001,
+    "p_fdr_bh": 0.002
+  },
+  "structure_increment": {
+    "delta_pseudo_f": -4.477009154772054,
+    "p_value_one_sided": 1.0,
+    "p_fdr_bh": 1.0
+  },
+  "directional_signature_counts": {
+    "local": 38,
+    "macro_auxiliary": 6,
+    "phase": 2
+  },
+  "status": {
+    "fingerprint": "exploratory_validated_path_homology_fingerprint",
+    "allowed": [
+      "exact scoring",
+      "shadow mode",
+      "experimental reranking"
+    ],
+    "sampling_guidance": "requires separate surrogate and paired generation validation",
+    "confirmatory": false
+  },
+  "artifacts": [
+    "metadata/focus_path_homology_fingerprint_v2.json",
+    "metadata/focus_path_homology_fingerprint_v2_scores.csv",
+    "metadata/focus_path_homology_fingerprint_v2_directions.csv",
+    "runs/focus_path_homology_fingerprint_v2/figures/directional_signature.png",
+    "runs/focus_path_homology_fingerprint_v2/figures/directional_signature.svg",
+    "runs/focus_path_homology_fingerprint_v2/figures/fingerprint_composition.png",
+    "runs/focus_path_homology_fingerprint_v2/figures/fingerprint_composition.svg",
+    "runs/focus_path_homology_fingerprint_v2/figures/fingerprint_validation.png",
+    "runs/focus_path_homology_fingerprint_v2/figures/fingerprint_validation.svg",
+    "runs/focus_path_homology_fingerprint_v2/figures/focus_score_distribution.png",
+    "runs/focus_path_homology_fingerprint_v2/figures/focus_score_distribution.svg"
+  ]
+}

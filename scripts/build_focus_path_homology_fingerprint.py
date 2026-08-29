@@ -22,11 +22,8 @@ from matplotlib.patches import FancyArrowPatch, FancyBboxPatch  # noqa: E402
 from sklearn.linear_model import LogisticRegression  # noqa: E402
 from sklearn.metrics import balanced_accuracy_score, roc_auc_score  # noqa: E402
 
-from topology.multiview_fusion import (  # noqa: E402
-    DiscoveryMahalanobisBlock,
-    equal_block_fusion,
-)
-from topology.statistics import TOPOLOGY_METRICS  # noqa: E402
+from topology.multiview_fusion import DiscoveryMahalanobisBlock  # noqa: E402
+from topology.statistics import TOPOLOGY_METRICS, _pseudo_f_statistic  # noqa: E402
 
 METADATA = ROOT / "metadata"
 CONFIG_PATH = ROOT / "configs" / "focus_path_homology_fingerprint_v2.toml"
@@ -34,23 +31,18 @@ PROFILE_PATH = METADATA / "focus_path_homology_fingerprint_v2.json"
 SCORES_PATH = METADATA / "focus_path_homology_fingerprint_v2_scores.csv"
 DIRECTIONS_PATH = METADATA / "focus_path_homology_fingerprint_v2_directions.csv"
 SUMMARY_PATH = METADATA / "focus_path_homology_fingerprint_v2_summary.json"
+RELEASE_PATH = METADATA / "focus_path_homology_fingerprint_v2_release.json"
 OUTPUT = ROOT / "runs" / "focus_path_homology_fingerprint_v2"
 FIGURES = OUTPUT / "figures"
 
-VIEW_FILES = {
-    "pitch": METADATA / "pitch_v2_topology_segments.csv",
-    "rhythm": METADATA / "rhythm_topology_segments.csv",
-    "modulation": METADATA / "modulation_tertile_topology_segments.csv",
-    "structure": METADATA / "structure_topology_segments.csv",
-}
+PITCH_FILE = METADATA / "pitch_v2_topology_segments.csv"
 PHASE_FILE = METADATA / "phase_lifted_path_homology_features.csv"
-HOLDOUT_GATE = METADATA / "holdout_gate.json"
+PITCH_TESTS = METADATA / "pitch_v2_statistical_tests.csv"
 PHASE_TESTS = METADATA / "phase_lifted_path_homology_tests.csv"
-FUSION_SUMMARY = METADATA / "multiscale_hierarchical_fusion_summary.json"
-FUSION_CLASSIFICATION = METADATA / "multiscale_hierarchical_fusion_classification.csv"
-FUSION_HOLDOUT = METADATA / "multiscale_hierarchical_fusion_holdout_descriptive.csv"
+FROZEN_EVIDENCE = METADATA / "pitch_phase_hierarchical_summary.json"
 
 IDENTITY = ["segment_id", "track_id", "group", "split", "scale_seconds"]
+PHASE_VIEWS = ("path_acoustic_phase", "path_chroma_phase")
 COLORS = {
     "blue": "#2563EB",
     "orange": "#C2410C",
@@ -75,6 +67,7 @@ class SerializedBlock:
     whitening: list[list[float]]
     effective_rank: int
     output_dimensions: int
+    fusion_scale: float
 
 
 def _sha256(path: Path) -> str:
@@ -85,9 +78,36 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def _mapping_sha256(values: dict[str, str]) -> str:
+    payload = json.dumps(values, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _classifier_sha256(coef: list[float], intercept: float) -> str:
+    payload = json.dumps(
+        {"coef": coef, "intercept": intercept}, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    temporary = path.with_suffix(path.suffix + ".part")
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    os.replace(temporary, path)
+
+
+def _write_csv(path: Path, frame: pd.DataFrame) -> None:
+    temporary = path.with_suffix(path.suffix + ".part")
+    frame.to_csv(temporary, index=False, encoding="utf-8", lineterminator="\n")
+    os.replace(temporary, path)
+
+
 def _serialize_block(
     transformer: DiscoveryMahalanobisBlock,
     input_features: list[str],
+    fusion_scale: float,
 ) -> SerializedBlock:
     if any(
         value is None
@@ -111,29 +131,8 @@ def _serialize_block(
         whitening=transformer.whitening.astype(float).tolist(),
         effective_rank=int(transformer.effective_rank),
         output_dimensions=int(transformer.whitening.shape[1]),
+        fusion_scale=float(fusion_scale),
     )
-
-
-def _load_inputs() -> tuple[pd.DataFrame, dict[str, pd.DataFrame], pd.DataFrame]:
-    frames: dict[str, pd.DataFrame] = {}
-    canonical: pd.MultiIndex | None = None
-    for view, path in VIEW_FILES.items():
-        frame = pd.read_csv(path)
-        indexed = frame.set_index(IDENTITY).sort_index()
-        if canonical is None:
-            canonical = indexed.index
-        elif not indexed.index.equals(canonical):
-            raise RuntimeError(f"{view} identities do not align")
-        if (indexed["status"] == "failed").any():
-            raise RuntimeError(f"{view} contains failed rows")
-        frames[view] = indexed
-    assert canonical is not None
-
-    phase = pd.read_csv(PHASE_FILE)
-    pivot = phase.pivot(index=IDENTITY, columns="representation", values="loop_score")
-    pivot = pivot.reindex(canonical)
-    identity = canonical.to_frame(index=False)
-    return identity, frames, pivot
 
 
 def _mask(identity: pd.DataFrame, split: str, scale: float = 180.0) -> np.ndarray:
@@ -142,64 +141,188 @@ def _mask(identity: pd.DataFrame, split: str, scale: float = 180.0) -> np.ndarra
     )
 
 
-def _fit_blocks(
+def _load_inputs() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    pitch = pd.read_csv(PITCH_FILE)
+    required_pitch = set(IDENTITY) | set(TOPOLOGY_METRICS) | {"status"}
+    missing_pitch = required_pitch - set(pitch.columns)
+    if missing_pitch:
+        raise RuntimeError(f"pitch file is missing columns: {sorted(missing_pitch)}")
+    if pitch.duplicated(IDENTITY).any() or (pitch["status"] == "failed").any():
+        raise RuntimeError("pitch input has duplicate identities or failed rows")
+    pitch_indexed = pitch.set_index(IDENTITY).sort_index()
+    pitch_numeric = pitch_indexed.loc[:, TOPOLOGY_METRICS].apply(
+        pd.to_numeric, errors="coerce"
+    )
+    if pitch_numeric.isna().any().any():
+        raise RuntimeError("pitch input contains missing topology metrics")
+
+    phase = pd.read_csv(PHASE_FILE)
+    required_phase = set(IDENTITY) | {"representation", "loop_score"}
+    missing_phase = required_phase - set(phase.columns)
+    if missing_phase:
+        raise RuntimeError(f"phase file is missing columns: {sorted(missing_phase)}")
+    if phase.duplicated([*IDENTITY, "representation"]).any():
+        raise RuntimeError("phase input has duplicate identity/representation rows")
+    phase_pivot = phase.pivot(
+        index=IDENTITY, columns="representation", values="loop_score"
+    ).reindex(pitch_indexed.index)
+    if phase_pivot.loc[:, list(PHASE_VIEWS)].isna().sum().max() > 2:
+        raise RuntimeError("unexpected phase missingness")
+
+    identity = pitch_indexed.index.to_frame(index=False)
+    return identity, pitch_numeric, phase_pivot
+
+
+def _fit_coordinates(
     identity: pd.DataFrame,
-    frames: dict[str, pd.DataFrame],
+    pitch: pd.DataFrame,
     phase: pd.DataFrame,
-    config: dict[str, Any],
-) -> tuple[dict[str, np.ndarray], dict[str, SerializedBlock]]:
-    discovery = _mask(identity, config["fingerprint"]["reference_split"])
-    matrices: dict[str, np.ndarray] = {}
-    serialized: dict[str, SerializedBlock] = {}
-    for view in (*config["blocks"]["local_views"], *config["blocks"]["auxiliary_views"]):
-        raw = frames[view].loc[:, TOPOLOGY_METRICS].to_numpy(float)
-        transformer = DiscoveryMahalanobisBlock().fit(raw[discovery])
-        matrices[view] = transformer.transform(raw)
-        serialized[view] = _serialize_block(transformer, list(TOPOLOGY_METRICS))
-    for view in config["blocks"]["phase_views"]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, SerializedBlock]]:
+    discovery = _mask(identity, "discovery")
+    pitch_transform = DiscoveryMahalanobisBlock().fit(pitch.to_numpy(float)[discovery])
+    pitch_block = pitch_transform.transform(pitch.to_numpy(float))
+
+    phase_blocks: list[np.ndarray] = []
+    phase_transforms: dict[str, DiscoveryMahalanobisBlock] = {}
+    for view in PHASE_VIEWS:
         raw = phase.loc[:, [view]].to_numpy(float)
         transformer = DiscoveryMahalanobisBlock().fit(raw[discovery])
-        matrices[view] = transformer.transform(raw)
-        serialized[view] = _serialize_block(transformer, ["loop_score"])
-    return matrices, serialized
+        phase_blocks.append(transformer.transform(raw))
+        phase_transforms[view] = transformer
+
+    phase_block = np.concatenate(phase_blocks, axis=1) / np.sqrt(2.0)
+    coordinates = np.concatenate(
+        [pitch_block / np.sqrt(2.0), phase_block / np.sqrt(2.0)], axis=1
+    )
+    serialized = {
+        "pitch": _serialize_block(
+            pitch_transform, list(TOPOLOGY_METRICS), fusion_scale=1.0 / np.sqrt(2.0)
+        ),
+        PHASE_VIEWS[0]: _serialize_block(
+            phase_transforms[PHASE_VIEWS[0]], ["loop_score"], fusion_scale=0.5
+        ),
+        PHASE_VIEWS[1]: _serialize_block(
+            phase_transforms[PHASE_VIEWS[1]], ["loop_score"], fusion_scale=0.5
+        ),
+    }
+    if pitch_block.shape[1] != 16 or phase_block.shape[1] != 2 or coordinates.shape[1] != 18:
+        raise RuntimeError(
+            "frozen dimensions changed: expected Pitch=16, Phase=2, joint=18"
+        )
+    return pitch_block, phase_block, coordinates, serialized
 
 
 def _build_directions() -> pd.DataFrame:
-    gate = json.loads(HOLDOUT_GATE.read_text(encoding="utf-8"))
-    rows = []
-    for item in gate["analysis_specification"]["directional_metrics"]:
+    pitch = pd.read_csv(PITCH_TESTS)
+    pitch = pitch[
+        (pitch["analysis_set"] == "primary_validation_180")
+        & (pitch["p_fdr_bh"] <= 0.05)
+    ]
+    rows: list[dict[str, Any]] = []
+    for item in pitch.itertuples(index=False):
         rows.append(
             {
-                "layer": "local" if item["view"] != "structure" else "macro_auxiliary",
-                "view": item["view"],
-                "metric": item["metric"],
-                "expected_focus_direction": item["expected_focus_direction"],
-                "validation_classical_median": item["validation_classical_median"],
-                "validation_focus_median": item["validation_focus_median"],
-                "validation_p_fdr_bh": item["validation_p_fdr_bh"],
-                "evidence_role": "frozen_before_holdout",
+                "layer": "pitch",
+                "view": "pitch",
+                "metric": item.metric,
+                "expected_focus_direction": "greater"
+                if item.focus_median > item.classical_median
+                else "less",
+                "validation_classical_median": item.classical_median,
+                "validation_focus_median": item.focus_median,
+                "validation_p_fdr_bh": item.p_fdr_bh,
+                "evidence_role": "validation_180_confirmatory_pitch",
             }
         )
-    phase_tests = pd.read_csv(PHASE_TESTS)
-    selected = phase_tests[
-        (phase_tests["split"] == "validation")
-        & np.isclose(phase_tests["scale_seconds"], 180.0)
-        & phase_tests["representation"].isin(["path_acoustic_phase", "path_chroma_phase"])
+
+    phase = pd.read_csv(PHASE_TESTS)
+    phase = phase[
+        (phase["role"] == "primary_validation")
+        & np.isclose(phase["scale_seconds"], 180.0)
+        & phase["representation"].isin(PHASE_VIEWS)
     ]
-    for row in selected.itertuples(index=False):
+    for item in phase.itertuples(index=False):
         rows.append(
             {
                 "layer": "phase",
-                "view": row.representation,
+                "view": item.representation,
                 "metric": "loop_score",
                 "expected_focus_direction": "greater",
-                "validation_classical_median": row.classical_median,
-                "validation_focus_median": row.focus_median,
-                "validation_p_fdr_bh": row.p_focus_greater_fdr_bh,
-                "evidence_role": "exploratory_phase_increment",
+                "validation_classical_median": item.classical_median,
+                "validation_focus_median": item.focus_median,
+                "validation_p_fdr_bh": item.p_focus_greater_fdr_bh,
+                "evidence_role": "post_validation_refreeze_phase",
             }
         )
     return pd.DataFrame(rows).sort_values(["layer", "view", "metric"]).reset_index(drop=True)
+
+
+def _validation_reproduction(
+    identity: pd.DataFrame,
+    pitch_block: np.ndarray,
+    phase_block: np.ndarray,
+    coordinates: np.ndarray,
+    probabilities: np.ndarray,
+    predictions: np.ndarray,
+    frozen: dict[str, Any],
+    tolerance: float,
+) -> dict[str, Any]:
+    validation = _mask(identity, "validation")
+    labels = identity.loc[validation, "group"].astype(str).to_numpy()
+    binary = (labels == "focus").astype(int)
+    observed = {
+        "pitch_pseudo_f": float(_pseudo_f_statistic(pitch_block[validation], labels)),
+        "phase_pseudo_f": float(_pseudo_f_statistic(phase_block[validation], labels)),
+        "joint_pseudo_f": float(_pseudo_f_statistic(coordinates[validation], labels)),
+        "joint_balanced_accuracy": float(
+            balanced_accuracy_score(binary, (predictions[validation] == "focus").astype(int))
+        ),
+        "joint_auroc": float(roc_auc_score(binary, probabilities[validation])),
+    }
+    observed["joint_minus_pitch_delta_pseudo_f"] = (
+        observed["joint_pseudo_f"] - observed["pitch_pseudo_f"]
+    )
+    observed["joint_minus_phase_delta_pseudo_f"] = (
+        observed["joint_pseudo_f"] - observed["phase_pseudo_f"]
+    )
+    expected_primary = frozen["primary_180"]
+    expected = {
+        "pitch_pseudo_f": expected_primary["permanova"]["Pitch"]["pseudo_f"],
+        "phase_pseudo_f": expected_primary["permanova"]["Phase"]["pseudo_f"],
+        "joint_pseudo_f": expected_primary["permanova"]["PitchPhase"]["pseudo_f"],
+        "joint_balanced_accuracy": expected_primary["classification"]["PitchPhase"][
+            "balanced_accuracy"
+        ],
+        "joint_auroc": expected_primary["classification"]["PitchPhase"]["auroc"],
+        "joint_minus_pitch_delta_pseudo_f": expected_primary["increments"][
+            "PitchPhase_minus_Pitch"
+        ]["delta_pseudo_f"],
+        "joint_minus_phase_delta_pseudo_f": expected_primary["increments"][
+            "PitchPhase_minus_Phase"
+        ]["delta_pseudo_f"],
+    }
+    absolute_error = {name: abs(observed[name] - float(value)) for name, value in expected.items()}
+    failures = {name: error for name, error in absolute_error.items() if error > tolerance}
+    if failures:
+        raise RuntimeError(f"18-D frozen validation reproduction failed: {failures}")
+    return {
+        "status": "passed",
+        "tolerance": tolerance,
+        "observed": observed,
+        "expected": expected,
+        "absolute_error": absolute_error,
+        "frozen_permutation_evidence": {
+            "pitch_q": expected_primary["permanova"]["Pitch"]["p_fdr_bh"],
+            "phase_q": expected_primary["permanova"]["Phase"]["p_fdr_bh"],
+            "joint_q": expected_primary["permanova"]["PitchPhase"]["p_fdr_bh"],
+            "phase_added_to_pitch_q": expected_primary["increments"][
+                "PitchPhase_minus_Pitch"
+            ]["p_fdr_bh"],
+            "pitch_added_to_phase_q": expected_primary["increments"][
+                "PitchPhase_minus_Phase"
+            ]["p_fdr_bh"],
+        },
+    }
 
 
 def _save_figure(figure: Any, stem: str) -> None:
@@ -210,7 +333,7 @@ def _save_figure(figure: Any, stem: str) -> None:
 
 
 def _box(
-    ax: Any,
+    axis: Any,
     xy: tuple[float, float],
     width: float,
     height: float,
@@ -218,7 +341,7 @@ def _box(
     face: str,
     edge: str,
 ) -> None:
-    ax.add_patch(
+    axis.add_patch(
         FancyBboxPatch(
             xy,
             width,
@@ -229,7 +352,7 @@ def _box(
             linewidth=1.5,
         )
     )
-    ax.text(
+    axis.text(
         xy[0] + width / 2,
         xy[1] + height / 2,
         text,
@@ -241,8 +364,8 @@ def _box(
     )
 
 
-def _arrow(ax: Any, start: tuple[float, float], end: tuple[float, float]) -> None:
-    ax.add_patch(
+def _arrow(axis: Any, start: tuple[float, float], end: tuple[float, float]) -> None:
+    axis.add_patch(
         FancyArrowPatch(
             start,
             end,
@@ -254,157 +377,107 @@ def _arrow(ax: Any, start: tuple[float, float], end: tuple[float, float]) -> Non
     )
 
 
-def _routed_arrow(
-    ax: Any,
-    points: list[tuple[float, float]],
-) -> None:
+def _routed_arrow(axis: Any, points: list[tuple[float, float]]) -> None:
     for start, end in zip(points[:-2], points[1:-1], strict=True):
-        ax.plot(
+        axis.plot(
             [start[0], end[0]],
             [start[1], end[1]],
             color=COLORS["gray"],
             linewidth=1.4,
         )
-    _arrow(ax, points[-2], points[-1])
+    _arrow(axis, points[-2], points[-1])
 
 
 def _plot_composition() -> None:
-    figure, ax = plt.subplots(figsize=(12.5, 5.8))
-    ax.set_xlim(0, 1)
-    ax.set_ylim(0, 1)
-    ax.axis("off")
+    figure, axis = plt.subplots(figsize=(11.5, 4.6))
+    axis.set_xlim(0, 1)
+    axis.set_ylim(0, 1)
+    axis.axis("off")
     _box(
-        ax,
-        (0.02, 0.68),
-        0.16,
-        0.17,
-        "Pitch PH\n20 指标 / rank 13",
-        COLORS["pale_blue"],
-        COLORS["blue"],
-    )
-    _box(
-        ax,
-        (0.02, 0.43),
-        0.16,
-        0.17,
-        "Rhythm PH\n20 指标 / rank 13",
-        COLORS["pale_blue"],
-        COLORS["blue"],
-    )
-    _box(
-        ax,
-        (0.02, 0.18),
-        0.16,
-        0.17,
-        "Modulation PH\n20 指标 / rank 14",
-        COLORS["pale_blue"],
-        COLORS["blue"],
-    )
-    _box(
-        ax,
-        (0.25, 0.43),
-        0.17,
+        axis,
+        (0.03, 0.64),
         0.22,
-        "局部块 L\n三视角等权\n49 维",
-        COLORS["pale_green"],
-        COLORS["green"],
-    )
-    _box(
-        ax,
-        (0.47, 0.68),
-        0.16,
-        0.17,
-        "Acoustic phase PH\nloop_score",
-        COLORS["pale_purple"],
-        COLORS["purple"],
-    )
-    _box(
-        ax,
-        (0.47, 0.43),
-        0.16,
-        0.17,
-        "Chroma phase PH\nloop_score",
-        COLORS["pale_purple"],
-        COLORS["purple"],
-    )
-    _box(
-        ax,
-        (0.68, 0.52),
-        0.13,
         0.20,
-        "相位块 P\n两视角等权\n2 维",
+        "Pitch Path Homology\n16 coordinates / rank 13",
+        COLORS["pale_blue"],
+        COLORS["blue"],
+    )
+    _box(
+        axis,
+        (0.28, 0.48),
+        0.20,
+        0.16,
+        "Acoustic phase\nloop_score",
+        COLORS["pale_purple"],
+        COLORS["purple"],
+    )
+    _box(
+        axis,
+        (0.28, 0.22),
+        0.20,
+        0.16,
+        "Chroma phase\nloop_score",
+        COLORS["pale_purple"],
+        COLORS["purple"],
+    )
+    _box(
+        axis,
+        (0.56, 0.28),
+        0.18,
+        0.24,
+        "Phase block P\n2 coordinates\nequal block",
         COLORS["pale_orange"],
         COLORS["orange"],
     )
     _box(
-        ax,
-        (0.84, 0.43),
-        0.14,
-        0.26,
-        "主指纹 L+P\n51 维\nFocus 判别分数",
+        axis,
+        (0.81, 0.42),
+        0.17,
+        0.36,
+        "Frozen scorer\n18-D\nPitch 1/2\nA 1/4 + C 1/4",
         COLORS["pale_red"],
         COLORS["red"],
     )
-    _box(
-        ax,
-        (0.56, 0.10),
-        0.18,
-        0.17,
-        "Structure PH（S）\n宏观辅助层\n不并入主指纹",
-        "#F1F5F9",
-        COLORS["gray"],
-    )
-    for y in (0.765, 0.515, 0.265):
-        _arrow(ax, (0.18, y), (0.25, 0.54))
-    _routed_arrow(
-        ax,
-        [(0.42, 0.48), (0.45, 0.34), (0.79, 0.34), (0.84, 0.48)],
-    )
-    _arrow(ax, (0.63, 0.765), (0.68, 0.62))
-    _arrow(ax, (0.63, 0.515), (0.68, 0.62))
-    _arrow(ax, (0.81, 0.62), (0.84, 0.58))
-    ax.text(
-        0.33,
-        0.05,
-        "完全使用 Path Homology；不包含 Vietoris–Rips TDA 端点。",
+    _routed_arrow(axis, [(0.25, 0.74), (0.30, 0.90), (0.76, 0.90), (0.81, 0.69)])
+    _arrow(axis, (0.48, 0.56), (0.56, 0.46))
+    _arrow(axis, (0.48, 0.30), (0.56, 0.35))
+    _arrow(axis, (0.74, 0.40), (0.81, 0.53))
+    axis.text(
+        0.50,
+        0.12,
+        "Rhythm, Modulation, Structure, Rhythm phase and TDA are rejected at runtime.",
         ha="center",
-        fontsize=11,
+        fontsize=10.5,
         color=COLORS["gray"],
     )
-    ax.set_title("focus_path_homology_fingerprint_v2 组成", fontsize=16, pad=12)
+    axis.set_title("focus_path_homology_fingerprint_v2 — issued 18-D composition", fontsize=15)
     figure.tight_layout()
     _save_figure(figure, "fingerprint_composition")
 
 
-def _plot_validation(classification: pd.DataFrame, holdout: pd.DataFrame) -> None:
-    order = ["L", "P", "LP", "S", "LPS"]
-    labels = ["L", "P", "L+P", "S", "L+P+S"]
-    validation = classification[np.isclose(classification["scale_seconds"], 180.0)].set_index(
-        "feature_set"
+def _plot_validation(reproduction: dict[str, Any]) -> None:
+    observed = reproduction["observed"]
+    names = ["Pitch", "Phase", "Pitch + Phase"]
+    values = [
+        observed["pitch_pseudo_f"],
+        observed["phase_pseudo_f"],
+        observed["joint_pseudo_f"],
+    ]
+    figure, axes = plt.subplots(1, 2, figsize=(10.8, 4.6))
+    bars = axes[0].bar(names, values, color=[COLORS["blue"], COLORS["purple"], COLORS["red"]])
+    axes[0].bar_label(bars, fmt="%.3f")
+    axes[0].set_ylabel("validation/180s pseudo-F")
+    axes[0].set_title("Frozen distance geometry")
+    metrics = [observed["joint_balanced_accuracy"], observed["joint_auroc"]]
+    metric_bars = axes[1].bar(
+        ["Balanced accuracy", "AUROC"], metrics, color=[COLORS["green"], COLORS["orange"]]
     )
-    held = holdout[np.isclose(holdout["scale_seconds"], 180.0)].set_index("feature_set")
-    figure, axes = plt.subplots(1, 2, figsize=(11.5, 4.8), sharey=True)
-    y = np.arange(len(order))
-    for ax, metric, title in (
-        (axes[0], "balanced_accuracy", "Balanced accuracy"),
-        (axes[1], "macro_auroc_ovr", "Macro AUROC"),
-    ):
-        val = np.array([validation.loc[name, metric] for name in order])
-        out = np.array([held.loc[name, metric] for name in order])
-        ax.scatter(val, y - 0.10, color=COLORS["blue"], marker="o", label="validation/180")
-        ax.scatter(out, y + 0.10, color=COLORS["orange"], marker="s", label="opened holdout")
-        for index, value in enumerate(val):
-            ax.text(value + 0.008, index - 0.10, f"{value:.3f}", va="center", fontsize=8)
-        for index, value in enumerate(out):
-            ax.text(value + 0.008, index + 0.10, f"{value:.3f}", va="center", fontsize=8)
-        ax.axvline(0.5, color=COLORS["gray"], linestyle="--", linewidth=0.8)
-        ax.set_xlim(0.48, 1.04)
-        ax.set_yticks(y, labels)
-        ax.invert_yaxis()
-        ax.set_xlabel(title)
-        ax.grid(axis="x", alpha=0.2)
-    figure.suptitle("纯 Path Homology 各层级的判别表现")
-    axes[0].legend(frameon=False, loc="upper left")
+    axes[1].bar_label(metric_bars, fmt="%.3f")
+    axes[1].set_ylim(0.0, 1.05)
+    axes[1].set_title("Discovery-trained joint readout")
+    for axis in axes:
+        axis.grid(axis="y", alpha=0.2)
+    figure.suptitle("18-D scorer release regression")
     figure.tight_layout(rect=(0, 0, 1, 0.95))
     _save_figure(figure, "fingerprint_validation")
 
@@ -413,220 +486,179 @@ def _plot_score_distribution(scores: pd.DataFrame) -> None:
     subset = scores[(scores["split"] == "validation") & np.isclose(scores["scale_seconds"], 180.0)]
     groups = ["focus", "classical"]
     values = [subset.loc[subset["group"] == group, "focus_probability"] for group in groups]
-    figure, ax = plt.subplots(figsize=(7.8, 4.8))
-    boxes = ax.boxplot(values, tick_labels=["Open Focus", "Classical"], patch_artist=True)
+    figure, axis = plt.subplots(figsize=(7.8, 4.8))
+    boxes = axis.boxplot(values, tick_labels=["Open Focus", "Classical"], patch_artist=True)
     for patch, color in zip(boxes["boxes"], [COLORS["blue"], COLORS["orange"]], strict=True):
         patch.set_facecolor(color)
         patch.set_alpha(0.55)
     rng = np.random.default_rng(20260716)
     for index, series in enumerate(values, start=1):
         jitter = rng.normal(index, 0.035, len(series))
-        ax.scatter(
+        axis.scatter(
             jitter, series, s=15, alpha=0.45, color=[COLORS["blue"], COLORS["orange"]][index - 1]
         )
-    ax.axhline(0.5, color=COLORS["gray"], linestyle="--", linewidth=1.0, label="固定阈值 0.5")
-    ax.set_ylabel("Discovery-trained Focus probability")
-    ax.set_ylim(-0.03, 1.03)
-    ax.set_title("L+P 主指纹在 validation/180 s 的分数分布")
-    ax.legend(frameon=False)
-    ax.grid(axis="y", alpha=0.2)
+    axis.axhline(0.5, color=COLORS["gray"], linestyle="--", linewidth=1.0)
+    axis.set_ylabel("Discovery-trained Focus probability")
+    axis.set_ylim(-0.03, 1.03)
+    axis.set_title("Issued 18-D scorer on validation/180s")
+    axis.grid(axis="y", alpha=0.2)
     figure.tight_layout()
     _save_figure(figure, "focus_score_distribution")
-
-
-def _plot_directions(directions: pd.DataFrame) -> None:
-    primary = directions[directions["layer"].isin(["local", "phase"])].copy()
-    view_order = ["pitch", "rhythm", "modulation", "path_acoustic_phase", "path_chroma_phase"]
-    metric_order = [
-        "vertex_count",
-        "edge_count",
-        "edge_density",
-        "reciprocity",
-        "self_transition_ratio",
-        "transition_entropy",
-        "path_entropy",
-        "directed_recurrence",
-        "h0_betti_auc",
-        "h0_betti_mean",
-        "h0_betti_max",
-        "h0_interval_count",
-        "h0_observed_persistence",
-        "h0_censored_count",
-        "loop_score",
-    ]
-    matrix = np.full((len(view_order), len(metric_order)), np.nan)
-    for row in primary.itertuples(index=False):
-        i = view_order.index(row.view)
-        j = metric_order.index(row.metric)
-        matrix[i, j] = 1.0 if row.expected_focus_direction == "greater" else -1.0
-    figure, ax = plt.subplots(figsize=(14, 4.4))
-    masked = np.ma.masked_invalid(matrix)
-    cmap = plt.matplotlib.colors.ListedColormap([COLORS["orange"], COLORS["blue"]])
-    cmap.set_bad("#F1F5F9")
-    ax.imshow(masked, cmap=cmap, vmin=-1, vmax=1, aspect="auto")
-    ax.set_xticks(range(len(metric_order)), metric_order, rotation=45, ha="right")
-    ax.set_yticks(
-        range(len(view_order)),
-        ["Pitch", "Rhythm", "Modulation", "Acoustic phase", "Chroma phase"],
-    )
-    for i in range(len(view_order)):
-        for j in range(len(metric_order)):
-            if np.isnan(matrix[i, j]):
-                continue
-            ax.text(
-                j,
-                i,
-                "↑" if matrix[i, j] > 0 else "↓",
-                ha="center",
-                va="center",
-                color="white",
-                fontsize=12,
-            )
-    ax.set_title("主指纹的冻结方向性签名（Focus 相对 Classical）")
-    figure.text(
-        0.5,
-        -0.01,
-        "蓝色↑：Focus 更高；橙色↓：Focus 更低；灰色：未锁定",
-        ha="center",
-        color=COLORS["gray"],
-    )
-    figure.tight_layout()
-    _save_figure(figure, "directional_signature")
 
 
 def main() -> int:
     with CONFIG_PATH.open("rb") as handle:
         config = tomllib.load(handle)
-    identity, frames, phase = _load_inputs()
-    matrices, serialized = _fit_blocks(identity, frames, phase, config)
-    local = equal_block_fusion([matrices[name] for name in config["blocks"]["local_views"]])
-    phase_block = equal_block_fusion([matrices[name] for name in config["blocks"]["phase_views"]])
-    lp = equal_block_fusion([local, phase_block])
+    frozen = json.loads(FROZEN_EVIDENCE.read_text(encoding="utf-8"))
+    identity, pitch, phase = _load_inputs()
+    pitch_block, phase_block, coordinates, serialized = _fit_coordinates(identity, pitch, phase)
 
-    discovery = _mask(identity, "discovery")
+    configured_order = [str(value) for value in config["blocks"]["feature_order"]]
+    weights = [float(value) for value in config["blocks"]["distance_weights"]]
+    if len(configured_order) != 18 or weights != [0.5, 0.25, 0.25]:
+        raise RuntimeError("configuration violates frozen 18-D order or distance weights")
+
+    discovery = _mask(identity, config["fingerprint"]["reference_split"])
     labels = identity.loc[discovery, "group"].astype(str).to_numpy()
     classifier = LogisticRegression(
         C=float(config["classifier"]["c"]),
-        class_weight="balanced",
+        class_weight=config["classifier"]["class_weight"],
         max_iter=int(config["classifier"]["max_iter"]),
         solver="lbfgs",
         random_state=int(config["fingerprint"]["random_seed"]),
-    ).fit(lp[discovery], labels)
+    ).fit(coordinates[discovery], labels)
     if classifier.classes_.tolist() != ["classical", "focus"]:
         raise RuntimeError(f"unexpected class order: {classifier.classes_.tolist()}")
-    logits = classifier.decision_function(lp)
-    probabilities = classifier.predict_proba(lp)[:, 1]
+    logits = classifier.decision_function(coordinates)
+    probabilities = classifier.predict_proba(coordinates)[:, 1]
+    predictions = np.where(probabilities >= 0.5, "focus", "classical")
     focus_discovery = discovery & (identity["group"].astype(str).to_numpy() == "focus")
-    target_logit = float(
+    focus_band_threshold = float(
         np.quantile(logits[focus_discovery], config["classifier"]["focus_target_logit_quantile"])
     )
-    band_loss = np.maximum(0.0, target_logit - logits) ** 2
-    predictions = np.where(probabilities >= 0.5, "focus", "classical")
+    band_loss = np.maximum(0.0, focus_band_threshold - logits) ** 2
+
+    reproduction = _validation_reproduction(
+        identity,
+        pitch_block,
+        phase_block,
+        coordinates,
+        probabilities,
+        predictions,
+        frozen,
+        float(config["release"]["primary_statistics_tolerance"]),
+    )
 
     scores = identity.copy()
-    scores["local_l2_norm"] = np.linalg.norm(local, axis=1)
-    scores["phase_l2_norm"] = np.linalg.norm(phase_block, axis=1)
+    for index, name in enumerate(configured_order):
+        scores[name] = coordinates[:, index]
+    scores["pitch_block_l2_norm"] = np.linalg.norm(pitch_block, axis=1)
+    scores["phase_block_l2_norm"] = np.linalg.norm(phase_block, axis=1)
+    scores["joint_l2_norm"] = np.linalg.norm(coordinates, axis=1)
     scores["focus_logit"] = logits
     scores["focus_probability"] = probabilities
     scores["focus_band_loss"] = band_loss
     scores["predicted_group"] = predictions
-    scores.to_csv(SCORES_PATH, index=False, encoding="utf-8", lineterminator="\n")
+    _write_csv(SCORES_PATH, scores)
 
     directions = _build_directions()
-    directions.to_csv(DIRECTIONS_PATH, index=False, encoding="utf-8", lineterminator="\n")
+    _write_csv(DIRECTIONS_PATH, directions)
 
-    validation = _mask(identity, "validation")
+    input_sources = {
+        PITCH_FILE.relative_to(ROOT).as_posix(): _sha256(PITCH_FILE),
+        PHASE_FILE.relative_to(ROOT).as_posix(): _sha256(PHASE_FILE),
+    }
+    source_paths = [PITCH_TESTS, PHASE_TESTS, FROZEN_EVIDENCE, CONFIG_PATH, Path(__file__)]
+    source_sha256 = {
+        **input_sources,
+        **{path.resolve().relative_to(ROOT).as_posix(): _sha256(path) for path in source_paths},
+    }
+    coef = classifier.coef_[0].astype(float).tolist()
+    intercept = float(classifier.intercept_[0])
+    classifier_hash = _classifier_sha256(coef, intercept)
     holdout = _mask(identity, "holdout")
-    validation_labels = (identity.loc[validation, "group"].astype(str) == "focus").astype(int)
-    validation_prediction = (probabilities[validation] >= 0.5).astype(int)
     holdout_labels = (identity.loc[holdout, "group"].astype(str) == "focus").astype(int)
-    holdout_prediction = (probabilities[holdout] >= 0.5).astype(int)
+    holdout_predictions = (predictions[holdout] == "focus").astype(int)
 
-    validation_metrics = {
-        "n": int(validation.sum()),
-        "balanced_accuracy": float(
-            balanced_accuracy_score(validation_labels, validation_prediction)
-        ),
-        "roc_auc": float(roc_auc_score(validation_labels, probabilities[validation])),
-    }
-    holdout_metrics = {
-        "n": int(holdout.sum()),
-        "balanced_accuracy_descriptive": float(
-            balanced_accuracy_score(holdout_labels, holdout_prediction)
-        ),
-        "roc_auc_descriptive": float(roc_auc_score(holdout_labels, probabilities[holdout])),
-    }
-
-    fusion_summary = json.loads(FUSION_SUMMARY.read_text(encoding="utf-8"))
     profile = {
-        "schema_version": 2,
+        "schema_version": 3,
         "fingerprint_id": config["fingerprint"]["fingerprint_id"],
-        "scope": "pure Path Homology L+P Focus-vs-Classical fingerprint",
-        "reference_split": "discovery",
-        "reference_scale_seconds": 180.0,
+        "spec_revision": config["fingerprint"]["spec_revision"],
+        "dimensions": int(coordinates.shape[1]),
+        "feature_order": configured_order,
+        "distance_weights": weights,
+        "scope": "Pitch 16-D plus Acoustic/Chroma phase loop scores",
+        "reference_split": config["fingerprint"]["reference_split"],
+        "reference_scale_seconds": float(config["fingerprint"]["reference_scale_seconds"]),
         "reference_sample_count": int(discovery.sum()),
         "reference_focus_count": int(focus_discovery.sum()),
         "contains_tda_features": False,
-        "primary_layers": {
-            "L": config["blocks"]["local_views"],
-            "P": config["blocks"]["phase_views"],
-            "LP_dimensions": int(lp.shape[1]),
-            "weights": {"L": 0.5, "P": 0.5},
-        },
-        "auxiliary_layers": {
-            "structure": {
-                "role": "macro explanation only; excluded from primary fingerprint",
-                "reason": "no positive increment over L+P",
-            }
-        },
         "block_transforms": {name: asdict(block) for name, block in serialized.items()},
+        "fusion": {
+            "formula": "concat(Pitch/sqrt(2), Acoustic/2, Chroma/2)",
+            "squared_distance_weights": {
+                "pitch": 0.5,
+                "path_acoustic_phase": 0.25,
+                "path_chroma_phase": 0.25,
+            },
+        },
+        "classifier_coef": coef,
+        "classifier_intercept": intercept,
+        "classifier_sha256": classifier_hash,
+        "focus_band_threshold": focus_band_threshold,
         "classifier": {
-            "kind": "l2_logistic_regression",
+            "kind": config["classifier"]["kind"],
             "classes": classifier.classes_.tolist(),
             "positive_class": "focus",
             "c": float(classifier.C),
-            "coefficient": classifier.coef_[0].astype(float).tolist(),
-            "intercept": float(classifier.intercept_[0]),
-            "decision_threshold_probability": 0.5,
+            "decision_threshold_probability": float(config["classifier"]["decision_threshold"]),
             "focus_target_logit_quantile": float(
                 config["classifier"]["focus_target_logit_quantile"]
             ),
-            "focus_target_logit": target_logit,
-            "control_loss": "max(0, focus_target_logit - focus_logit)^2",
+            "control_loss": "max(0, focus_band_threshold - focus_logit)^2",
+        },
+        "input_sha256": _mapping_sha256(input_sources),
+        "config_sha256": _sha256(CONFIG_PATH),
+        "code_sha256": _sha256(Path(__file__)),
+        "source_sha256": source_sha256,
+        "validation_180_reproduction": reproduction,
+        "opened_holdout_180_descriptive": {
+            "n": int(holdout.sum()),
+            "balanced_accuracy": float(
+                balanced_accuracy_score(holdout_labels, holdout_predictions)
+            ),
+            "auroc": float(roc_auc_score(holdout_labels, probabilities[holdout])),
+            "role": "opened descriptive compatibility only; not a signing gate",
         },
         "directional_signature_counts": {
             layer: int(count) for layer, count in directions.groupby("layer").size().items()
         },
-        "validation_180": validation_metrics,
-        "opened_holdout_180_descriptive": holdout_metrics,
-        "fusion_evidence": fusion_summary["primary_180"],
-        "status": {
-            "fingerprint": "exploratory_validated_path_homology_fingerprint",
-            "allowed": ["exact scoring", "shadow mode", "experimental reranking"],
-            "sampling_guidance": "requires separate surrogate and paired generation validation",
-            "confirmatory": False,
-        },
         "excluded": [
+            "Rhythm local block",
+            "Modulation local block",
+            "Rhythm phase",
+            "Structure",
             "all Vietoris-Rips TDA endpoints",
-            "structure from primary score",
-            "rhythm phase from primary P",
-            "H1/H2 as directional targets",
+            "H1/H2 as isolated directional targets",
         ],
-        "source_sha256": {
-            path.relative_to(ROOT).as_posix(): _sha256(path)
-            for path in (
-                *VIEW_FILES.values(),
-                PHASE_FILE,
-                HOLDOUT_GATE,
-                FUSION_SUMMARY,
-                CONFIG_PATH,
-            )
+        "legacy_51d": {
+            "status": "rejected",
+            "profile_sha256": config["release"]["legacy_profile_sha256"],
+            "archive": config["release"]["legacy_archive"],
+        },
+        "runtime_status": {
+            "frozen_18d_spec": "enabled",
+            "legacy_51d_scorer": "reject",
+            "exact_scoring": "enabled",
+            "shadow_mode": "enabled",
+            "experimental_reranking": "enabled_pending_separate_effect_gate",
+            "ltsn_labeling": "blocked_until_exact_reranking_gate",
+            "sampling_guidance": "disabled_until_all_gates_pass",
         },
     }
-    PROFILE_PATH.write_text(
-        json.dumps(profile, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    if int(config["fingerprint"]["dimensions"]) != profile["dimensions"]:
+        raise RuntimeError("built dimensions do not match the signed configuration")
+    _write_json(PROFILE_PATH, profile)
 
     plt.rcParams.update(
         {
@@ -640,39 +672,72 @@ def main() -> int:
             "axes.spines.right": False,
         }
     )
-    classification = pd.read_csv(FUSION_CLASSIFICATION)
-    fusion_holdout = pd.read_csv(FUSION_HOLDOUT)
     _plot_composition()
-    _plot_validation(classification, fusion_holdout)
+    _plot_validation(reproduction)
     _plot_score_distribution(scores)
-    _plot_directions(directions)
 
-    artifacts = [
-        PROFILE_PATH,
-        SCORES_PATH,
-        DIRECTIONS_PATH,
-        *sorted(FIGURES.glob("*")),
-    ]
     summary = {
         "generated_at": date.today().isoformat(),
         "fingerprint_id": profile["fingerprint_id"],
+        "spec_revision": profile["spec_revision"],
         "profile_sha256": _sha256(PROFILE_PATH),
-        "contains_tda_features": False,
-        "primary_representation": "L+P",
-        "dimensions": int(lp.shape[1]),
-        "validation_180": validation_metrics,
-        "opened_holdout_180_descriptive": holdout_metrics,
-        "phase_increment": fusion_summary["primary_180"]["increments"]["LP_minus_L"],
-        "structure_increment": fusion_summary["primary_180"]["increments"]["LPS_minus_LP"],
-        "directional_signature_counts": profile["directional_signature_counts"],
-        "status": profile["status"],
-        "artifacts": [path.relative_to(ROOT).as_posix() for path in artifacts],
+        "classifier_sha256": classifier_hash,
+        "input_sha256": profile["input_sha256"],
+        "config_sha256": profile["config_sha256"],
+        "code_sha256": profile["code_sha256"],
+        "dimensions": profile["dimensions"],
+        "feature_order": configured_order,
+        "distance_weights": weights,
+        "block_output_dimensions": {
+            name: block.output_dimensions for name, block in serialized.items()
+        },
+        "block_effective_ranks": {
+            name: block.effective_rank for name, block in serialized.items()
+        },
+        "focus_band_threshold": focus_band_threshold,
+        "validation_180_reproduction": reproduction,
+        "opened_holdout_180_descriptive": profile["opened_holdout_180_descriptive"],
+        "runtime_status": profile["runtime_status"],
+        "legacy_51d": profile["legacy_51d"],
+        "artifacts": [
+            PROFILE_PATH.relative_to(ROOT).as_posix(),
+            SCORES_PATH.relative_to(ROOT).as_posix(),
+            DIRECTIONS_PATH.relative_to(ROOT).as_posix(),
+            *[path.relative_to(ROOT).as_posix() for path in sorted(FIGURES.glob("*"))],
+        ],
     }
-    SUMMARY_PATH.write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
-    print(json.dumps(summary, ensure_ascii=False, indent=2))
+    _write_json(SUMMARY_PATH, summary)
+
+    release_artifacts = [PROFILE_PATH, SCORES_PATH, DIRECTIONS_PATH, SUMMARY_PATH]
+    release = {
+        "schema_version": 1,
+        "release_status": "issued",
+        "issued_at": date.today().isoformat(),
+        "fingerprint_id": profile["fingerprint_id"],
+        "spec_revision": profile["spec_revision"],
+        "dimensions": profile["dimensions"],
+        "feature_order": configured_order,
+        "distance_weights": weights,
+        "profile_sha256": _sha256(PROFILE_PATH),
+        "classifier_sha256": classifier_hash,
+        "input_sha256": profile["input_sha256"],
+        "config_sha256": profile["config_sha256"],
+        "code_sha256": profile["code_sha256"],
+        "artifact_sha256": {
+            path.relative_to(ROOT).as_posix(): _sha256(path) for path in release_artifacts
+        },
+        "signing_gates": {
+            "frozen_dimensions": "passed",
+            "feature_order": "passed",
+            "distance_weights": "passed",
+            "validation_180_reproduction": reproduction["status"],
+            "legacy_51d_archived": "passed",
+        },
+        "runtime_status": profile["runtime_status"],
+        "legacy_51d": profile["legacy_51d"],
+    }
+    _write_json(RELEASE_PATH, release)
+    print(json.dumps(release, ensure_ascii=False, indent=2))
     return 0
 
 
