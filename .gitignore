@@ -88,6 +88,13 @@ hf_release/
 datasets/
 external/
 
+# Local-only packages, documentation, generated output, and examples
+package/
+packages/
+docs/
+output/
+examples/
+
 # Office lock files
 **/~$*
 
