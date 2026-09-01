@@ -47,7 +47,7 @@ def verify(root: Path, *, allow_missing_data: bool) -> dict[str, Any]:
 
     check("platform", sys.platform.startswith("linux"), sys.platform, "linux")
     check("architecture", platform.machine() == "x86_64", platform.machine(), "x86_64")
-    check("python", sys.version_info[:2] == (3, 11), platform.python_version(), "3.11.x")
+    check("python", sys.version_info[:2] == (3, 12), platform.python_version(), "3.12.x")
     check("cpu_threads", (os.cpu_count() or 0) >= 32, os.cpu_count(), ">=32")
     memory = _memory_gib()
     check("memory_gib", memory is not None and memory >= 240, memory, ">=240")
@@ -75,7 +75,7 @@ def verify(root: Path, *, allow_missing_data: bool) -> dict[str, Any]:
     ace_revision = release["sources"]["ace_step"]["revision"]
     pyglmy_revision = release["sources"]["pyglmy"]["revision"]
     ace_head = _git_head(root / "ACE-Step-1.5")
-    pyglmy_head = _git_head(root / "external/pyglmy")
+    pyglmy_head = _git_head(root / "packages/pyglmy")
     check("ace_revision", ace_head == ace_revision, ace_head, ace_revision)
     check("pyglmy_revision", pyglmy_head == pyglmy_revision, pyglmy_head, pyglmy_revision)
 

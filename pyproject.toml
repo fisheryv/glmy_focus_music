@@ -22,7 +22,7 @@ classifiers = [
 ]
 dependencies = [
   "numpy>=1.26,<3",
-  "pyglmy @ git+https://github.com/fisheryv/pyglmy.git@49bd5ea7617906f09940dcc9b9718bbfc1482d6f",
+  "pyglmy",
 ]
 
 [project.optional-dependencies]
@@ -81,6 +81,9 @@ focus-ltsn-train = "generation.ltsn_cli:train_main"
 focus-ltsn-qualify = "generation.ltsn_cli:qualification_main"
 focus-ltsn-guidance-eval = "generation.ltsn_cli:guidance_main"
 focus-prepare-data = "data.hf_release:main"
+
+[tool.uv.sources]
+pyglmy = { path = "packages/pyglmy", editable = true }
 
 [tool.setuptools]
 package-dir = {"" = "src"}

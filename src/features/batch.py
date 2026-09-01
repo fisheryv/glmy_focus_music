@@ -310,7 +310,7 @@ def _verified_sidecar(
         return None
     try:
         sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
-    except OSError, ValueError:
+    except (OSError, ValueError):
         return None
     if sidecar.get("input_sha256") != job.input_sha256:
         return None
@@ -724,7 +724,7 @@ def fit_state_model(
                 and previous.get("model_sha256") == model_hash
             ):
                 return _load_state_model(model_path), model_hash, previous
-        except OSError, ValueError, FeatureBatchError:
+        except (OSError, ValueError, FeatureBatchError):
             pass
 
     try:

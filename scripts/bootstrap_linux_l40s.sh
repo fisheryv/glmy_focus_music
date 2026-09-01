@@ -2,7 +2,7 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PYTHON_BIN="${PYTHON_BIN:-python3.11}"
+PYTHON_BIN="${PYTHON_BIN:-python3.12}"
 ACE_REPOSITORY="https://github.com/fisheryv/ACE-Step-1.5.git"
 ACE_REVISION="a5632cda3084f1088e69b2057dde7047e1bb4839"
 PYGLMY_REPOSITORY="https://github.com/fisheryv/pyglmy.git"
@@ -11,7 +11,7 @@ PYGLMY_REVISION="49bd5ea7617906f09940dcc9b9718bbfc1482d6f"
 command -v git >/dev/null || { echo "git is required" >&2; exit 2; }
 command -v "${PYTHON_BIN}" >/dev/null || { echo "${PYTHON_BIN} is required" >&2; exit 2; }
 
-mkdir -p "${PROJECT_ROOT}/external"
+mkdir -p "${PROJECT_ROOT}/packages"
 
 clone_at_revision() {
   local repository="$1"
@@ -34,7 +34,7 @@ clone_at_revision() {
   fi
 }
 
-clone_at_revision "${PYGLMY_REPOSITORY}" "${PYGLMY_REVISION}" "${PROJECT_ROOT}/external/pyglmy"
+clone_at_revision "${PYGLMY_REPOSITORY}" "${PYGLMY_REVISION}" "${PROJECT_ROOT}/packages/pyglmy"
 clone_at_revision "${ACE_REPOSITORY}" "${ACE_REVISION}" "${PROJECT_ROOT}/ACE-Step-1.5"
 
 PATCH="${PROJECT_ROOT}/patches/ace-step-1.5-topology-corrector.patch"
@@ -57,7 +57,7 @@ fi
 "${UV_BIN}" sync --project "${PROJECT_ROOT}/ACE-Step-1.5" --locked
 ACE_PYTHON="${PROJECT_ROOT}/ACE-Step-1.5/.venv/bin/python"
 "${UV_BIN}" pip install --python "${ACE_PYTHON}" \
-  -e "${PROJECT_ROOT}/external/pyglmy[tda]" \
+  -e "${PROJECT_ROOT}/packages/pyglmy[tda]" \
   -e "${PROJECT_ROOT}[audio,stats,tda,topology-guidance,repro,dev]"
 
 "${ACE_PYTHON}" "${PROJECT_ROOT}/scripts/verify_linux_l40s.py" \

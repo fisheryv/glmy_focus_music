@@ -2,7 +2,7 @@
 
 本仓库是 `open-focus-classical-600` 研究分析、冻结 18-D exact scorer、ACE-Step
 轨迹采集、逐快照 exact 标签、LTSN 训练/校准/资格检验，以及默认关闭的潜空间拓扑
-corrector 的统一发布仓库。生产目标为 Linux x86_64、Python 3.11、256 GiB 内存和
+corrector 的统一发布仓库。生产目标为 Linux x86_64、Python 3.12、256 GiB 内存和
 2× NVIDIA L40S。
 
 当前证据边界：代码与本地工程测试可用；真实 Linux/L40S 轨迹、正式标签、三 seed
@@ -115,21 +115,24 @@ python -m pip install "pyglmy[tda] @ git+https://github.com/fisheryv/pyglmy.git@
 
 ## 安装
 
-从当前仓库以可编辑模式安装核心库：
+从当前仓库以可编辑模式安装本地 `pyglmy` 复刻和核心库：
 
 ```bash
+python -m pip install -e packages/pyglmy
 python -m pip install -e .
 ```
 
 如果需要直接读取 WAV、FLAC 或其他 librosa/soundfile 支持的音频：
 
 ```bash
+python -m pip install -e packages/pyglmy[tda]
 python -m pip install -e ".[audio,tda]"
 ```
 
 开发和测试环境：
 
 ```bash
+python -m pip install -e packages/pyglmy[tda]
 python -m pip install -e ".[audio,stats,tda,repro,dev]"
 pytest
 ```
