@@ -15,6 +15,7 @@ import pandas as pd
 from sklearn.cluster import MiniBatchKMeans
 from sklearn.metrics import adjusted_rand_score, silhouette_score
 
+from data.analysis_inputs import audit_analysis_inputs
 from features.batch import _json_hash, _sha256, _write_json_atomic, _write_npz_atomic
 from features.pitch_v2 import assign_codebook, chroma_to_tonnetz, normalize_chroma
 from graphs.transition import build_transition_graph
@@ -499,6 +500,7 @@ def run_statistics(
     topology_rows: list[dict[str, Any]],
     codebook: dict[str, Any],
     example: dict[str, Any],
+    input_audit: dict[str, Any],
 ) -> dict[str, Any]:
     topology = pd.DataFrame(topology_rows).drop(columns=["filtration", "sensitivity_filtration"])
     omnibus, pairwise = _omnibus_and_pairwise(
@@ -572,6 +574,7 @@ def run_statistics(
         "scope": "pitch_v2 Tonnetz harmonic-codebook path homology on Focus/Classical dataset",
         "canonical_focus_source": "Jamendo Open Focus",
         "canonical_groups": list(GROUPS),
+        "input_provenance": input_audit,
         "segment_views": len(topology_rows),
         "tracks": int(topology.track_id.nunique()),
         "status_counts": dict(Counter(topology.status)),
@@ -627,6 +630,7 @@ def run_statistics(
 
 
 def main() -> int:
+    input_audit = audit_analysis_inputs(root=ROOT)
     rows = _load_feature_rows()
     print("pitch_v2: fitting discovery-only Tonnetz codebook", flush=True)
     codebook = fit_codebook(rows)
@@ -637,7 +641,7 @@ def main() -> int:
     print("pitch_v2: selecting deterministic Focus mechanism example", flush=True)
     example = select_mechanism_example(topology_rows)
     print("pitch_v2: running two-group statistics", flush=True)
-    summary = run_statistics(topology_rows, codebook, example)
+    summary = run_statistics(topology_rows, codebook, example, input_audit)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 

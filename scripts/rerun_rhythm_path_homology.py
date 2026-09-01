@@ -6,6 +6,7 @@ from dataclasses import asdict, replace
 from datetime import date
 from pathlib import Path
 
+from data.analysis_inputs import audit_analysis_inputs
 from features.batch import _sha256
 from topology.batch import (
     _config_hash,
@@ -22,6 +23,7 @@ SUMMARY = ROOT / "metadata" / "rhythm_topology_summary.json"
 
 
 def main() -> int:
+    input_audit = audit_analysis_inputs(root=ROOT)
     base_config = load_topology_config(ROOT)
     config = replace(base_config, views=("rhythm",))
     jobs = _load_feature_jobs(ROOT / "metadata" / "feature_segments.csv", config)
@@ -48,6 +50,7 @@ def main() -> int:
         "generated_at": date.today().isoformat(),
         "scope": "rhythm-only Path Homology rerun on Focus/Classical dataset",
         "canonical_groups": ["classical", "focus"],
+        "input_provenance": input_audit,
         "ok": complete,
         "segment_views": len(rows),
         "segments": len({row["segment_id"] for row in rows}),

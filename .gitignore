@@ -61,7 +61,7 @@ metadata/download_failures.csv
 restricted_archive/**
 
 # Local archive for comparison groups removed from the canonical dataset.
-dataset_archive/**
+dataset_archive/
 
 # Historical analysis snapshots superseded by canonical reruns.
 analysis_archive/**
@@ -85,6 +85,7 @@ papers/tmp/
 hf_release/
 
 # Downloaded immutable dataset snapshots and external source checkouts
+dataset/
 datasets/
 external/
 

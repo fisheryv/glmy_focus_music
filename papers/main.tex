@@ -125,7 +125,7 @@
   \item 我们将拓扑特征发现过程中使用的代码封装成了一个 Python 库，名为 \texttt{pyglmy}，可在 \url{https://github.com/fisheryv/pyglmy} 上获取。
 \end{itemize}
 
-本研究完整的可复现代码已上传至 \url{https://github.com/fisheryv/glmy_focus_music}。
+% 本研究完整的可复现代码已上传至 \url{https://github.com/fisheryv/glmy_focus_music}。
 
 \section{Related Work}
 
@@ -1268,7 +1268,8 @@ Focus logit 不设置可自由偏离坐标的独立分类头，而由冻结参�
 
 \subsection{教师标签、数据构造与防泄漏切分}
 
-LTSN 的一个训练样本由 $(\hat{x}_0,t,z,S_F,y_{\mathrm{OOD}})$ 构成。标签生成必须针对每个轨迹快照独立进行：在无引导生成中保存第 4、5、6 步及最终步的 $(x_t,v_t,t)$；按式~\eqref{eq:pred_clean_latent} 构造各自的 $\hat{x}_0$；分别经 VAE 解码；再独立运行 exact Pitch PH、Acoustic phase 和 Chroma phase 管线，最后使用冻结变换得到该快照自己的 $z$ 与 $S_F$。不得把最终音频标签复制到所有中间步骤，否则网络将学习错误的时间不变映射。
+LTSN 的一个训练样本由 $(\hat{x}_0,t,z,S_F,y_{\mathrm{OOD}})$ 构成。标签生成必须针对每个轨迹快照独立进行：在无引导生成中保存第 4、5、6 步及最终步的 $(x_t,v_t,t)$；按式~\eqref{eq:pred_clean_latent} 构造各自的 $\hat{x}_0$；分别经 VAE 解码；再独立运行 exact Pitch PH、Acoustic phase 和 Chroma phase 管线，最后使用冻结变换得到该快照自己的 $z$ 与 $S_F$。
+% 不得把最终音频标签复制到所有中间步骤，否则网络将学习错误的时间不变映射。
 
 数据由三部分组成：
 \begin{enumerate}
@@ -1317,13 +1318,13 @@ L=L_{\mathrm{coord}}+0.25L_{\mathrm{NLL}}+0.5L_{\mathrm{score}}
 +0.2L_{\mathrm{rank}}+0.2L_{\Delta}+0.1L_{\mathrm{OOD}}.
 \label{eq:ltsn_total_loss}
 \end{equation}
-式~\eqref{eq:ltsn_total_loss} 的系数是开发起点而非验证结论，只允许在独立 development prompts 上选择一次，并在 qualification 前与网络结构、数据清单和
-全部哈希共同冻结。
+% 式~\eqref{eq:ltsn_total_loss} 的系数是开发起点而非验证结论，只允许在独立 development prompts 上选择一次，并在 qualification 前与网络结构、数据清单和
+% 全部哈希共同冻结。
 
 训练采用 AdamW，初始学习率 $3\times10^{-4}$、weight decay $10^{-2}$，经过 $5\%$ warmup 后使用 cosine decay 至 $10^{-6}$；以 bf16 执行前向和反向传播，损失与方差计算保持 fp32；每卡 batch size 为 $8$--$16$，梯度累积至有效 batch $64$，全局梯度范数裁剪为 $1.0$。采样器对第 4、5、6 步和最终步、Focus logit 分位及 OOD 比例作平衡。early stopping 同时考察 development score error 与 Pitch/Phase 块级 Spearman 相关。训练阶段只读取预计算 latent 和 exact 标签，不加载 ACE-Step DiT 或 VAE；也不对 180s latent 随机裁剪后沿用整曲标签，不以打乱时间顺序作为数据增强。
 
 \begin{tcolorbox}[colback=yellow!30,colframe=yellow!60,boxrule=0.5pt,arc=6pt,left=6pt,right=6pt,top=4pt,bottom=4pt]
-TODO：代理模型训练尚未完成，计划在 3090 显卡上进行训练。
+TODO：代理模型训练尚未完成，计划在 L40s 显卡上进行训练。
 \end{tcolorbox}
 
 \subsection{采样期拓扑校正}

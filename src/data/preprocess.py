@@ -20,6 +20,7 @@ from typing import Any
 
 import numpy as np
 
+from data.hf_release import DEFAULT_DATASET_ROOT, DatasetReleaseError, verify_release_dataset
 from focus_topology.data.manifest import load_split, load_tracks, validate_metadata
 from focus_topology.data.schema import SplitName, TrackGroup, TrackRecord
 
@@ -576,12 +577,13 @@ def process_plan(
     plan: SegmentPlan,
     *,
     root: Path,
+    source_path: Path | None = None,
     config: AudioPreprocessConfig,
     overwrite: bool = False,
     previous_row: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     imageio_ffmpeg, pyloudnorm, soundfile = _load_optional_audio_modules()
-    source = root / "data_raw" / Path(plan.source_relative_path)
+    source = source_path or root / "data_raw" / Path(plan.source_relative_path)
     output = root / Path(plan.output_relative_path)
     config_sha256 = _config_hash(config)
     if not source.is_file():
@@ -744,6 +746,18 @@ def _load_pipeline_defaults(root: Path) -> dict[str, Any]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="focus-preprocess")
     parser.add_argument("--root", type=Path, default=Path.cwd())
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument(
+        "--dataset-root",
+        type=Path,
+        default=Path(os.environ.get("FOCUS_DATASET_ROOT", DEFAULT_DATASET_ROOT)),
+        help="verified HF dataset root (default: dataset/open-focus-classical-600)",
+    )
+    source.add_argument(
+        "--data-root",
+        type=Path,
+        help="explicit legacy canonical-path tree; bypasses the HF layout adapter",
+    )
     parser.add_argument("--metadata-dir", type=Path, default=Path("metadata"))
     parser.add_argument("--output-root", type=Path, default=Path("features/audio"))
     parser.add_argument("--scales", type=_parse_scales, default=DEFAULT_SCALES)
@@ -764,7 +778,32 @@ def main(argv: list[str] | None = None) -> int:
     metadata_dir = (
         args.metadata_dir if args.metadata_dir.is_absolute() else root / args.metadata_dir
     )
-    report = validate_metadata(metadata_dir, root / "data_raw", check_files=True)
+    data_root = None
+    dataset_summary: dict[str, Any] | None = None
+    if args.data_root is not None:
+        data_root = args.data_root if args.data_root.is_absolute() else root / args.data_root
+        report = validate_metadata(metadata_dir, data_root, check_files=True)
+        source_by_track = {
+            track.track_id: data_root / track.relative_path
+            for track in load_tracks(metadata_dir / "track_index.csv")
+        }
+        source_mode = "legacy_data_root"
+    else:
+        dataset_root = (
+            args.dataset_root if args.dataset_root.is_absolute() else root / args.dataset_root
+        )
+        report = validate_metadata(metadata_dir, root, check_files=False)
+        try:
+            verification = verify_release_dataset(
+                dataset_root=dataset_root,
+                project_metadata=metadata_dir,
+                verify_audio=True,
+            )
+        except DatasetReleaseError as exc:
+            raise PreprocessError(f"HF dataset validation failed: {exc}") from exc
+        source_by_track = verification.source_by_track
+        dataset_summary = verification.summary
+        source_mode = "huggingface_release"
     if not report.ok:
         raise PreprocessError("metadata validation failed: " + "; ".join(report.errors))
     defaults = _load_pipeline_defaults(root)
@@ -781,11 +820,19 @@ def main(argv: list[str] | None = None) -> int:
         groups = {TrackGroup(value.strip()) for value in args.groups.split(",") if value.strip()}
     except ValueError as exc:
         raise PreprocessError(f"invalid group in {args.groups!r}") from exc
+    all_tracks = load_tracks(metadata_dir / "track_index.csv")
     tracks = [
         track
-        for track in load_tracks(metadata_dir / "track_index.csv")
+        for track in all_tracks
         if track.group in groups
     ]
+    assignments = load_assignments(metadata_dir)
+    if dataset_summary is not None:
+        release_rows = {row["track_id"]: row for row in verification.rows}
+        for track in all_tracks:
+            row = release_rows[track.track_id]
+            if row["split"] != assignments[track.track_id].value:
+                raise PreprocessError(f"HF/project split mismatch for {track.track_id}")
     if args.track_ids:
         requested_ids = {value.strip() for value in args.track_ids.split(",") if value.strip()}
         available_ids = {track.track_id for track in tracks}
@@ -806,7 +853,7 @@ def main(argv: list[str] | None = None) -> int:
 
     plans = build_segment_plans(
         tracks,
-        load_assignments(metadata_dir),
+        assignments,
         scales_seconds=config.scales_seconds,
         output_root=args.output_root,
     )
@@ -825,6 +872,8 @@ def main(argv: list[str] | None = None) -> int:
                     "groups": dict(Counter(plan.group for plan in plans)),
                     "splits": dict(Counter(plan.split for plan in plans)),
                     "config_sha256": _config_hash(config),
+                    "source_mode": source_mode,
+                    "dataset_identity": dataset_summary,
                 },
                 ensure_ascii=False,
                 indent=2,
@@ -843,6 +892,7 @@ def main(argv: list[str] | None = None) -> int:
                 process_plan,
                 plan,
                 root=root,
+                source_path=source_by_track[plan.track_id],
                 config=config,
                 overwrite=args.overwrite,
                 previous_row=previous_rows.get(plan.segment_id),
@@ -919,6 +969,8 @@ def main(argv: list[str] | None = None) -> int:
         "config": asdict(config),
         "config_sha256": _config_hash(config),
         "manifest_sha256": _sha256(manifest_path),
+        "source_mode": source_mode,
+        "dataset_identity": dataset_summary,
     }
     summary_path = args.summary if args.summary.is_absolute() else root / args.summary
     write_json_atomic(summary_path, summary)

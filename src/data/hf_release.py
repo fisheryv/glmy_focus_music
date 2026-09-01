@@ -1,4 +1,4 @@
-"""Download and materialize the canonical Hugging Face audio release."""
+"""Download, verify, and optionally materialize the canonical HF audio release."""
 
 from __future__ import annotations
 
@@ -8,12 +8,29 @@ import hashlib
 import json
 import os
 import shutil
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+DEFAULT_DATASET_ROOT = Path("dataset/open-focus-classical-600")
+FROZEN_SHA256SUMS_SHA256 = "8b767b8d0d85fb3ef9ba5340ff6b5288d1e7681a5f37b71e2230f30c825ada20"
+FROZEN_TRACKS_SHA256 = "0636ddf6cb5b4ee418829dcd24578d7abe49ac2479719d36874b3b1ae5fd2e97"
+FROZEN_LICENSES_SHA256 = "4dc811a6fa31c772903cbf1178a478b56fc6f0896bb30096397426f116a9d66c"
 
 
 class DatasetReleaseError(RuntimeError):
     """Raised when the downloaded release differs from the frozen contract."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseVerification:
+    """Verified release metadata and the physical source path for every track."""
+
+    dataset_root: Path
+    rows: tuple[dict[str, str], ...]
+    source_by_track: dict[str, Path]
+    summary: dict[str, Any]
 
 
 def sha256_file(path: Path) -> str:
@@ -75,11 +92,19 @@ def _materialize(source: Path, target: Path, digest: str, mode: str) -> str:
 
 
 def _validate_project_index(project_metadata: Path, dataset_rows: list[dict[str, str]]) -> None:
-    index_path = project_metadata / "tracks.csv"
+    if project_metadata.is_file():
+        index_path = project_metadata
+    elif (project_metadata / "track_index.csv").is_file():
+        index_path = project_metadata / "track_index.csv"
+    else:
+        index_path = project_metadata / "tracks.csv"
     if not index_path.is_file():
         raise DatasetReleaseError(f"missing project track index: {index_path}")
-    project = {row["track_id"]: row for row in _read_csv(index_path)}
+    project_rows = _read_csv(index_path)
+    project = {row["track_id"]: row for row in project_rows}
     dataset = {row["track_id"]: row for row in dataset_rows}
+    if len(project) != len(project_rows):
+        raise DatasetReleaseError(f"duplicate track IDs in project index: {index_path}")
     if set(project) != set(dataset):
         raise DatasetReleaseError("project and Hugging Face track IDs differ")
     for track_id, row in dataset.items():
@@ -88,26 +113,26 @@ def _validate_project_index(project_metadata: Path, dataset_rows: list[dict[str,
             raise DatasetReleaseError(f"relative path mismatch for {track_id}")
         if local["sha256"].lower() != row["sha256"].lower():
             raise DatasetReleaseError(f"SHA-256 mismatch in project index for {track_id}")
+        if local.get("group") and local["group"] != row["group"]:
+            raise DatasetReleaseError(f"group mismatch in project index for {track_id}")
 
 
-def prepare_release_dataset(
+def verify_release_dataset(
     *,
-    snapshot_dir: Path,
-    data_root: Path,
-    project_metadata: Path,
+    dataset_root: Path,
+    project_metadata: Path | None = None,
     expected_count: int = 600,
-    expected_sha256s_sha256: str | None = None,
-    expected_tracks_sha256: str | None = None,
-    expected_licenses_sha256: str | None = None,
-    materialize_mode: str = "auto",
-) -> dict[str, Any]:
-    """Verify all release bytes and expose them under the project's canonical paths."""
+    expected_sha256s_sha256: str | None = FROZEN_SHA256SUMS_SHA256,
+    expected_tracks_sha256: str | None = FROZEN_TRACKS_SHA256,
+    expected_licenses_sha256: str | None = FROZEN_LICENSES_SHA256,
+    verify_audio: bool = True,
+) -> ReleaseVerification:
+    """Validate the immutable HF layout without copying audio into ``data_raw``."""
 
-    snapshot_dir = snapshot_dir.resolve()
-    data_root = data_root.resolve()
-    sums_path = snapshot_dir / "SHA256SUMS"
-    tracks_path = snapshot_dir / "metadata" / "tracks.csv"
-    licenses_path = snapshot_dir / "metadata" / "licenses.csv"
+    dataset_root = dataset_root.resolve()
+    sums_path = dataset_root / "SHA256SUMS"
+    tracks_path = dataset_root / "metadata" / "tracks.csv"
+    licenses_path = dataset_root / "metadata" / "licenses.csv"
     for path in (sums_path, tracks_path, licenses_path):
         if not path.is_file():
             raise DatasetReleaseError(f"release file is missing: {path}")
@@ -119,42 +144,109 @@ def prepare_release_dataset(
     for path, expected in frozen:
         if expected and sha256_file(path) != expected.lower():
             raise DatasetReleaseError(f"frozen release hash mismatch: {path}")
+
     sums = read_sha256s(sums_path)
     rows = _read_csv(tracks_path)
+    required = {"file_name", "track_id", "group", "split", "relative_path", "sha256"}
+    missing = required - set(rows[0] if rows else ())
+    if missing:
+        raise DatasetReleaseError(f"tracks.csv is missing columns: {sorted(missing)}")
     if len(rows) != expected_count or len(sums) != expected_count:
         raise DatasetReleaseError(
             f"expected {expected_count} audio files, got tracks={len(rows)} sums={len(sums)}"
         )
-    _validate_project_index(project_metadata.resolve(), rows)
-    methods: dict[str, int] = {}
-    for row in rows:
-        published_path = row["file_name"].replace("\\", "/")
+    track_ids = [row["track_id"] for row in rows]
+    published_paths = [row["file_name"].replace("\\", "/") for row in rows]
+    if len(set(track_ids)) != len(track_ids):
+        raise DatasetReleaseError("tracks.csv contains duplicate track IDs")
+    if len(set(published_paths)) != len(published_paths):
+        raise DatasetReleaseError("tracks.csv contains duplicate published paths")
+    if project_metadata is not None:
+        _validate_project_index(project_metadata.resolve(), rows)
+
+    source_by_track: dict[str, Path] = {}
+    for row, published_path in zip(rows, published_paths, strict=True):
         if published_path not in sums:
             raise DatasetReleaseError(f"SHA256SUMS has no entry for {published_path}")
         digest = sums[published_path]
         if row["sha256"].lower() != digest:
             raise DatasetReleaseError(f"tracks.csv hash differs for {row['track_id']}")
-        source = (snapshot_dir / published_path).resolve()
-        if not source.is_relative_to(snapshot_dir) or not source.is_file():
-            raise DatasetReleaseError(
-                f"audio file is missing or escapes snapshot: {published_path}"
-            )
-        if sha256_file(source) != digest:
-            raise DatasetReleaseError(f"downloaded audio hash mismatch: {published_path}")
-        relative = Path(row["relative_path"])
+        relative = Path(published_path)
         if relative.is_absolute() or ".." in relative.parts:
+            raise DatasetReleaseError(f"unsafe published path for {row['track_id']}")
+        expected_prefix = f"data/{row['group']}/{row['split']}/"
+        if not published_path.startswith(expected_prefix):
+            raise DatasetReleaseError(f"group/split path mismatch for {row['track_id']}")
+        canonical = Path(row["relative_path"])
+        if canonical.is_absolute() or ".." in canonical.parts:
             raise DatasetReleaseError(f"unsafe canonical path for {row['track_id']}")
-        method = _materialize(source, data_root / relative, digest, materialize_mode)
-        methods[method] = methods.get(method, 0) + 1
-    return {
-        "schema_version": 1,
-        "status": "verified",
-        "snapshot_dir": str(snapshot_dir),
-        "data_root": str(data_root),
+        source = (dataset_root / relative).resolve()
+        if not source.is_relative_to(dataset_root) or not source.is_file():
+            raise DatasetReleaseError(
+                f"audio file is missing or escapes dataset root: {published_path}"
+            )
+        if verify_audio and sha256_file(source) != digest:
+            raise DatasetReleaseError(f"downloaded audio hash mismatch: {published_path}")
+        source_by_track[row["track_id"]] = source
+
+    groups = Counter(row["group"] for row in rows)
+    splits = Counter(row["split"] for row in rows)
+    group_splits = Counter(f"{row['group']}/{row['split']}" for row in rows)
+    summary = {
+        "schema_version": 2,
+        "status": "verified" if verify_audio else "metadata_verified",
+        "dataset_root": str(dataset_root),
         "audio_files": len(rows),
+        "audio_hashes_verified": verify_audio,
         "sha256s_sha256": sha256_file(sums_path),
         "tracks_csv_sha256": sha256_file(tracks_path),
         "licenses_csv_sha256": sha256_file(licenses_path),
+        "group_counts": dict(sorted(groups.items())),
+        "split_counts": dict(sorted(splits.items())),
+        "group_split_counts": dict(sorted(group_splits.items())),
+    }
+    return ReleaseVerification(
+        dataset_root=dataset_root,
+        rows=tuple(rows),
+        source_by_track=source_by_track,
+        summary=summary,
+    )
+
+
+def prepare_release_dataset(
+    *,
+    snapshot_dir: Path,
+    data_root: Path,
+    project_metadata: Path,
+    expected_count: int = 600,
+    expected_sha256s_sha256: str | None = FROZEN_SHA256SUMS_SHA256,
+    expected_tracks_sha256: str | None = FROZEN_TRACKS_SHA256,
+    expected_licenses_sha256: str | None = FROZEN_LICENSES_SHA256,
+    materialize_mode: str = "auto",
+) -> dict[str, Any]:
+    """Verify all release bytes and expose them under the project's canonical paths."""
+
+    verification = verify_release_dataset(
+        dataset_root=snapshot_dir,
+        project_metadata=project_metadata,
+        expected_count=expected_count,
+        expected_sha256s_sha256=expected_sha256s_sha256,
+        expected_tracks_sha256=expected_tracks_sha256,
+        expected_licenses_sha256=expected_licenses_sha256,
+        verify_audio=True,
+    )
+    snapshot_dir = verification.dataset_root
+    data_root = data_root.resolve()
+    methods: dict[str, int] = {}
+    for row in verification.rows:
+        digest = row["sha256"].lower()
+        source = verification.source_by_track[row["track_id"]]
+        relative = Path(row["relative_path"])
+        method = _materialize(source, data_root / relative, digest, materialize_mode)
+        methods[method] = methods.get(method, 0) + 1
+    return {
+        **verification.summary,
+        "data_root": str(data_root),
         "materialization": methods,
     }
 
@@ -181,26 +273,33 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--repo-id", default="fisheryv/open-focus-classical-600")
     parser.add_argument("--revision", default="main")
     parser.add_argument("--snapshot-dir", type=Path)
+    parser.add_argument("--download-dir", type=Path, default=DEFAULT_DATASET_ROOT)
     parser.add_argument(
-        "--download-dir", type=Path, default=Path("datasets/open-focus-classical-600")
+        "--data-root",
+        type=Path,
+        help="optional legacy materialization destination; omitted means verify in place",
     )
-    parser.add_argument("--data-root", type=Path, default=Path("data_raw"))
-    parser.add_argument("--project-metadata", type=Path, default=Path("datasets/open-focus-classical-600/metadata"))
+    parser.add_argument("--project-metadata", type=Path, default=Path("metadata"))
     parser.add_argument("--receipt", type=Path, default=Path("runs/reproducibility/dataset.json"))
     parser.add_argument("--expected-count", type=int, default=600)
     parser.add_argument("--materialize-mode", choices=("auto", "hardlink", "copy"), default="auto")
     args = parser.parse_args(argv)
     snapshot = args.snapshot_dir or _download(args.repo_id, args.revision, args.download_dir)
-    summary = prepare_release_dataset(
-        snapshot_dir=snapshot,
-        data_root=args.data_root,
-        project_metadata=args.project_metadata,
-        expected_count=args.expected_count,
-        expected_sha256s_sha256="8b767b8d0d85fb3ef9ba5340ff6b5288d1e7681a5f37b71e2230f30c825ada20",
-        expected_tracks_sha256="0636ddf6cb5b4ee418829dcd24578d7abe49ac2479719d36874b3b1ae5fd2e97",
-        expected_licenses_sha256="4dc811a6fa31c772903cbf1178a478b56fc6f0896bb30096397426f116a9d66c",
-        materialize_mode=args.materialize_mode,
-    )
+    if args.data_root is None:
+        summary = verify_release_dataset(
+            dataset_root=snapshot,
+            project_metadata=args.project_metadata,
+            expected_count=args.expected_count,
+            verify_audio=True,
+        ).summary
+    else:
+        summary = prepare_release_dataset(
+            snapshot_dir=snapshot,
+            data_root=args.data_root,
+            project_metadata=args.project_metadata,
+            expected_count=args.expected_count,
+            materialize_mode=args.materialize_mode,
+        )
     summary.update({"repo_id": args.repo_id, "revision": args.revision})
     args.receipt.parent.mkdir(parents=True, exist_ok=True)
     args.receipt.write_text(

@@ -70,4 +70,6 @@ Activate it with:
   source "${PROJECT_ROOT}/ACE-Step-1.5/.venv/bin/activate"
 Then download and verify the dataset:
   python scripts/prepare_release_dataset.py
+The verified files remain in:
+  ${PROJECT_ROOT}/dataset/open-focus-classical-600
 EOF

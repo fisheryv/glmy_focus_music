@@ -29,9 +29,9 @@ pytest -q
 
 `prepare_release_dataset.py` 从
 [`fisheryv/open-focus-classical-600`](https://huggingface.co/datasets/fisheryv/open-focus-classical-600)
-下载 600 个原始音频，逐个核对发布的 `SHA256SUMS`，再按项目约定硬链接（跨文件系统
-时校验后复制）到 `data_raw/focus_music` 和 `data_raw/classical_music`。它不会把音频
-提交到 Git。
+下载到 `dataset/open-focus-classical-600`，并逐个核对发布的 `SHA256SUMS`。预处理直接读取
+HF 的 `data/{focus,classical}/{discovery,validation,holdout}` 布局，不再要求额外重排到
+`data_raw/`。只有兼容旧流水线时才显式追加 `--data-root data_raw` 进行硬链接或校验后复制。
 
 外部依赖均在 `reproducibility/release_manifest.toml` 冻结：
 
@@ -262,10 +262,11 @@ Jamendo/FMA 开放 Focus 替代集使用 `focus-open` 构建。筛选规则、FM
 `mp32` 与实测码率的区别见 `docs/open-focus-dataset.md`。在 300 首下载通过所选码率门槛和
 内容审计前，它与已授权的 Brain.fm 基线保持分离。
 
-本仓库还包含专注音乐研究的完整流水线：
+本仓库还包含专注音乐研究的完整流水线。Linux 上的规范原始输入为
+`dataset/open-focus-classical-600/`：
 
 ```text
-data_raw/                 本地音频（不进入版本控制）
+dataset/open-focus-classical-600/  HF 原始音频与冻结发布清单（不进入版本控制）
 metadata/                 许可、曲目索引、数据切分和分析汇总
 src/features/             MIR 特征提取与共享状态模型
 src/topology/             批量拓扑分析和统计
@@ -274,20 +275,37 @@ src/repetition/           重复结构与相位提升 Path Homology
 src/generation/           ACE-Step 生成、重排和引导实验
 ```
 
-典型复现命令：
+从新下载的数据集重新预处理、提取特征并审计来源链：
 
-```powershell
-focus-features run --root . --workers 2
-focus-path-analysis run --root . --workers 2
-focus-tda all --root .
-focus-repetition all --root .
+```bash
+# 可选：若数据集不在默认位置，所有后续入口共享这个覆盖值
+export FOCUS_DATASET_ROOT=/data/open-focus-classical-600
+
+python scripts/prepare_release_dataset.py --snapshot-dir "$FOCUS_DATASET_ROOT"
+focus-preprocess --root . --workers 16
+focus-features run --root . --workers 16
+python -m data.analysis_inputs --root . --verify-audio
+
+# 冻结的主要拓扑视角；discovery 仅拟合，validation/180s 为主分析，
+# validation/300s 为同曲时长敏感性，holdout 仅作冻结流程的操作性确认。
+python scripts/run_pitch_v2_analysis.py
+python scripts/rerun_rhythm_path_homology.py
+python scripts/run_modulation_smp_prototype_analysis.py
+python scripts/rerun_phase_lifted_path_homology.py
 ```
+
+`focus-preprocess --data-root data_raw` 是明确的旧目录兼容模式。每个主分析脚本在计算前都会
+核对 HF 发布的三个冻结哈希、600 个 track ID，以及 1,200 条“原始曲目 → 预处理 WAV →
+特征”路径/哈希链；分析 summary 会写入 `input_provenance` 和
+`provenance_chain_sha256`。拓扑与统计阶段主要使用 CPU/内存/NVMe，L40S 不会显著加速
+这部分工作。
 
 工程关系见 [docs/architecture.md](docs/architecture.md)，拓扑分析结果见 [docs/topology-analysis-results.md](docs/topology-analysis-results.md)，数据公开边界见 [docs/data-governance.md](docs/data-governance.md)。
 
 ## 科研与数据边界
 
 - 本库输出拓扑描述，不构成 ADHD 或其他疾病的诊断、治疗或疗效声明。
-- `data_raw/focus_music/` 中的受限音频不得提交、公开或再分发。
+- `dataset/open-focus-classical-600/` 不进入版本控制；每首音频仍按数据集
+  `metadata/licenses.csv` 中对应的许可使用，不存在覆盖全部音频的单一许可。
 - 跨数据集比较应复用同一个状态模型、阈值集合和预处理配置。
 - 当前项目许可证仍是研究用途边界；公开发布到包索引前，应由项目所有者补充明确的软件许可证。

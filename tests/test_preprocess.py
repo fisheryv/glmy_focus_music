@@ -26,6 +26,14 @@ def test_parser_accepts_isolated_metadata_and_output_roots() -> None:
 
     assert args.metadata_dir == Path("metadata/open")
     assert args.output_root == Path("features/audio_open")
+    assert args.dataset_root == Path("dataset/open-focus-classical-600")
+    assert args.data_root is None
+
+
+def test_parser_keeps_legacy_data_root_explicit() -> None:
+    args = build_parser().parse_args(["--data-root", "data_raw"])
+
+    assert args.data_root == Path("data_raw")
 
 
 def test_choose_segment_window_uses_center_crop() -> None:

@@ -12,6 +12,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from data.analysis_inputs import audit_analysis_inputs
 from features.batch import _json_hash, _sha256, _write_json_atomic, _write_npz_atomic
 from features.modulation_smp import (
     SharedSMPTransform,
@@ -571,7 +572,11 @@ def _mechanism_example(topology: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def run_statistics(rows: list[dict[str, Any]], model: dict[str, Any]) -> dict[str, Any]:
+def run_statistics(
+    rows: list[dict[str, Any]],
+    model: dict[str, Any],
+    input_audit: dict[str, Any],
+) -> dict[str, Any]:
     topology = pd.DataFrame(rows).drop(columns=["filtration", "sensitivity_filtration"])
     all_omnibus = []
     all_pairwise = []
@@ -665,6 +670,7 @@ def run_statistics(rows: list[dict[str, Any]], model: dict[str, Any]) -> dict[st
         "scope": "shared SMP prototype Path Homology, K=8/10/12",
         "evidence_role": "post-holdout exploratory validation; not a frozen holdout confirmation",
         "canonical_groups": list(GROUPS),
+        "input_provenance": input_audit,
         "segment_views": int(len(topology)),
         "source_segments": int(topology.segment_id.nunique()),
         "tracks": int(topology.track_id.nunique()),
@@ -730,6 +736,7 @@ def run_statistics(rows: list[dict[str, Any]], model: dict[str, Any]) -> dict[st
 
 
 def main() -> int:
+    input_audit = audit_analysis_inputs(root=ROOT)
     rows = _load_source_rows()
     print("SMP prototypes: fitting shared balanced discovery/180s transform", flush=True)
     transform, codebooks, model = fit_models(rows)
@@ -738,7 +745,7 @@ def main() -> int:
     print("SMP prototypes: running persistent path homology", flush=True)
     topology = run_topology(features, model)
     print("SMP prototypes: running per-K two-group statistics", flush=True)
-    summary = run_statistics(topology, model)
+    summary = run_statistics(topology, model, input_audit)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
 

@@ -19,6 +19,7 @@ from sklearn.model_selection import GridSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+from data.analysis_inputs import audit_analysis_inputs
 from features.batch import _sha256, _write_json_atomic
 from repetition.analysis import (
     PATH_REPRESENTATIONS,
@@ -883,6 +884,7 @@ def _write_report(
 
 
 def main() -> int:
+    input_audit = audit_analysis_inputs(root=ROOT)
     config = load_config(ROOT)
     manifest_path = METADATA / "feature_segments.csv"
     manifest = pd.read_csv(manifest_path)
@@ -961,6 +963,7 @@ def main() -> int:
         "scope": "phase-lifted Path Homology rerun on current Open Focus/Classical data",
         "evidence_status": "post-migration observational reanalysis; not a replication of the former Focus-vs-Pop hypothesis",
         "ok": True,
+        "input_provenance": input_audit,
         "representations": list(PATH_REPRESENTATIONS),
         "segments": int(features["segment_id"].nunique()),
         "segment_views": int(len(features)),
