@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import numpy as np
 
+
 from features.structure import (
     abstract_structure_states,
     checkerboard_novelty,
     self_similarity_matrix,
     structural_features,
 )
-from topology.batch import _load_state_sequence
 
 
 def test_ssm_novelty_recovers_a_clear_acoustic_boundary() -> None:

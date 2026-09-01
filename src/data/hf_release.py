@@ -75,7 +75,7 @@ def _materialize(source: Path, target: Path, digest: str, mode: str) -> str:
 
 
 def _validate_project_index(project_metadata: Path, dataset_rows: list[dict[str, str]]) -> None:
-    index_path = project_metadata / "track_index.csv"
+    index_path = project_metadata / "tracks.csv"
     if not index_path.is_file():
         raise DatasetReleaseError(f"missing project track index: {index_path}")
     project = {row["track_id"]: row for row in _read_csv(index_path)}
@@ -185,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
         "--download-dir", type=Path, default=Path("datasets/open-focus-classical-600")
     )
     parser.add_argument("--data-root", type=Path, default=Path("data_raw"))
-    parser.add_argument("--project-metadata", type=Path, default=Path("metadata"))
+    parser.add_argument("--project-metadata", type=Path, default=Path("datasets/open-focus-classical-600/metadata"))
     parser.add_argument("--receipt", type=Path, default=Path("runs/reproducibility/dataset.json"))
     parser.add_argument("--expected-count", type=int, default=600)
     parser.add_argument("--materialize-mode", choices=("auto", "hardlink", "copy"), default="auto")

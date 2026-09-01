@@ -459,7 +459,7 @@ def _verified_existing(
             if not output.is_file() or _sha256(output) != item["sha256"]:
                 return None
         return payload
-    except KeyError, OSError, ValueError, json.JSONDecodeError:
+    except (KeyError, OSError, ValueError, json.JSONDecodeError):
         return None
 
 
