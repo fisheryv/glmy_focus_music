@@ -24,11 +24,8 @@ Thumbs.db
 .env
 *.local.toml
 
-# Raw audio is never versioned. Canonical Focus is openly licensed, but audio files
-# remain local because every track carries its own attribution/NC/ND/SA terms.
-data_raw/**
-!data_raw/**/
-!data_raw/**/README.md
+# Raw audio is never versioned.
+data_raw/
 
 # Re-downloadable upstream metadata repositories and request caches
 data_sources/**
