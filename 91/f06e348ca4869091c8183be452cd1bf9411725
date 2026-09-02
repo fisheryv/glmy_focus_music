@@ -1,0 +1,14 @@
+README.md
+  h_3bfeba547aafcb 310-311
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "91f06e348ca4869091c8183be452cd1bf9411725",
+  "prompts": {},
+  "humans": {
+    "h_3bfeba547aafcb": {
+      "author": "fisheryv <yverrr@gmail.com>"
+    }
+  }
+}
