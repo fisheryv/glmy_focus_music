@@ -1,4 +1,0 @@
-representation,method,n_tracks,synthetic_loop_median,shuffled_median,median_delta,positive_fraction,wilcoxon_statistic,p_value,p_fdr_bh,calibration_pass
-path_rhythm_phase,phase_lifted_path_homology,48,1.0,0.32929406550171114,0.6707059344982889,1.0,1176.0,3.552713678800501e-15,3.552713678800501e-15,True
-path_acoustic_phase,phase_lifted_path_homology,48,1.0,0.3468610142406105,0.6531389857593894,1.0,1176.0,3.552713678800501e-15,3.552713678800501e-15,True
-path_chroma_phase,phase_lifted_path_homology,48,0.9999999649115004,0.3626331421006886,0.6373668165019172,1.0,1176.0,3.552713678800501e-15,3.552713678800501e-15,True

@@ -1,7 +1,0 @@
-analysis_set,scale_seconds,view_a,view_b,spearman_rho,p_value,n_pairwise_distances
-primary_validation_180,180.0,pitch,rhythm,0.14597372387262258,2.65034843733681e-35,7140
-primary_validation_180,180.0,pitch,modulation_smp_k10,0.19388798486484235,1.9689162447381977e-61,7140
-primary_validation_180,180.0,rhythm,modulation_smp_k10,0.13209115455687095,3.695930569054534e-29,7140
-sensitivity_validation_300,300.0,pitch,rhythm,0.2569021283536241,5.4283152210660626e-108,7140
-sensitivity_validation_300,300.0,pitch,modulation_smp_k10,0.2053346696785199,7.800932237362303e-69,7140
-sensitivity_validation_300,300.0,rhythm,modulation_smp_k10,0.1222172017173729,3.606218674709825e-25,7140

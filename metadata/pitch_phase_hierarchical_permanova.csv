@@ -1,7 +1,0 @@
-analysis_set,scale_seconds,feature_set,input_dimensions,n_validation,permutations,pseudo_f,p_value,p_fdr_bh
-primary_validation_180,180.0,Pitch,16,120,999,7.58803259333116,0.001,0.001
-primary_validation_180,180.0,Phase,2,120,999,20.579734753144177,0.001,0.001
-primary_validation_180,180.0,PitchPhase,18,120,999,13.485710766253725,0.001,0.001
-same_track_sensitivity_300,300.0,Pitch,17,120,999,13.43704740697347,0.001,0.001
-same_track_sensitivity_300,300.0,Phase,2,120,999,29.41908723090188,0.001,0.001
-same_track_sensitivity_300,300.0,PitchPhase,19,120,999,21.391984403803004,0.001,0.001

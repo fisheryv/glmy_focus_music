@@ -1,3 +1,0 @@
-task,train_split,test_split,scale_seconds,n_train,n_validation,n_features,best_c,cv_macro_f1,balanced_accuracy,macro_f1,macro_auroc
-three_class,discovery,validation,180.0,574,195,3,1.0,0.48647621313014905,0.5919442593826338,0.5483729997701455,0.7893842490119624
-focus_vs_pop,discovery,validation,180.0,353,116,3,1.0,0.6634440435661637,0.763157894736842,0.6896551724137931,0.8638157894736842
