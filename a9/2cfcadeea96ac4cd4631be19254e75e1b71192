@@ -1,0 +1,18 @@
+reproducibility/env.yml
+  h_3bfeba547aafcb 5
+reproducibility/release_manifest.toml
+  h_3bfeba547aafcb 3
+.gitignore
+  h_3bfeba547aafcb 35,104-105
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "a92cfcadeea96ac4cd4631be19254e75e1b71192",
+  "prompts": {},
+  "humans": {
+    "h_3bfeba547aafcb": {
+      "author": "fisheryv <yverrr@gmail.com>"
+    }
+  }
+}
