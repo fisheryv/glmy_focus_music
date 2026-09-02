@@ -14,18 +14,19 @@ from topology.batch import (
     load_topology_config,
     run_topology_batch,
 )
+from topology.rhythm_statistics import run_statistics
 
 ROOT = Path(__file__).resolve().parents[1]
-SEGMENTS = ROOT / "metadata" / "structure_topology_segments.csv"
-FILTRATION = ROOT / "metadata" / "structure_topology_filtration.csv"
-SENSITIVITY = ROOT / "metadata" / "structure_topology_filtration_sensitivity.csv"
-SUMMARY = ROOT / "metadata" / "structure_topology_summary.json"
+SEGMENTS = ROOT / "metadata" / "rhythm_topology_segments.csv"
+FILTRATION = ROOT / "metadata" / "rhythm_topology_filtration.csv"
+SENSITIVITY = ROOT / "metadata" / "rhythm_topology_filtration_sensitivity.csv"
+SUMMARY = ROOT / "metadata" / "rhythm_topology_summary.json"
 
 
-def main() -> int:
+def run_topology() -> int:
     input_audit = audit_analysis_inputs(root=ROOT)
     base_config = load_topology_config(ROOT)
-    config = replace(base_config, views=("structure",))
+    config = replace(base_config, views=("rhythm",))
     jobs = _load_feature_jobs(ROOT / "metadata" / "feature_segments.csv", config)
     rows = run_topology_batch(
         jobs,
@@ -48,7 +49,7 @@ def main() -> int:
     )
     summary = {
         "generated_at": date.today().isoformat(),
-        "scope": "structure-only Path Homology rerun on Focus/Classical dataset",
+        "scope": "rhythm-only Path Homology topology stage on Focus/Classical dataset",
         "canonical_groups": ["classical", "focus"],
         "input_provenance": input_audit,
         "ok": complete,
@@ -86,6 +87,13 @@ def main() -> int:
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0 if summary["ok"] else 1
+
+
+def main() -> int:
+    topology_status = run_topology()
+    if topology_status != 0:
+        return topology_status
+    return run_statistics()
 
 
 if __name__ == "__main__":

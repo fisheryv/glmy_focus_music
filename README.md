@@ -279,7 +279,7 @@ src/generation/           ACE-Step 生成、重排和引导实验
 
 ```bash
 # 可选：若数据集不在默认位置，所有后续入口共享这个覆盖值
-export FOCUS_DATASET_ROOT=/data/open-focus-classical-600
+export FOCUS_DATASET_ROOT=datasets/open-focus-classical-600/
 
 # 校验 600 个原始音频与冻结清单，并从 release metadata 初始化项目 track/split/license 清单
 python scripts/prepare_release_dataset.py --snapshot-dir "$FOCUS_DATASET_ROOT"
@@ -289,13 +289,11 @@ python -m data.analysis_inputs --root . --verify-audio
 
 # 冻结的单视角分析；discovery 仅拟合，validation/180s 为主分析，
 # validation/300s 为同曲时长敏感性，holdout 仅作冻结流程的操作性确认。
-python scripts/run_pitch_v2_analysis.py
-python scripts/rerun_rhythm_path_homology.py
-python scripts/analyze_rhythm_results.py
-python scripts/run_modulation_smp_prototype_analysis.py
-python scripts/rerun_structure_path_homology.py
-python scripts/analyze_structure_results.py
-python scripts/rerun_phase_lifted_path_homology.py
+python scripts/run_pitch_analysis.py
+python scripts/run_rhythm_analysis.py
+python scripts/run_modulation_analysis.py
+python scripts/run_structure_analysis.py
+python scripts/run_phase_lifted_analysis.py
 
 # 在 validation 上冻结融合决策；随后才冻结 gate 并执行 holdout 操作性复跑。
 python scripts/run_multiview_fusion_analysis.py
@@ -305,6 +303,10 @@ python scripts/run_holdout_confirmation.py
 # 汇总审计回执、Markdown 报告及 PNG/SVG 总览图。
 python scripts/build_fresh_open_dataset_report.py
 ```
+
+每个视角只有一个公开入口；单个脚本会依次完成该视角需要的模型/表示变换、拓扑重算、
+统计检验和汇总。Rhythm 与 Structure 的统计阶段保留为 `src/topology/` 内部模块，不再要求
+用户额外执行 `analyze_*` 命令。
 
 `focus-preprocess --data-root data_raw` 是明确的旧目录兼容模式。每个主分析脚本在计算前都会
 核对 HF 发布的三个冻结哈希、600 个 track ID，以及 1,200 条“原始曲目 → 预处理 WAV →

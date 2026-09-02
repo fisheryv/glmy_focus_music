@@ -1107,8 +1107,7 @@ Open Focus 与 Classical 的完整独立两两检验：
 
 ```powershell
 $env:PYTHONPATH = "packages/pyglmy/src;src"
-python scripts/rerun_structure_path_homology.py
-python scripts/analyze_structure_results.py
+python scripts/run_structure_analysis.py
 python scripts/render_structure_open_report.py
 ```
 

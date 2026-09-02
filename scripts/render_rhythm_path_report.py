@@ -662,8 +662,7 @@ Open Focus 与 Classical 的独立两两检验如下：
 
 ```powershell
 $env:PYTHONPATH = "packages/pyglmy/src;src"
-python scripts/rerun_rhythm_path_homology.py
-python scripts/analyze_rhythm_results.py
+python scripts/run_rhythm_analysis.py
 python scripts/render_rhythm_path_report.py
 ```
 

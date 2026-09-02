@@ -11,7 +11,7 @@ import pandas as pd
 from features.batch import _sha256
 from topology.statistics import _omnibus_and_pairwise
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 CONFIRMATORY_FDR_Q = 0.05
 SEGMENTS = ROOT / "metadata" / "structure_topology_segments.csv"
 SENSITIVITY = ROOT / "metadata" / "structure_topology_filtration_sensitivity.csv"
@@ -109,7 +109,7 @@ def _mechanism_example(segments: pd.DataFrame) -> dict[str, Any]:
     return selected
 
 
-def main() -> int:
+def run_statistics() -> int:
     segments = pd.read_csv(SEGMENTS)
     sensitivity = pd.read_csv(SENSITIVITY)
     group_counts = segments["group"].value_counts().to_dict()
@@ -211,7 +211,3 @@ def main() -> int:
     )
     print(json.dumps(summary, ensure_ascii=False, indent=2))
     return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

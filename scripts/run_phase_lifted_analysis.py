@@ -868,7 +868,7 @@ def _write_report(
         "",
         "## 12. 可复现产物",
         "",
-        "- `scripts/rerun_phase_lifted_path_homology.py`",
+        "- `scripts/run_phase_lifted_analysis.py`",
         "- `metadata/phase_lifted_path_homology_features.csv`",
         "- `metadata/phase_lifted_path_homology_tests.csv`",
         "- `metadata/phase_lifted_path_homology_calibration.csv`",

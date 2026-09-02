@@ -735,7 +735,7 @@ $$
 PowerShell命令：
 
     $env:PYTHONPATH = "packages/pyglmy/src;src"
-    .\.venv\Scripts\python.exe scripts\run_modulation_smp_prototype_analysis.py
+    .\.venv\Scripts\python.exe scripts\run_modulation_analysis.py
     .\.venv\Scripts\python.exe scripts\render_modulation_smp_prototype_report.py
 
 模型集合SHA-256：{summary["model_set_sha256"]}。共享变换SHA-256：{summary["shared_model_sha256"]}。数值表位于metadata/modulation_smp_prototype系列文件，模型位于features/models/modulation_smp系列文件，PNG/SVG及哈希清单位于runs/modulation_smp_prototype_path_homology。

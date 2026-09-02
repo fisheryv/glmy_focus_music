@@ -61,12 +61,12 @@ VALIDATION_PATHS = (
 )
 CONFIG_PATHS = (
     ROOT / "configs" / "pipeline.toml",
-    ROOT / "scripts" / "run_pitch_v2_analysis.py",
-    ROOT / "scripts" / "rerun_rhythm_path_homology.py",
-    ROOT / "scripts" / "analyze_rhythm_results.py",
-    ROOT / "scripts" / "run_modulation_smp_prototype_analysis.py",
-    ROOT / "scripts" / "rerun_structure_path_homology.py",
-    ROOT / "scripts" / "analyze_structure_results.py",
+    ROOT / "scripts" / "run_pitch_analysis.py",
+    ROOT / "scripts" / "run_rhythm_analysis.py",
+    ROOT / "src" / "topology" / "rhythm_statistics.py",
+    ROOT / "scripts" / "run_modulation_analysis.py",
+    ROOT / "scripts" / "run_structure_analysis.py",
+    ROOT / "src" / "topology" / "structure_statistics.py",
     ROOT / "scripts" / "run_multiview_fusion_analysis.py",
     ROOT / "scripts" / "run_holdout_confirmation.py",
 )

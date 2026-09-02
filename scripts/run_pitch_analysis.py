@@ -571,7 +571,7 @@ def run_statistics(
     summary = {
         "generated_at": date.today().isoformat(),
         "ok": True,
-        "scope": "pitch_v2 Tonnetz harmonic-codebook path homology on Focus/Classical dataset",
+        "scope": "pitch Tonnetz harmonic-codebook path homology on Focus/Classical dataset",
         "canonical_focus_source": "Jamendo Open Focus",
         "canonical_groups": list(GROUPS),
         "input_provenance": input_audit,

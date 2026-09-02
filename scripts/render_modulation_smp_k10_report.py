@@ -542,7 +542,7 @@ Open Focus与Classical在主尺度通过独立两两FDR的指标：
 PowerShell：
 
     $env:PYTHONPATH = "packages/pyglmy/src;src"
-    .\.venv\Scripts\python.exe scripts\run_modulation_smp_prototype_analysis.py
+    .\.venv\Scripts\python.exe scripts\run_modulation_analysis.py
     .\.venv\Scripts\python.exe scripts\render_modulation_smp_k10_report.py
 
 主要数值文件为metadata/modulation_smp_prototype_features.csv、metadata/modulation_smp_prototype_topology_segments.csv、metadata/modulation_smp_prototype_topology_filtration.csv、metadata/modulation_smp_prototype_topology_filtration_sensitivity.csv、metadata/modulation_smp_prototype_statistical_tests.csv、metadata/modulation_smp_prototype_pairwise_tests.csv与metadata/modulation_smp_prototype_summary.json。$K=10$模型为features/models/modulation_smp_proto_k10.npz/json；图和哈希清单位于runs/modulation_smp_k10_path_homology_open。

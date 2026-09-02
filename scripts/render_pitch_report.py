@@ -738,8 +738,8 @@ Open Focus 与 Classical 在主尺度通过独立两两 FDR 的指标：
 
 ```powershell
 $env:PYTHONPATH = "packages/pyglmy/src;src"
-python scripts/run_pitch_v2_analysis.py
-python scripts/render_pitch_v2_report.py
+python scripts/run_pitch_analysis.py
+python scripts/render_pitch_report.py
 ```
 
 主要数值文件为 `metadata/pitch_v2_features.csv`、`metadata/pitch_v2_topology_segments.csv`、`metadata/pitch_v2_topology_filtration.csv`、`metadata/pitch_v2_topology_filtration_sensitivity.csv`、`metadata/pitch_v2_statistical_tests.csv`、`metadata/pitch_v2_pairwise_tests.csv` 和 `metadata/pitch_v2_summary.json`。
