@@ -6,7 +6,12 @@ from pathlib import Path
 
 import pytest
 
-from data.hf_release import DatasetReleaseError, prepare_release_dataset, verify_release_dataset
+from data.hf_release import (
+    DatasetReleaseError,
+    initialize_project_metadata,
+    prepare_release_dataset,
+    verify_release_dataset,
+)
 
 
 def _write_csv(path: Path, rows: list[dict[str, str]]) -> None:
@@ -139,3 +144,73 @@ def test_verify_release_dataset_returns_direct_source_map(tmp_path: Path) -> Non
 
     assert result.source_by_track == {"one": audio.resolve()}
     assert result.summary["group_split_counts"] == {"classical/holdout": 1}
+
+
+def test_initialize_project_metadata_bootstraps_fresh_checkout(tmp_path: Path) -> None:
+    snapshot = tmp_path / "dataset"
+    audio = snapshot / "data" / "focus" / "validation" / "one.mp3"
+    audio.parent.mkdir(parents=True)
+    audio.write_bytes(b"original audio")
+    digest = hashlib.sha256(audio.read_bytes()).hexdigest()
+    row = {
+        "file_name": "data/focus/validation/one.mp3",
+        "track_id": "one",
+        "group": "focus",
+        "split": "validation",
+        "relative_path": "focus_music/one.mp3",
+        "sha256": digest,
+        "duration_seconds": "180",
+        "sample_rate": "44100",
+        "channels": "2",
+        "artist_key": "artist-one",
+        "album_key": "album-one",
+        "composer_key": "",
+    }
+    _write_csv(snapshot / "metadata" / "tracks.csv", [row])
+    _write_csv(
+        snapshot / "metadata" / "licenses.csv",
+        [
+            {
+                "track_id": "one",
+                "group": "focus",
+                "source_url": "https://example.test/one",
+                "license_type": "CC BY 4.0",
+                "downloaded_at": "2026-09-02",
+                "redistribution_allowed": "true",
+                "notes": "fixture",
+            }
+        ],
+    )
+    (snapshot / "SHA256SUMS").write_text(
+        f"{digest}  data/focus/validation/one.mp3\n", encoding="utf-8"
+    )
+    verification = verify_release_dataset(
+        dataset_root=snapshot,
+        expected_count=1,
+        expected_sha256s_sha256=None,
+        expected_tracks_sha256=None,
+        expected_licenses_sha256=None,
+    )
+
+    result = initialize_project_metadata(
+        verification, project_metadata=tmp_path / "metadata"
+    )
+
+    assert result["created"] == [
+        "track_index.csv",
+        "licenses.csv",
+        "split_discovery.csv",
+        "split_validation.csv",
+        "split_holdout.csv",
+        "dataset_summary.json",
+    ]
+    tracks = _read_csv(tmp_path / "metadata" / "track_index.csv")
+    assert tracks[0]["sha256"] == digest
+    assert tracks[0]["instrumental"] == "true"
+    validation = _read_csv(tmp_path / "metadata" / "split_validation.csv")
+    assert validation == [{"track_id": "one", "group": "focus"}]
+
+
+def _read_csv(path: Path) -> list[dict[str, str]]:
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        return list(csv.DictReader(handle))

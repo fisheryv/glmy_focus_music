@@ -43,9 +43,10 @@ FIGURES = OUTPUT / "figures"
 VIEW_FILES = {
     "pitch": METADATA / "pitch_v2_topology_segments.csv",
     "rhythm": METADATA / "rhythm_topology_segments.csv",
-    "modulation": METADATA / "modulation_tertile_topology_segments.csv",
+    "modulation": METADATA / "modulation_smp_prototype_topology_segments.csv",
     "structure": METADATA / "structure_topology_segments.csv",
 }
+VIEW_STATE_COUNTS = {"modulation": 10}
 IDENTITY = ["segment_id", "track_id", "group", "split", "scale_seconds"]
 LOCAL_VIEWS = ("pitch", "rhythm", "modulation")
 SCALES = (180.0, 300.0)
@@ -77,6 +78,12 @@ def _load_aligned() -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
     canonical_index: pd.MultiIndex | None = None
     for view, path in VIEW_FILES.items():
         frame = pd.read_csv(path)
+        if view in VIEW_STATE_COUNTS:
+            if "state_count" not in frame.columns:
+                raise RuntimeError(f"{view} is missing state_count")
+            frame = frame[
+                np.isclose(frame["state_count"].astype(float), VIEW_STATE_COUNTS[view])
+            ].copy()
         required = set(IDENTITY) | set(TOPOLOGY_METRICS) | {"status"}
         missing = required - set(frame.columns)
         if missing:
@@ -783,8 +790,9 @@ def main() -> int:
             ),
             "validation_300": "duration sensitivity",
             "holdout": (
-                "withheld from all summaries and tests until the hashed analysis gate "
-                "is written"
+                "excluded from current summaries and tests; historically accessed in prior "
+                "work, so any later rerun is operational/descriptive rather than pristine "
+                "independent confirmation"
             ),
         },
         "design": {
@@ -860,8 +868,8 @@ def main() -> int:
                 np.sign(structure_increment["delta_pseudo_f"])
                 == np.sign(structure_increment_sensitivity["delta_pseudo_f"])
             ),
-            "frozen_holdout_primary_feature_set": "local",
-            "frozen_holdout_secondary_feature_set": "hierarchical",
+            "operational_holdout_primary_feature_set": "local",
+            "operational_holdout_secondary_feature_set": "hierarchical",
             "frozen_local_weights": {view: 1 / 3 for view in LOCAL_VIEWS},
             "frozen_hierarchical_weights": {"local": 0.5, "structure": 0.5},
             "weights_changed_after_validation": False,

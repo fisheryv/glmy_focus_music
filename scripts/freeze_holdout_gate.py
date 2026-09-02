@@ -22,9 +22,9 @@ VIEWS = {
         "summary": ROOT / "metadata" / "rhythm_analysis_summary.json",
     },
     "modulation": {
-        "segments": ROOT / "metadata" / "modulation_tertile_topology_segments.csv",
-        "tests": ROOT / "metadata" / "modulation_tertile_statistical_tests.csv",
-        "summary": ROOT / "metadata" / "modulation_tertile_summary.json",
+        "segments": ROOT / "metadata" / "modulation_smp_prototype_topology_segments.csv",
+        "tests": ROOT / "metadata" / "modulation_smp_prototype_statistical_tests.csv",
+        "summary": ROOT / "metadata" / "modulation_smp_prototype_summary.json",
     },
     "structure": {
         "segments": ROOT / "metadata" / "structure_topology_segments.csv",
@@ -37,11 +37,16 @@ MODEL_PATHS = (
     ROOT / "features" / "models" / "state_model.json",
     ROOT / "features" / "models" / "pitch_v2_codebook.npz",
     ROOT / "features" / "models" / "pitch_v2_codebook.json",
-    ROOT / "features" / "models" / "modulation_tertile_model.npz",
-    ROOT / "features" / "models" / "modulation_tertile_model.json",
+    ROOT / "features" / "models" / "modulation_smp_shared_transform.npz",
+    ROOT / "features" / "models" / "modulation_smp_shared_transform.json",
+    ROOT / "features" / "models" / "modulation_smp_proto_k10.npz",
+    ROOT / "features" / "models" / "modulation_smp_proto_k10.json",
 )
 INPUT_PATHS = (
-    ROOT / "metadata" / "split_assignment_v2.csv",
+    ROOT / "metadata" / "track_index.csv",
+    ROOT / "metadata" / "split_discovery.csv",
+    ROOT / "metadata" / "split_validation.csv",
+    ROOT / "metadata" / "split_holdout.csv",
     ROOT / "metadata" / "preprocessed_segments.csv",
     ROOT / "metadata" / "feature_segments.csv",
     *(payload["segments"] for payload in VIEWS.values()),
@@ -59,7 +64,7 @@ CONFIG_PATHS = (
     ROOT / "scripts" / "run_pitch_v2_analysis.py",
     ROOT / "scripts" / "rerun_rhythm_path_homology.py",
     ROOT / "scripts" / "analyze_rhythm_results.py",
-    ROOT / "scripts" / "run_modulation_tertile_analysis.py",
+    ROOT / "scripts" / "run_modulation_smp_prototype_analysis.py",
     ROOT / "scripts" / "rerun_structure_path_homology.py",
     ROOT / "scripts" / "analyze_structure_results.py",
     ROOT / "scripts" / "run_multiview_fusion_analysis.py",
@@ -94,7 +99,9 @@ def _selected_directional_metrics() -> list[dict[str, Any]]:
         for row in rows:
             if row["analysis_set"] != "primary_validation_180":
                 continue
-            if float(row["p_fdr_bh"]) > 0.10:
+            if view == "modulation" and int(row["state_count"]) != 10:
+                continue
+            if float(row["p_fdr_bh"]) > 0.05:
                 continue
             classical = float(row["classical_median"])
             focus = float(row["focus_median"])
@@ -122,11 +129,12 @@ def main() -> int:
     payload = {
         "schema_version": 1,
         "frozen_at": date.today().isoformat(),
-        "split_version": "symmetric_holdout_v2",
-        "status": "frozen_before_holdout_opening",
+        "split_version": "open-focus-classical-600-frozen-release",
+        "status": "frozen_before_holdout_statistical_testing",
         "scientific_scope": (
-            "Operational final confirmation under a retrospective symmetric re-split; "
-            "the Classical holdout previously belonged to discovery and is not pristine."
+            "Operational/descriptive rerun only. These holdout tracks were accessed in prior "
+            "work, so this is not pristine independent confirmation and cannot upgrade the "
+            "validation evidence tier."
         ),
         "analysis_specification": {
             "primary_scale_seconds": 180.0,
@@ -152,9 +160,9 @@ def main() -> int:
             "permutations": 999,
             "seed": 20260716,
             "secondary_fdr": "Benjamini-Hochberg within each locked family and scale",
-            "secondary_q": 0.10,
+            "secondary_q": 0.05,
             "directional_metric_selection": (
-                "all validation/180s single-view metrics with validation BH q <= 0.10; "
+                "all validation/180s single-view metrics with validation BH q <= 0.05; "
                 "expected direction fixed from validation medians"
             ),
             "directional_metrics": selected,

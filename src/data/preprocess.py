@@ -232,6 +232,7 @@ def _decode_f32le(
     duration_seconds: float,
     sample_rate: int,
     ffmpeg_exe: str,
+    allow_short: bool = False,
 ) -> np.ndarray:
     command = [
         ffmpeg_exe,
@@ -272,7 +273,7 @@ def _decode_f32le(
     tolerance = max(2, int(sample_rate * 2.0))
     if audio.size > expected + tolerance:
         audio = audio[:expected]
-    if audio.size < expected - tolerance:
+    if audio.size < expected - tolerance and not allow_short:
         raise PreprocessError(
             f"decoded duration is short for {source.name}: {audio.size / sample_rate:.3f}s "
             f"< {duration_seconds:.3f}s"
@@ -624,6 +625,7 @@ def process_plan(
             duration_seconds=plan.requested_duration_seconds,
             sample_rate=config.sample_rate,
             ffmpeg_exe=ffmpeg_exe,
+            allow_short=plan.used_full_track,
         )
         try:
             audio, metrics = normalize_loudness(
@@ -697,7 +699,10 @@ def _failure_row(
 
 
 def write_manifest(path: Path, rows: Iterable[dict[str, Any]]) -> None:
-    ordered = sorted(rows, key=lambda row: (row["group"], row["track_id"], row["scale_seconds"]))
+    ordered = sorted(
+        rows,
+        key=lambda row: (row["group"], row["track_id"], float(row["scale_seconds"])),
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".part")
     with temporary.open("w", encoding="utf-8", newline="") as handle:

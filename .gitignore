@@ -32,15 +32,9 @@ data_sources/**
 !data_sources/README.md
 
 # Generated or derived artifacts
-features/**
-!features/**/
-!features/**/README.md
-graphs/**
-!graphs/**/
-!graphs/**/README.md
-homology/**
-!homology/**/
-!homology/**/README.md
+features/
+graphs/
+homology/
 generation/baseline/**
 generation/steered/**
 !generation/baseline/
@@ -60,7 +54,7 @@ restricted_archive/**
 dataset_archive/
 
 # Historical analysis snapshots superseded by canonical reruns.
-analysis_archive/**
+analysis_archive/
 
 # Experiment logs and model artifacts
 runs/
@@ -107,3 +101,5 @@ examples/
 *.toc
 ## Keep compiled PDFs for papers
 !papers/*.pdf
+
+.agents/

@@ -37,9 +37,10 @@ FIGURES = OUTPUT / "figures"
 VIEW_FILES = {
     "pitch": METADATA / "pitch_v2_topology_segments.csv",
     "rhythm": METADATA / "rhythm_topology_segments.csv",
-    "modulation": METADATA / "modulation_tertile_topology_segments.csv",
+    "modulation": METADATA / "modulation_smp_prototype_topology_segments.csv",
     "structure": METADATA / "structure_topology_segments.csv",
 }
+VIEW_STATE_COUNTS = {"modulation": 10}
 IDENTITY = ["segment_id", "track_id", "group", "split", "scale_seconds"]
 FEATURE_SETS = ("local", "pitch", "rhythm", "modulation", "structure", "hierarchical")
 
@@ -61,8 +62,8 @@ def _write_json(path: Path, payload: dict[str, Any]) -> None:
 
 
 def _verify_gate(gate: dict[str, Any]) -> None:
-    if gate.get("status") != "frozen_before_holdout_opening":
-        raise RuntimeError("holdout gate is not in the frozen state")
+    if gate.get("status") != "frozen_before_holdout_statistical_testing":
+        raise RuntimeError("operational holdout gate is not in the frozen state")
     for category in (
         "config_sha256",
         "input_sha256",
@@ -80,6 +81,12 @@ def _load_aligned() -> tuple[pd.DataFrame, dict[str, pd.DataFrame]]:
     canonical: pd.MultiIndex | None = None
     for view, path in VIEW_FILES.items():
         frame = pd.read_csv(path)
+        if view in VIEW_STATE_COUNTS:
+            if "state_count" not in frame.columns:
+                raise RuntimeError(f"{view} missing state_count")
+            frame = frame[
+                np.isclose(frame["state_count"].astype(float), VIEW_STATE_COUNTS[view])
+            ].copy()
         required = set(IDENTITY) | set(TOPOLOGY_METRICS) | {"status"}
         missing = required - set(frame.columns)
         if missing:
@@ -363,7 +370,7 @@ def main() -> int:
     primary_directional = directional[directional["scale_seconds"] == 180.0]
     payload = {
         "generated_at": date.today().isoformat(),
-        "status": "completed_once",
+        "status": "operational_rerun_completed",
         "gate_sha256": gate_sha256,
         "scientific_scope": gate["scientific_scope"],
         "holdout_counts": {"classical": 45, "focus": 45},
@@ -371,7 +378,7 @@ def main() -> int:
             "feature_set": "local",
             "pseudo_f": float(primary["pseudo_f"]),
             "p_value": float(primary["p_value"]),
-            "confirmed_at_alpha_0_05": bool(primary["p_value"] <= 0.05),
+            "descriptive_p_below_0_05": bool(primary["p_value"] <= 0.05),
         },
         "secondary_hierarchical_180": {
             "pseudo_f": float(hierarchical["pseudo_f"]),
@@ -381,7 +388,12 @@ def main() -> int:
         "directional_metric_replication_180": {
             "locked_metrics": int(len(primary_directional)),
             "direction_matched": int(primary_directional["direction_matched"].sum()),
-            "replicated_q_0_10": int(primary_directional["replicated_q_0_10"].sum()),
+            "replicated_q_0_05": int(
+                (
+                    primary_directional["direction_matched"]
+                    & (primary_directional["p_fdr_bh"] <= 0.05)
+                ).sum()
+            ),
             "fdr_family": "all validation-selected directional metrics across four views",
         },
         "adaptation_audit": {
@@ -403,7 +415,7 @@ def main() -> int:
     outputs = (SUMMARY, PERMANOVA, INCREMENTAL, DIRECTIONAL, *sorted(FIGURES.glob("*")))
     execution = {
         "executed_at": date.today().isoformat(),
-        "status": "completed_once",
+        "status": "operational_rerun_completed",
         "gate_sha256": gate_sha256,
         "output_sha256": {path.relative_to(ROOT).as_posix(): _sha256(path) for path in outputs},
     }

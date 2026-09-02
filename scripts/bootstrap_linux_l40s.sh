@@ -4,7 +4,7 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-python3.12}"
 ACE_REPOSITORY="https://github.com/fisheryv/ACE-Step-1.5.git"
-ACE_REVISION="a5632cda3084f1088e69b2057dde7047e1bb4839"
+ACE_REVISION="de9a3dc7f7ca28c09e4d21822ceba02260b3162a"
 PYGLMY_REPOSITORY="https://github.com/fisheryv/pyglmy.git"
 PYGLMY_REVISION="49bd5ea7617906f09940dcc9b9718bbfc1482d6f"
 
@@ -36,16 +36,6 @@ clone_at_revision() {
 
 clone_at_revision "${PYGLMY_REPOSITORY}" "${PYGLMY_REVISION}" "${PROJECT_ROOT}/packages/pyglmy"
 clone_at_revision "${ACE_REPOSITORY}" "${ACE_REVISION}" "${PROJECT_ROOT}/ACE-Step-1.5"
-
-PATCH="${PROJECT_ROOT}/patches/ace-step-1.5-topology-corrector.patch"
-if git -C "${PROJECT_ROOT}/ACE-Step-1.5" apply --reverse --check "${PATCH}" >/dev/null 2>&1; then
-  echo "ACE-Step topology patch is already applied"
-elif git -C "${PROJECT_ROOT}/ACE-Step-1.5" apply --check "${PATCH}"; then
-  git -C "${PROJECT_ROOT}/ACE-Step-1.5" apply "${PATCH}"
-else
-  echo "ACE-Step checkout is neither clean-patchable nor already patched" >&2
-  exit 2
-fi
 
 "${PYTHON_BIN}" -m pip install --user "uv==0.8.13"
 UV_BIN="${UV_BIN:-$("${PYTHON_BIN}" -c 'import shutil; print(shutil.which("uv") or "")')}"

@@ -36,7 +36,7 @@ from repetition.analysis import (
 from topology.statistics import benjamini_hochberg
 
 ROOT = Path(__file__).resolve().parents[1]
-RUN_DIR = ROOT / "runs" / "phase_lifted_path_homology_20260802"
+RUN_DIR = ROOT / "runs" / "phase_lifted_path_homology"
 FIGURE_DIR = RUN_DIR / "figures"
 METADATA = ROOT / "metadata"
 FEATURE_PATH = METADATA / "phase_lifted_path_homology_features.csv"
@@ -877,7 +877,7 @@ def _write_report(
         "- `metadata/phase_lifted_path_homology_representative_edges.csv`",
         "- `metadata/phase_lifted_path_homology_exclusions.csv`",
         "- `metadata/phase_lifted_path_homology_summary.json`",
-        "- `runs/phase_lifted_path_homology_20260802/figures/`（PNG 与 SVG）",
+        "- `runs/phase_lifted_path_homology/figures/`（PNG 与 SVG）",
         "",
     ]
     REPORT_PATH.write_text("\n".join(lines), encoding="utf-8")

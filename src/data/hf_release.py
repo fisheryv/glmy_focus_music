@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 from collections import Counter
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -33,6 +34,31 @@ class ReleaseVerification:
     summary: dict[str, Any]
 
 
+PROJECT_TRACK_COLUMNS = (
+    "track_id",
+    "group",
+    "relative_path",
+    "sha256",
+    "duration_seconds",
+    "sample_rate",
+    "channels",
+    "artist_key",
+    "album_key",
+    "composer_key",
+    "instrumental",
+    "restricted",
+)
+PROJECT_LICENSE_COLUMNS = (
+    "track_id",
+    "group",
+    "source_url",
+    "license_type",
+    "downloaded_at",
+    "redistribution_allowed",
+    "notes",
+)
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -44,6 +70,18 @@ def sha256_file(path: Path) -> str:
 def _read_csv(path: Path) -> list[dict[str, str]]:
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def _write_csv_atomic(
+    path: Path, fieldnames: Iterable[str], rows: Iterable[Mapping[str, Any]]
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".part")
+    with temporary.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=tuple(fieldnames), extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+    temporary.replace(path)
 
 
 def read_sha256s(path: Path) -> dict[str, str]:
@@ -213,6 +251,102 @@ def verify_release_dataset(
     )
 
 
+def initialize_project_metadata(
+    verification: ReleaseVerification,
+    *,
+    project_metadata: Path,
+) -> dict[str, Any]:
+    """Create the project manifests required by preprocessing from a verified release.
+
+    Existing core manifests are never silently replaced. If they already exist, their
+    track IDs, group/split assignments, paths, and hashes must match the release.
+    """
+
+    project_metadata = project_metadata.resolve()
+    rows = sorted(verification.rows, key=lambda row: row["track_id"])
+    license_path = verification.dataset_root / "metadata" / "licenses.csv"
+    release_licenses = {row["track_id"]: row for row in _read_csv(license_path)}
+    if set(release_licenses) != {row["track_id"] for row in rows}:
+        raise DatasetReleaseError("release license and track IDs differ")
+
+    track_rows = [
+        {
+            "track_id": row["track_id"],
+            "group": row["group"],
+            "relative_path": row["relative_path"],
+            "sha256": row["sha256"].lower(),
+            "duration_seconds": row.get("duration_seconds", ""),
+            "sample_rate": row.get("sample_rate", ""),
+            "channels": row.get("channels", ""),
+            "artist_key": row.get("artist_key", ""),
+            "album_key": row.get("album_key", ""),
+            "composer_key": row.get("composer_key", ""),
+            "instrumental": "true",
+            "restricted": "false",
+        }
+        for row in rows
+    ]
+    license_rows = [
+        {column: release_licenses[row["track_id"]].get(column, "")
+         for column in PROJECT_LICENSE_COLUMNS}
+        for row in rows
+    ]
+    split_rows = {
+        split: [
+            {"track_id": row["track_id"], "group": row["group"]}
+            for row in rows
+            if row["split"] == split
+        ]
+        for split in ("discovery", "validation", "holdout")
+    }
+    expected = {
+        project_metadata / "track_index.csv": (PROJECT_TRACK_COLUMNS, track_rows),
+        project_metadata / "licenses.csv": (PROJECT_LICENSE_COLUMNS, license_rows),
+        **{
+            project_metadata / f"split_{split}.csv": (("track_id", "group"), members)
+            for split, members in split_rows.items()
+        },
+    }
+    created: list[str] = []
+    for path, (fieldnames, expected_rows) in expected.items():
+        if path.is_file():
+            actual = _read_csv(path)
+            projected = [
+                {field: row.get(field, "") for field in fieldnames}
+                for row in actual
+            ]
+            if projected != expected_rows:
+                raise DatasetReleaseError(
+                    f"existing project metadata differs from verified release: {path}"
+                )
+            continue
+        _write_csv_atomic(path, fieldnames, expected_rows)
+        created.append(path.name)
+
+    summary_path = project_metadata / "dataset_summary.json"
+    if not summary_path.exists():
+        summary_path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            **verification.summary,
+            "source": "open-focus-classical-600 frozen release",
+            "project_metadata_initialized": True,
+        }
+        temporary = summary_path.with_suffix(summary_path.suffix + ".part")
+        temporary.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+        )
+        temporary.replace(summary_path)
+        created.append(summary_path.name)
+
+    _validate_project_index(project_metadata, list(verification.rows))
+    return {
+        "project_metadata": str(project_metadata),
+        "created": created,
+        "track_count": len(track_rows),
+        "split_counts": {split: len(members) for split, members in split_rows.items()},
+    }
+
+
 def prepare_release_dataset(
     *,
     snapshot_dir: Path,
@@ -286,12 +420,15 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     snapshot = args.snapshot_dir or _download(args.repo_id, args.revision, args.download_dir)
     if args.data_root is None:
-        summary = verify_release_dataset(
+        verification = verify_release_dataset(
             dataset_root=snapshot,
-            project_metadata=args.project_metadata,
             expected_count=args.expected_count,
             verify_audio=True,
-        ).summary
+        )
+        metadata = initialize_project_metadata(
+            verification, project_metadata=args.project_metadata
+        )
+        summary = {**verification.summary, "metadata_initialization": metadata}
     else:
         summary = prepare_release_dataset(
             snapshot_dir=snapshot,

@@ -688,7 +688,8 @@ def build_architecture_reference_style() -> None:
     ax.text(
         7,
         0.18,
-        "浅蓝：时序计算模块    浅绿：残差/归一化/汇聚    浅黄：条件输入与冻结读出    虚线：FiLM/AdaLN 时间调制",
+        "浅蓝：时序计算模块    浅绿：残差/归一化/汇聚    "
+        "浅黄：条件输入与冻结读出    虚线：FiLM/AdaLN 时间调制",
         ha="center",
         va="center",
         fontsize=9.0,

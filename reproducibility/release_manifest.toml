@@ -1,6 +1,6 @@
 schema_version = 1
 project_repository = "https://github.com/fisheryv/glmy_focus_music.git"
-python = "3.11"
+python = "3.12"
 platform = "linux-x86_64"
 
 [hardware]
@@ -16,8 +16,7 @@ revision = "49bd5ea7617906f09940dcc9b9718bbfc1482d6f"
 
 [sources.ace_step]
 repository = "https://github.com/fisheryv/ACE-Step-1.5.git"
-revision = "a5632cda3084f1088e69b2057dde7047e1bb4839"
-patch = "patches/ace-step-1.5-topology-corrector.patch"
+revision = "de9a3dc7f7ca28c09e4d21822ceba02260b3162a"
 
 [sources.dataset]
 repository = "fisheryv/open-focus-classical-600"

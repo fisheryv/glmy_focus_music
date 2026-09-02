@@ -1,15 +1,20 @@
+import csv
+import subprocess
 from pathlib import Path
 
 import numpy as np
 import pytest
 
 from data.preprocess import (
+    PreprocessError,
+    _decode_f32le,
     build_parser,
     build_segment_plans,
     choose_segment_window,
     fallback_segment_starts,
     parse_loudnorm_stats,
     soft_peak_limit,
+    write_manifest,
 )
 from focus_topology.data.schema import SplitName, TrackGroup, TrackRecord
 
@@ -95,3 +100,60 @@ def test_plans_inherit_source_track_split() -> None:
     assert {plan.split for plan in plans} == {"holdout"}
     assert {plan.scale_seconds for plan in plans} == {180.0, 300.0}
     assert all("/holdout/" in plan.output_relative_path for plan in plans)
+
+
+def test_decode_accepts_catalog_duration_overestimate_only_for_full_track(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    decoded = np.ones(50, dtype="<f4")
+
+    def fake_run(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=decoded.tobytes(), stderr=b""
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    source = Path("catalog-duration-overestimate.mp3")
+
+    with pytest.raises(PreprocessError, match="decoded duration is short"):
+        _decode_f32le(
+            source,
+            start_seconds=0.0,
+            duration_seconds=10.0,
+            sample_rate=10,
+            ffmpeg_exe="ffmpeg",
+        )
+
+    accepted = _decode_f32le(
+        source,
+        start_seconds=0.0,
+        duration_seconds=10.0,
+        sample_rate=10,
+        ffmpeg_exe="ffmpeg",
+        allow_short=True,
+    )
+    assert accepted.size == 50
+
+
+def test_manifest_sort_accepts_resumed_string_and_fresh_float_scales(tmp_path: Path) -> None:
+    path = tmp_path / "preprocessed_segments.csv"
+    rows = [
+        {
+            "segment_id": "track__300s",
+            "track_id": "track",
+            "group": "focus",
+            "scale_seconds": 300.0,
+        },
+        {
+            "segment_id": "track__180s",
+            "track_id": "track",
+            "group": "focus",
+            "scale_seconds": "180.0",
+        },
+    ]
+
+    write_manifest(path, rows)
+
+    with path.open(encoding="utf-8", newline="") as handle:
+        segment_ids = [row["segment_id"] for row in csv.DictReader(handle)]
+    assert segment_ids == ["track__180s", "track__300s"]

@@ -36,7 +36,7 @@ HF 的 `data/{focus,classical}/{discovery,validation,holdout}` 布局，不再�
 外部依赖均在 `reproducibility/release_manifest.toml` 冻结：
 
 - `pyglmy`：`49bd5ea7617906f09940dcc9b9718bbfc1482d6f`；
-- ACE-Step 1.5：`a5632cda3084f1088e69b2057dde7047e1bb4839`，随后应用仓库内 sampler patch；
+- ACE-Step 1.5：`de9a3dc7f7ca28c09e4d21822ceba02260b3162a`，上游已包含 sampler corrector hook；
 - exact scorer：Pitch 16 + Acoustic/Chroma phase `loop_score`，共 18 维；旧 51-D
   运行时输入明确拒绝。
 
@@ -70,7 +70,7 @@ PAIR_TABLE=<confirmation-pairs.csv> bash scripts/run_ltsn_pipeline.sh guidance-c
 
 ## 发布内容与排除项
 
-Git 发布包含源代码、冻结配置/哈希、18-D scorer、ACE patch、测试、论文与复现文档；
+Git 发布包含源代码、冻结配置/哈希、18-D scorer、ACE 上游版本、测试、论文与复现文档；
 不包含 `.env`、原始音频、Hugging Face 下载缓存、ACE checkpoint、运行日志、模型权重
 或资格结果。每条音频继续适用数据集 `metadata/licenses.csv` 中各自的许可，不存在单一
 数据集总许可。仓库软件代码按根目录 [MIT License](LICENSE) 发布；该软件许可不覆盖
@@ -263,10 +263,10 @@ Jamendo/FMA 开放 Focus 替代集使用 `focus-open` 构建。筛选规则、FM
 内容审计前，它与已授权的 Brain.fm 基线保持分离。
 
 本仓库还包含专注音乐研究的完整流水线。Linux 上的规范原始输入为
-`dataset/open-focus-classical-600/`：
+`datasets/open-focus-classical-600/`：
 
 ```text
-dataset/open-focus-classical-600/  HF 原始音频与冻结发布清单（不进入版本控制）
+datasets/open-focus-classical-600/  HF 原始音频与冻结发布清单（不进入版本控制）
 metadata/                 许可、曲目索引、数据切分和分析汇总
 src/features/             MIR 特征提取与共享状态模型
 src/topology/             批量拓扑分析和统计
@@ -281,17 +281,29 @@ src/generation/           ACE-Step 生成、重排和引导实验
 # 可选：若数据集不在默认位置，所有后续入口共享这个覆盖值
 export FOCUS_DATASET_ROOT=/data/open-focus-classical-600
 
+# 校验 600 个原始音频与冻结清单，并从 release metadata 初始化项目 track/split/license 清单
 python scripts/prepare_release_dataset.py --snapshot-dir "$FOCUS_DATASET_ROOT"
-focus-preprocess --root . --workers 16
-focus-features run --root . --workers 16
+focus-preprocess --root . --dataset-root "$FOCUS_DATASET_ROOT" --workers 16 --overwrite
+focus-features run --root . --workers 16 --overwrite
 python -m data.analysis_inputs --root . --verify-audio
 
-# 冻结的主要拓扑视角；discovery 仅拟合，validation/180s 为主分析，
+# 冻结的单视角分析；discovery 仅拟合，validation/180s 为主分析，
 # validation/300s 为同曲时长敏感性，holdout 仅作冻结流程的操作性确认。
 python scripts/run_pitch_v2_analysis.py
 python scripts/rerun_rhythm_path_homology.py
+python scripts/analyze_rhythm_results.py
 python scripts/run_modulation_smp_prototype_analysis.py
+python scripts/rerun_structure_path_homology.py
+python scripts/analyze_structure_results.py
 python scripts/rerun_phase_lifted_path_homology.py
+
+# 在 validation 上冻结融合决策；随后才冻结 gate 并执行 holdout 操作性复跑。
+python scripts/run_multiview_fusion_analysis.py
+python scripts/freeze_holdout_gate.py
+python scripts/run_holdout_confirmation.py
+
+# 汇总审计回执、Markdown 报告及 PNG/SVG 总览图。
+python scripts/build_fresh_open_dataset_report.py
 ```
 
 `focus-preprocess --data-root data_raw` 是明确的旧目录兼容模式。每个主分析脚本在计算前都会
@@ -300,12 +312,14 @@ python scripts/rerun_phase_lifted_path_homology.py
 `provenance_chain_sha256`。拓扑与统计阶段主要使用 CPU/内存/NVMe，L40S 不会显著加速
 这部分工作。
 
-工程关系见 [docs/architecture.md](docs/architecture.md)，拓扑分析结果见 [docs/topology-analysis-results.md](docs/topology-analysis-results.md)，数据公开边界见 [docs/data-governance.md](docs/data-governance.md)。
+当前新数据集的完整结果见
+[docs/open-focus-classical-600-fresh-analysis.md](docs/open-focus-classical-600-fresh-analysis.md)。工程关系见
+[docs/architecture.md](docs/architecture.md)，数据公开边界见 [docs/data-governance.md](docs/data-governance.md)。
 
 ## 科研与数据边界
 
 - 本库输出拓扑描述，不构成 ADHD 或其他疾病的诊断、治疗或疗效声明。
-- `dataset/open-focus-classical-600/` 不进入版本控制；每首音频仍按数据集
+- `datasets/open-focus-classical-600/` 不进入版本控制；每首音频仍按数据集
   `metadata/licenses.csv` 中对应的许可使用，不存在覆盖全部音频的单一许可。
 - 跨数据集比较应复用同一个状态模型、阈值集合和预处理配置。
 - 当前项目许可证仍是研究用途边界；公开发布到包索引前，应由项目所有者补充明确的软件许可证。
