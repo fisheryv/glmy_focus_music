@@ -1,0 +1,41 @@
+scripts/render_modulation_smp_k10_report.py
+  h_3bfeba547aafcb 545
+scripts/render_pitch_report.py
+  h_3bfeba547aafcb 741-742
+scripts/render_modulation_smp_prototype_report.py
+  s_d5d0633f26a092::t_1a669c7d3ba542 738
+scripts/run_pitch_analysis.py
+  h_3bfeba547aafcb 1-650
+README.md
+  h_3bfeba547aafcb 282,292-296,307-309
+scripts/freeze_holdout_gate.py
+  h_3bfeba547aafcb 64-69
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "65e4ed08e42091640bcb2211b65bdfcaf5364471",
+  "prompts": {},
+  "humans": {
+    "h_3bfeba547aafcb": {
+      "author": "fisheryv <yverrr@gmail.com>"
+    }
+  },
+  "sessions": {
+    "s_d5d0633f26a092": {
+      "agent_id": {
+        "tool": "trae-code-edit",
+        "id": "ai_tab-20260902191844010000244249121B538",
+        "model": "default"
+      },
+      "human_author": "fisheryv <yverrr@gmail.com>",
+      "custom_attributes": {
+        "external_session_id": "20260902191844010000244249121B538",
+        "source_scene": "cue",
+        "edit_kind": "file_edit",
+        "tool": "trae-code-edit",
+        "client_type": "ide"
+      }
+    }
+  }
+}
