@@ -295,6 +295,9 @@ python scripts/run_modulation_analysis.py
 python scripts/run_structure_analysis.py
 python scripts/run_phase_lifted_analysis.py
 
+# 专项报告只读取上述数值产物，不重算 Phase 特征或统计。
+python scripts/render_phase_lifted_report.py
+
 # 在 validation 上冻结融合决策；随后才冻结 gate 并执行 holdout 操作性复跑。
 python scripts/run_multiview_fusion_analysis.py
 python scripts/freeze_holdout_gate.py
@@ -304,9 +307,10 @@ python scripts/run_holdout_confirmation.py
 python scripts/build_fresh_open_dataset_report.py
 ```
 
-每个视角只有一个公开入口；单个脚本会依次完成该视角需要的模型/表示变换、拓扑重算、
-统计检验和汇总。Rhythm 与 Structure 的统计阶段保留为 `src/topology/` 内部模块，不再要求
-用户额外执行 `analyze_*` 命令。
+每个视角只有一个公开分析入口；单个 `run_*` 脚本会依次完成该视角需要的模型/表示变换、
+拓扑重算、统计检验和数值汇总。Rhythm 与 Structure 的统计阶段保留为 `src/topology/`
+内部模块，不再要求用户额外执行 `analyze_*` 命令。图片和 Markdown 报告由独立
+`render_*` 脚本读取冻结数值产物生成。
 
 `focus-preprocess --data-root data_raw` 是明确的旧目录兼容模式。每个主分析脚本在计算前都会
 核对 HF 发布的三个冻结哈希、600 个 track ID，以及 1,200 条“原始曲目 → 预处理 WAV →
