@@ -751,7 +751,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--dataset-root",
         type=Path,
         default=Path(os.environ.get("FOCUS_DATASET_ROOT", DEFAULT_DATASET_ROOT)),
-        help="verified HF dataset root (default: dataset/open-focus-classical-600)",
+        help="verified HF dataset root (default: datasets/open-focus-classical-600)",
     )
     source.add_argument(
         "--data-root",

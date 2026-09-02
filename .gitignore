@@ -51,8 +51,7 @@ human_study/anonymized_scores/*.csv
 !human_study/anonymized_scores/schema.csv
 
 # Local dataset build state (canonical manifests remain tracked)
-metadata/*.part
-metadata/download_failures.csv
+metadata/
 
 # Local archive for the retired, non-redistributable Brain.fm baseline.
 restricted_archive/**

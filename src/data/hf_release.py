@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-DEFAULT_DATASET_ROOT = Path("dataset/open-focus-classical-600")
+DEFAULT_DATASET_ROOT = Path("datasets/open-focus-classical-600")
 FROZEN_SHA256SUMS_SHA256 = "8b767b8d0d85fb3ef9ba5340ff6b5288d1e7681a5f37b71e2230f30c825ada20"
 FROZEN_TRACKS_SHA256 = "0636ddf6cb5b4ee418829dcd24578d7abe49ac2479719d36874b3b1ae5fd2e97"
 FROZEN_LICENSES_SHA256 = "4dc811a6fa31c772903cbf1178a478b56fc6f0896bb30096397426f116a9d66c"

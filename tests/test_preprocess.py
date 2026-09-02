@@ -26,7 +26,7 @@ def test_parser_accepts_isolated_metadata_and_output_roots() -> None:
 
     assert args.metadata_dir == Path("metadata/open")
     assert args.output_root == Path("features/audio_open")
-    assert args.dataset_root == Path("dataset/open-focus-classical-600")
+    assert args.dataset_root == Path("datasets/open-focus-classical-600")
     assert args.data_root is None
 
 
