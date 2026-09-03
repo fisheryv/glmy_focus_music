@@ -1,0 +1,26 @@
+src/generation/ltsn_pipeline.py
+  h_3bfeba547aafcb 164
+tests/test_ltsn_storage.py
+  h_3bfeba547aafcb 82
+src/generation/ltsn_cli.py
+  h_3bfeba547aafcb 116
+configs/ace_rerank_smoke.toml
+  h_3bfeba547aafcb 13
+configs/ace_rerank_180s.toml
+  h_3bfeba547aafcb 13
+tests/test_ltsn_pipeline.py
+  h_3bfeba547aafcb 71
+tests/test_ltsn_data_pipeline.py
+  h_3bfeba547aafcb 66
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "ee71d29b0a5d92c3e93dfdd2e2969228ba8a2df3",
+  "prompts": {},
+  "humans": {
+    "h_3bfeba547aafcb": {
+      "author": "fisheryv <yverrr@gmail.com>"
+    }
+  }
+}
