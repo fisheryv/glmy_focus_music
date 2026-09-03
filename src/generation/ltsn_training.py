@@ -5,11 +5,13 @@ from __future__ import annotations
 import csv
 import json
 import math
+import multiprocessing
 import os
 import random
 import tomllib
 from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, fields
 from pathlib import Path
 from typing import Any
@@ -68,6 +70,8 @@ class LTSNTrainingConfig:
             raise LTSNContractError("effective batch must be divisible by micro batch")
         if self.max_epochs < 1 or self.minimum_epochs > self.max_epochs:
             raise LTSNContractError("invalid epoch limits")
+        if not self.seeds or len(set(self.seeds)) != len(self.seeds):
+            raise LTSNContractError("training seeds must be non-empty and unique")
         if not engineering_smoke:
             frozen = {
                 "learning_rate": (self.learning_rate, 3e-4),
@@ -356,6 +360,175 @@ def _metadata(
     }
 
 
+def _resolve_training_devices(
+    seeds: Sequence[int],
+    device_name: str | None,
+    device_names: Sequence[str] | None,
+) -> tuple[str, ...]:
+    """Resolve either one sequential device or one explicit CUDA device per seed."""
+
+    if device_name is not None and device_names is not None:
+        raise LTSNContractError("--device and --devices are mutually exclusive")
+    if device_names is None:
+        return (device_name or ("cuda" if torch.cuda.is_available() else "cpu"),)
+
+    devices = tuple(str(value).strip() for value in device_names)
+    if not devices or any(not value for value in devices):
+        raise LTSNContractError("--devices requires one non-empty device per seed")
+    if len(devices) != len(seeds):
+        raise LTSNContractError(
+            f"parallel training requires {len(seeds)} devices for {len(seeds)} seeds"
+        )
+    if len(set(devices)) != len(devices):
+        raise LTSNContractError("parallel training devices must be unique")
+    for value in devices:
+        device = torch.device(value)
+        if device.type != "cuda" or device.index is None:
+            raise LTSNContractError(
+                "parallel training requires explicit CUDA devices such as cuda:0"
+            )
+    return devices
+
+
+def _validate_training_device(device_name: str) -> torch.device:
+    device = torch.device(device_name)
+    if device.type == "cuda":
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA was requested but is unavailable")
+        if device.index is not None and device.index >= torch.cuda.device_count():
+            raise RuntimeError(
+                f"CUDA device {device_name} is unavailable; found {torch.cuda.device_count()} GPUs"
+            )
+    return device
+
+
+def _train_seed(
+    *,
+    seed: int,
+    device_name: str,
+    contract: FingerprintContract,
+    model_config: LTSNConfig,
+    training: LTSNTrainingConfig,
+    loss_weights: LTSNLossWeights,
+    records: Sequence[LTSNSnapshot],
+    metadata: dict[str, Any],
+    output_dir: Path,
+) -> dict[str, Any]:
+    """Train one independent ensemble member and write only its seed checkpoint."""
+
+    device = _validate_training_device(device_name)
+    if device.type == "cuda":
+        torch.cuda.set_device(device)
+    _seed_everything(seed)
+    development_loader = DataLoader(
+        LTSNSnapshotDataset(records, "development"),
+        batch_size=training.micro_batch_size,
+        shuffle=False,
+        num_workers=training.num_workers,
+        collate_fn=collate_ltsn_batch,
+        pin_memory=device.type == "cuda",
+    )
+    train_dataset = LTSNSnapshotDataset(records, "train")
+    sampler = TrajectoryBatchSampler(train_dataset.records, training.micro_batch_size, seed)
+    train_loader = DataLoader(
+        train_dataset,
+        batch_sampler=sampler,
+        num_workers=training.num_workers,
+        collate_fn=collate_ltsn_batch,
+        pin_memory=device.type == "cuda",
+    )
+    model = PathHomologySurrogate(contract, model_config).to(device)
+    optimizer = AdamW(
+        model.parameters(), lr=training.learning_rate, weight_decay=training.weight_decay
+    )
+    accumulation = training.effective_batch_size // training.micro_batch_size
+    updates_per_epoch = max(1, math.ceil(len(train_loader) / accumulation))
+    total_updates = max(1, updates_per_epoch * training.max_epochs)
+    warmup_updates = max(1, round(total_updates * training.warmup_fraction))
+
+    minimum_ratio = training.minimum_learning_rate / training.learning_rate
+    scheduler = torch.optim.lr_scheduler.LambdaLR(
+        optimizer,
+        lambda update, warmup=warmup_updates, total=total_updates, minimum=minimum_ratio: (
+            _schedule_factor(update, warmup, total, minimum)
+        ),
+    )
+    use_bf16 = training.use_bf16 and device.type == "cuda" and torch.cuda.is_bf16_supported()
+    best_objective = math.inf
+    best_state: dict[str, Tensor] | None = None
+    best_epoch = 0
+    stale = 0
+    history: list[dict[str, Any]] = []
+    for epoch in range(1, training.max_epochs + 1):
+        model.train()
+        optimizer.zero_grad(set_to_none=True)
+        totals: list[float] = []
+        for batch_index, raw in enumerate(train_loader, start=1):
+            batch = _to_device(raw, device)
+            with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
+                output = _forward(model, batch)
+            losses = _loss(output, batch, loss_weights, device)
+            loss = losses["total"].float() / accumulation
+            if not torch.isfinite(loss):
+                raise RuntimeError("non-finite LTSN training loss")
+            loss.backward()
+            totals.append(float(losses["total"].detach().cpu()))
+            if batch_index % accumulation == 0 or batch_index == len(train_loader):
+                torch.nn.utils.clip_grad_norm_(model.parameters(), training.gradient_clip_norm)
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+                scheduler.step()
+        development = _development_objective(predict_dataset(model, development_loader, device))
+        history.append(
+            {
+                "epoch": epoch,
+                "train_loss": float(np.mean(totals)),
+                "learning_rate": optimizer.param_groups[0]["lr"],
+                **development,
+            }
+        )
+        if development["objective"] < best_objective - 1e-8:
+            best_objective = development["objective"]
+            best_state = {
+                name: value.detach().cpu().clone() for name, value in model.state_dict().items()
+            }
+            best_epoch = epoch
+            stale = 0
+        else:
+            stale += 1
+        if epoch >= training.minimum_epochs and stale >= training.early_stopping_patience:
+            break
+    if best_state is None:
+        raise RuntimeError("training produced no finite checkpoint")
+    checkpoint_path = output_dir / f"ltsn_seed_{seed}.pt"
+    temporary = checkpoint_path.with_suffix(".part.pt")
+    torch.save(
+        {
+            "schema_version": 1,
+            "state_dict": best_state,
+            "model_config": asdict(model_config),
+            "training_config": asdict(training),
+            "loss_weights": asdict(loss_weights),
+            "metadata": metadata,
+            "seed": seed,
+            "device": str(device),
+            "best_epoch": best_epoch,
+            "best_development_objective": best_objective,
+            "history": history,
+        },
+        temporary,
+    )
+    os.replace(temporary, checkpoint_path)
+    return {
+        "seed": seed,
+        "device": str(device),
+        "path": checkpoint_path.name,
+        "sha256": sha256_file(checkpoint_path),
+        "best_epoch": best_epoch,
+        "best_development_objective": best_objective,
+    }
+
+
 def train_ensemble(
     *,
     fingerprint_path: Path,
@@ -366,8 +539,9 @@ def train_ensemble(
     reranking_gate_path: Path | None,
     engineering_smoke: bool,
     device_name: str | None = None,
+    device_names: Sequence[str] | None = None,
 ) -> dict[str, Any]:
-    """Train three model-specific seeds and issue hash-bound checkpoints."""
+    """Train seed-independent members sequentially or on one explicit GPU each."""
 
     contract = load_fingerprint_contract(fingerprint_path)
     gate = require_ltsn_promotion_gate(
@@ -395,10 +569,15 @@ def train_ensemble(
         raise LTSNContractError(
             "non-smoke training requires a qualification-eligible label manifest"
         )
-    device = torch.device(device_name or ("cuda" if torch.cuda.is_available() else "cpu"))
-    if device.type == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is unavailable")
+    devices = _resolve_training_devices(training.seeds, device_name, device_names)
+    for value in devices:
+        _validate_training_device(value)
     output_dir.mkdir(parents=True, exist_ok=True)
+    ensemble_path = output_dir / "ensemble_manifest.json"
+    if ensemble_path.exists():
+        raise LTSNContractError(
+            "output directory already contains an ensemble manifest; use a new run directory"
+        )
     metadata = _metadata(
         contract=contract,
         config_path=config_path,
@@ -416,130 +595,62 @@ def train_ensemble(
     development_records = [record for record in records if record.split == "development"]
     if not train_records or not development_records:
         raise LTSNContractError("training requires non-empty train and development splits")
-    development_loader = DataLoader(
-        LTSNSnapshotDataset(records, "development"),
-        batch_size=training.micro_batch_size,
-        shuffle=False,
-        num_workers=training.num_workers,
-        collate_fn=collate_ltsn_batch,
-        pin_memory=device.type == "cuda",
-    )
-    checkpoint_rows: list[dict[str, Any]] = []
-    for seed in training.seeds:
-        _seed_everything(seed)
-        train_dataset = LTSNSnapshotDataset(records, "train")
-        sampler = TrajectoryBatchSampler(train_dataset.records, training.micro_batch_size, seed)
-        train_loader = DataLoader(
-            train_dataset,
-            batch_sampler=sampler,
-            num_workers=training.num_workers,
-            collate_fn=collate_ltsn_batch,
-            pin_memory=device.type == "cuda",
-        )
-        model = PathHomologySurrogate(contract, model_config).to(device)
-        optimizer = AdamW(
-            model.parameters(), lr=training.learning_rate, weight_decay=training.weight_decay
-        )
-        accumulation = training.effective_batch_size // training.micro_batch_size
-        updates_per_epoch = max(1, math.ceil(len(train_loader) / accumulation))
-        total_updates = max(1, updates_per_epoch * training.max_epochs)
-        warmup_updates = max(1, round(total_updates * training.warmup_fraction))
-
-        minimum_ratio = training.minimum_learning_rate / training.learning_rate
-        scheduler = torch.optim.lr_scheduler.LambdaLR(
-            optimizer,
-            lambda update, warmup=warmup_updates, total=total_updates, minimum=minimum_ratio: (
-                _schedule_factor(update, warmup, total, minimum)
-            ),
-        )
-        use_bf16 = training.use_bf16 and device.type == "cuda" and torch.cuda.is_bf16_supported()
-        best_objective = math.inf
-        best_state: dict[str, Tensor] | None = None
-        best_epoch = 0
-        stale = 0
-        history: list[dict[str, Any]] = []
-        for epoch in range(1, training.max_epochs + 1):
-            model.train()
-            optimizer.zero_grad(set_to_none=True)
-            totals: list[float] = []
-            for batch_index, raw in enumerate(train_loader, start=1):
-                batch = _to_device(raw, device)
-                with torch.autocast(
-                    device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16
-                ):
-                    output = _forward(model, batch)
-                losses = _loss(output, batch, loss_weights, device)
-                loss = losses["total"].float() / accumulation
-                if not torch.isfinite(loss):
-                    raise RuntimeError("non-finite LTSN training loss")
-                loss.backward()
-                totals.append(float(losses["total"].detach().cpu()))
-                if batch_index % accumulation == 0 or batch_index == len(train_loader):
-                    torch.nn.utils.clip_grad_norm_(model.parameters(), training.gradient_clip_norm)
-                    optimizer.step()
-                    optimizer.zero_grad(set_to_none=True)
-                    scheduler.step()
-            development = _development_objective(
-                predict_dataset(model, development_loader, device)
+    if len(devices) == 1:
+        checkpoint_rows = [
+            _train_seed(
+                seed=seed,
+                device_name=devices[0],
+                contract=contract,
+                model_config=model_config,
+                training=training,
+                loss_weights=loss_weights,
+                records=records,
+                metadata=metadata,
+                output_dir=output_dir,
             )
-            history.append(
-                {
-                    "epoch": epoch,
-                    "train_loss": float(np.mean(totals)),
-                    "learning_rate": optimizer.param_groups[0]["lr"],
-                    **development,
-                }
-            )
-            if development["objective"] < best_objective - 1e-8:
-                best_objective = development["objective"]
-                best_state = {
-                    name: value.detach().cpu().clone() for name, value in model.state_dict().items()
-                }
-                best_epoch = epoch
-                stale = 0
-            else:
-                stale += 1
-            if epoch >= training.minimum_epochs and stale >= training.early_stopping_patience:
-                break
-        if best_state is None:
-            raise RuntimeError("training produced no finite checkpoint")
-        checkpoint_path = output_dir / f"ltsn_seed_{seed}.pt"
-        temporary = checkpoint_path.with_suffix(".part.pt")
-        torch.save(
-            {
-                "schema_version": 1,
-                "state_dict": best_state,
-                "model_config": asdict(model_config),
-                "training_config": asdict(training),
-                "loss_weights": asdict(loss_weights),
-                "metadata": metadata,
-                "seed": seed,
-                "best_epoch": best_epoch,
-                "best_development_objective": best_objective,
-                "history": history,
-            },
-            temporary,
-        )
-        os.replace(temporary, checkpoint_path)
-        checkpoint_rows.append(
-            {
-                "seed": seed,
-                "path": checkpoint_path.name,
-                "sha256": sha256_file(checkpoint_path),
-                "best_epoch": best_epoch,
-                "best_development_objective": best_objective,
+            for seed in training.seeds
+        ]
+    else:
+        context = multiprocessing.get_context("spawn")
+        checkpoint_by_seed: dict[int, dict[str, Any]] = {}
+        with ProcessPoolExecutor(max_workers=len(devices), mp_context=context) as executor:
+            futures = {
+                executor.submit(
+                    _train_seed,
+                    seed=seed,
+                    device_name=device,
+                    contract=contract,
+                    model_config=model_config,
+                    training=training,
+                    loss_weights=loss_weights,
+                    records=records,
+                    metadata=metadata,
+                    output_dir=output_dir,
+                ): (seed, device)
+                for seed, device in zip(training.seeds, devices, strict=True)
             }
-        )
+            for future in as_completed(futures):
+                seed, device = futures[future]
+                try:
+                    checkpoint_by_seed[seed] = future.result()
+                except Exception as error:
+                    for pending in futures:
+                        pending.cancel()
+                    raise RuntimeError(
+                        f"parallel LTSN seed {seed} failed on {device}: {error}"
+                    ) from error
+        checkpoint_rows = [checkpoint_by_seed[seed] for seed in training.seeds]
     ensemble = {
         "schema_version": 1,
         "status": "engineering_smoke_only" if engineering_smoke else "trained_pending_calibration",
         "qualification_eligible": qualification_eligible,
-        "device": str(device),
+        "device": devices[0] if len(devices) == 1 else "parallel",
+        "devices": list(devices),
+        "parallel_training": len(devices) > 1,
         "precision": "bf16_forward_fp32_loss" if training.use_bf16 else "fp32",
         "metadata": metadata,
         "checkpoints": checkpoint_rows,
     }
-    ensemble_path = output_dir / "ensemble_manifest.json"
     write_json_atomic(ensemble_path, ensemble)
     ensemble["ensemble_manifest_sha256"] = sha256_file(ensemble_path)
     return ensemble

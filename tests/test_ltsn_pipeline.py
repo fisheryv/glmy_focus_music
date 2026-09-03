@@ -14,11 +14,32 @@ from generation.ltsn_pipeline import (
     synthetic_descriptor_rows,
     write_csv_atomic,
 )
-from generation.ltsn_training import train_ensemble
+from generation.ltsn_contract import LTSNContractError
+from generation.ltsn_training import (
+    LTSNTrainingConfig,
+    _resolve_training_devices,
+    train_ensemble,
+)
 from generation.path_homology_exact_scorer import ExactPathHomologyScorer
 
 ROOT = Path(__file__).resolve().parents[1]
 FINGERPRINT = ROOT / "metadata" / "focus_path_homology_fingerprint_v2.json"
+
+
+def test_three_seed_training_maps_one_explicit_gpu_per_seed() -> None:
+    seeds = (20260716, 20260717, 20260718)
+
+    assert _resolve_training_devices(
+        seeds, None, ("cuda:0", "cuda:1", "cuda:2")
+    ) == ("cuda:0", "cuda:1", "cuda:2")
+    with pytest.raises(LTSNContractError, match="requires 3 devices"):
+        _resolve_training_devices(seeds, None, ("cuda:0", "cuda:1"))
+    with pytest.raises(LTSNContractError, match="must be unique"):
+        _resolve_training_devices(seeds, None, ("cuda:0", "cuda:0", "cuda:2"))
+    with pytest.raises(LTSNContractError, match="explicit CUDA"):
+        _resolve_training_devices(seeds, None, ("cuda:0", "cuda:1", "cuda"))
+    with pytest.raises(LTSNContractError, match="non-empty and unique"):
+        LTSNTrainingConfig(seeds=(7, 7, 8)).validate(engineering_smoke=True)
 
 
 def _record_split(recorder: TrajectoryRecorder, split: str, index: int) -> None:
@@ -120,5 +141,7 @@ use_bf16 = false
         device_name="cpu",
     )
     assert result["status"] == "engineering_smoke_only"
+    assert result["devices"] == ["cpu"]
+    assert not result["parallel_training"]
     assert len(result["checkpoints"]) == 1
     assert (tmp_path / "models" / result["checkpoints"][0]["path"]).is_file()

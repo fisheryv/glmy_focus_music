@@ -44,6 +44,14 @@ labels() {
 
 train() {
   [[ -f "${RERANKING_GATE}" ]] || { echo "Passed exact_reranking_effect_v1 gate is required: ${RERANKING_GATE}" >&2; exit 3; }
+  local -a train_device_args
+  if [[ -n "${TRAIN_DEVICES:-}" ]]; then
+    local -a train_devices
+    IFS=',' read -r -a train_devices <<< "${TRAIN_DEVICES}"
+    train_device_args=(--devices "${train_devices[@]}")
+  else
+    train_device_args=(--device "${TRAIN_DEVICE:-cuda:0}")
+  fi
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/train_path_homology_surrogate.py" \
     --fingerprint "${FINGERPRINT}" \
     --manifest "${RUN_ROOT}/labels/ltsn_manifest.csv" \
@@ -51,7 +59,7 @@ train() {
     --config "${CONFIG}" \
     --output-dir "${RUN_ROOT}/models" \
     --reranking-gate "${RERANKING_GATE}" \
-    --device "${TRAIN_DEVICE:-cuda:0}"
+    "${train_device_args[@]}"
 }
 
 calibrate() {

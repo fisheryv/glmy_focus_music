@@ -54,7 +54,7 @@ bash scripts/run_ltsn_pipeline.sh collect
 # 完成独立 reranking、质量、prompt 和多样性评价并签发通过的 gate 后：
 export RERANKING_GATE=$PWD/metadata/ace_reranking_effect_gate.json
 bash scripts/run_ltsn_pipeline.sh labels
-bash scripts/run_ltsn_pipeline.sh train
+TRAIN_DEVICES=cuda:0,cuda:1,cuda:2 bash scripts/run_ltsn_pipeline.sh train
 bash scripts/run_ltsn_pipeline.sh calibrate
 # 生成并 exact 解码 development 引导对后：
 PAIR_TABLE=<development-pairs.csv> bash scripts/run_ltsn_pipeline.sh guidance-development
@@ -63,10 +63,10 @@ bash scripts/run_ltsn_pipeline.sh qualify
 PAIR_TABLE=<confirmation-pairs.csv> bash scripts/run_ltsn_pipeline.sh guidance-confirmation
 ```
 
-单个 LTSN ensemble 目前按三个 seed 顺序训练，并只占用 `TRAIN_DEVICE`（默认
-`cuda:0`）；第二张 L40S 可用于独立预计算或后续并行 seed 调度，但不要把“有两张卡”
-误报为当前代码已经执行 DDP。完整门禁、存储峰值、断点续跑和最终 32 prompt × 8 seed
-配对评估见 [Linux/NVIDIA 指引](docs/ltsn-linux-training-and-evaluation.md)。
+三个 LTSN seed 可通过 `TRAIN_DEVICES=cuda:0,cuda:1,cuda:2` 各占一张 L40S 并行训练；
+这是三个相互独立的进程，不是 DDP。未设置 `TRAIN_DEVICES` 时仍使用 `TRAIN_DEVICE`
+（默认 `cuda:0`）顺序训练，保持单卡兼容。完整门禁、存储峰值、断点续跑和最终
+32 prompt × 8 seed 配对评估见 [Linux/NVIDIA 指引](docs/ltsn-linux-training-and-evaluation.md)。
 
 ## 发布内容与排除项
 

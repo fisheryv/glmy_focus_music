@@ -293,7 +293,13 @@ def train_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--reranking-gate", type=Path)
-    parser.add_argument("--device")
+    devices = parser.add_mutually_exclusive_group()
+    devices.add_argument("--device")
+    devices.add_argument(
+        "--devices",
+        nargs="+",
+        help="one explicit CUDA device per configured seed, for example cuda:0 cuda:1 cuda:2",
+    )
     parser.add_argument("--engineering-smoke", action="store_true")
     args = parser.parse_args(argv)
     _print(
@@ -306,6 +312,7 @@ def train_main(argv: list[str] | None = None) -> int:
             reranking_gate_path=args.reranking_gate,
             engineering_smoke=args.engineering_smoke,
             device_name=args.device,
+            device_names=args.devices,
         )
     )
     return 0
