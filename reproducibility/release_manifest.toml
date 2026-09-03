@@ -31,7 +31,7 @@ fingerprint_id = "focus_path_homology_fingerprint_v2"
 spec_revision = "2026-08-17-frozen-18d"
 dimensions = 18
 release_manifest = "metadata/focus_path_homology_fingerprint_v2_release.json"
-profile_sha256 = "88f4ff45a6d83a33e3a75e5f40af250dd2db572e0bccb91fdb45eca72a9062f3"
+profile_sha256 = "e3d0080be661e5886b166f822e440c61a2a220d576ccedfc02b0ec5a84c018c0"
 legacy_51d = "reject"
 
 [qualification]

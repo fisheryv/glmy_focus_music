@@ -97,7 +97,7 @@ focus_topology = ["py.typed"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
-pythonpath = ["packages/pyglmy/src", "src"]
+pythonpath = [".", "packages/pyglmy/src", "src"]
 
 [tool.ruff]
 line-length = 100
