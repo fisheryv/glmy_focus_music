@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+from collections import Counter
 from pathlib import Path
 
 from generation.experiment import (
@@ -48,3 +50,32 @@ def test_candidate_manifest_round_trip_preserves_audit_fields(tmp_path: Path) ->
     write_candidate_manifest(path, [record])
 
     assert read_candidate_manifest(path) == [record]
+
+
+def test_ltsn_prompt_manifest_is_unique_grouped_and_balanced() -> None:
+    path = ROOT / "metadata" / "ltsn_prompts.csv"
+    with path.open("r", encoding="utf-8", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+
+    assert len(rows) == 512
+    assert Counter(row["split"] for row in rows) == {
+        "train": 320,
+        "development": 64,
+        "calibration": 64,
+        "qualification": 64,
+    }
+    assert len({row["prompt_id"] for row in rows}) == len(rows)
+    assert len({row["caption"] for row in rows}) == len(rows)
+    assert all(not row["seed"] for row in rows)
+    assert all(row["bpm"].isdigit() for row in rows)
+    assert all(row["timesignature"] == "4" for row in rows)
+
+    family_splits: dict[str, set[str]] = {}
+    family_counts: Counter[str] = Counter()
+    for row in rows:
+        family = row["prompt_id"].rsplit("__v", 1)[0]
+        family_splits.setdefault(family, set()).add(row["split"])
+        family_counts[family] += 1
+    assert len(family_splits) == 32
+    assert all(splits and len(splits) == 1 for splits in family_splits.values())
+    assert set(family_counts.values()) == {16}

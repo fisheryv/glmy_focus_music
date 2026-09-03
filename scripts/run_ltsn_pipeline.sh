@@ -23,6 +23,7 @@ collect() {
     --backend ace \
     --ace-model-sha256 "${ACE_MODEL_SHA256}" \
     --vae-sha256 "${VAE_SHA256}" \
+    --seeds-per-prompt "${LTSN_SEEDS_PER_PROMPT:-4}" \
     --duration-seconds 180 \
     --decode-snapshots \
     --discard-generator-final-audio

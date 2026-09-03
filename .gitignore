@@ -44,8 +44,11 @@ generation/steered/**
 human_study/anonymized_scores/*.csv
 !human_study/anonymized_scores/schema.csv
 
-# Local dataset build state (canonical manifests remain tracked)
+# Local dataset build state; keep only explicitly versioned canonical manifests.
 metadata/
+!metadata/
+metadata/*
+!metadata/ltsn_prompts.csv
 
 # Local archive for the retired, non-redistributable Brain.fm baseline.
 restricted_archive/**

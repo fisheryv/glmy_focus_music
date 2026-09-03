@@ -43,11 +43,14 @@ HF 的 `data/{focus,classical}/{discovery,validation,holdout}` 布局，不再�
 
 ## 正式 LTSN 流水线
 
-先准备 `metadata/ltsn_prompts.csv`（字段与分区规则见
-`docs/ltsn-linux-training-and-evaluation.md`），计算 ACE 模型/VAE 目录内容哈希，然后按
-阶段运行：
+先生成冻结的 512-prompt 清单（train/development/calibration/qualification 为
+320/64/64/64；每个 prompt 采集 4 个 seed，共 2048 条轨迹），计算 ACE 模型/VAE
+目录内容哈希，然后按阶段运行。字段与分区规则见
+`docs/ltsn-linux-training-and-evaluation.md`。
 
 ```bash
+python scripts/build_ltsn_prompt_manifest.py
+
 export ACE_MODEL_SHA256=<64-hex>
 export VAE_SHA256=<64-hex>
 
