@@ -13,6 +13,7 @@ from topology.statistics import _pseudo_f_statistic
 class DiscoveryMahalanobisBlock:
     """Discovery-fitted, rank-normalized Mahalanobis coordinates for one view."""
 
+    output_dimensions: int | None = None
     imputer: SimpleImputer | None = None
     keep: np.ndarray | None = None
     mean: np.ndarray | None = None
@@ -35,11 +36,36 @@ class DiscoveryMahalanobisBlock:
         covariance = np.atleast_2d(np.cov(centered, rowvar=False))
         inverse = np.linalg.pinv(covariance, rcond=1e-10)
         eigenvalues, eigenvectors = np.linalg.eigh(inverse)
-        positive = eigenvalues > np.finfo(float).eps
-        self.whitening = eigenvectors[:, positive] * np.sqrt(eigenvalues[positive])
-        self.effective_rank = int(np.linalg.matrix_rank(covariance))
-        if self.effective_rank < 1 or self.whitening.shape[1] < 1:
+        maximum = max(float(eigenvalues[-1]), 0.0)
+        tolerance = max(np.finfo(float).eps, maximum * 1e-10)
+        stable_eigenvalues = np.where(eigenvalues > tolerance, eigenvalues, 0.0)
+        self.effective_rank = int(np.count_nonzero(stable_eigenvalues))
+        if self.effective_rank < 1:
             raise ValueError("block covariance has zero effective rank")
+
+        retained_dimensions = retained.shape[1]
+        dimensions = (
+            self.output_dimensions
+            if self.output_dimensions is not None
+            else self.effective_rank
+        )
+        if dimensions < self.effective_rank:
+            raise ValueError("output_dimensions cannot be smaller than the effective rank")
+        if dimensions > retained_dimensions:
+            raise ValueError("output_dimensions cannot exceed the retained dimensions")
+
+        # eigh is ascending. Keep the strongest requested directions and represent any
+        # deliberately retained null-space coordinates as exact zero columns. Without
+        # this threshold, LAPACK-dependent +/- round-off around zero changes the number
+        # of columns across platforms (observed between Windows and Linux).
+        selected = slice(retained_dimensions - dimensions, retained_dimensions)
+        selected_values = stable_eigenvalues[selected]
+        selected_vectors = eigenvectors[:, selected].copy()
+        for index in range(selected_vectors.shape[1]):
+            pivot = int(np.argmax(np.abs(selected_vectors[:, index])))
+            if selected_vectors[pivot, index] < 0.0:
+                selected_vectors[:, index] *= -1.0
+        self.whitening = selected_vectors * np.sqrt(selected_values)
         return self
 
     def transform(self, matrix: np.ndarray) -> np.ndarray:

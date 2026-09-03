@@ -25,6 +25,22 @@ def test_discovery_block_is_rank_normalized_and_deterministic() -> None:
     assert np.all(np.isfinite(first))
 
 
+def test_discovery_block_can_preserve_frozen_dimensions_with_zero_null_space() -> None:
+    rng = np.random.default_rng(17)
+    matrix = rng.normal(size=(80, 4))
+    matrix[:, 3] = matrix[:, 0] + matrix[:, 1]
+
+    transformer = DiscoveryMahalanobisBlock(output_dimensions=4).fit(matrix)
+    transformed = transformer.transform(matrix)
+
+    assert transformer.effective_rank == 3
+    assert transformer.whitening is not None
+    assert transformer.whitening.shape == (4, 4)
+    assert transformed.shape == (80, 4)
+    assert np.count_nonzero(np.linalg.norm(transformer.whitening, axis=0)) == 3
+    assert np.all(np.isfinite(transformed))
+
+
 def test_equal_and_hierarchical_fusion_preserve_requested_weights() -> None:
     left = np.array([[1.0], [0.0]])
     right = np.array([[0.0], [1.0]])

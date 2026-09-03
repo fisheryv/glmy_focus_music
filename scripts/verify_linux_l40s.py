@@ -80,20 +80,51 @@ def verify(root: Path, *, allow_missing_data: bool) -> dict[str, Any]:
     check("pyglmy_revision", pyglmy_head == pyglmy_revision, pyglmy_head, pyglmy_revision)
 
     scorer_release_path = root / release["scorer"]["release_manifest"]
-    scorer_payload = json.loads(scorer_release_path.read_text(encoding="utf-8"))
     profile_path = root / "metadata/focus_path_homology_fingerprint_v2.json"
-    dimensions = scorer_payload.get("dimensions")
-    profile_sha256 = _sha256(profile_path)
     expected_profile_sha256 = release["scorer"]["profile_sha256"]
-    legacy_status = scorer_payload.get("runtime_status", {}).get("legacy_51d_scorer")
-    check("scorer_dimensions", dimensions == 18, dimensions, 18)
     check(
-        "scorer_profile_sha256",
-        profile_sha256 == expected_profile_sha256,
-        profile_sha256,
-        expected_profile_sha256,
+        "scorer_release_manifest",
+        scorer_release_path.is_file(),
+        scorer_release_path.relative_to(root).as_posix()
+        if scorer_release_path.is_file()
+        else "missing",
+        release["scorer"]["release_manifest"],
     )
-    check("legacy_51d", legacy_status == "reject", legacy_status, "reject")
+    check(
+        "scorer_profile",
+        profile_path.is_file(),
+        profile_path.relative_to(root).as_posix() if profile_path.is_file() else "missing",
+        "metadata/focus_path_homology_fingerprint_v2.json",
+    )
+
+    scorer_payload: dict[str, Any] | None = None
+    if scorer_release_path.is_file():
+        try:
+            loaded = json.loads(scorer_release_path.read_text(encoding="utf-8"))
+            scorer_payload = loaded if isinstance(loaded, dict) else None
+            check(
+                "scorer_release_json",
+                scorer_payload is not None,
+                type(loaded).__name__,
+                "JSON object",
+            )
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            check("scorer_release_json", False, f"{type(error).__name__}: {error}", "valid JSON")
+
+    if scorer_payload is not None:
+        dimensions = scorer_payload.get("dimensions")
+        legacy_status = scorer_payload.get("runtime_status", {}).get("legacy_51d_scorer")
+        check("scorer_dimensions", dimensions == 18, dimensions, 18)
+        check("legacy_51d", legacy_status == "reject", legacy_status, "reject")
+
+    if profile_path.is_file():
+        profile_sha256 = _sha256(profile_path)
+        check(
+            "scorer_profile_sha256",
+            profile_sha256 == expected_profile_sha256,
+            profile_sha256,
+            expected_profile_sha256,
+        )
 
     dataset_receipt = root / "runs/reproducibility/dataset.json"
     if dataset_receipt.is_file():

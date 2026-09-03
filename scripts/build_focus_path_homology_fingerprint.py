@@ -179,7 +179,12 @@ def _fit_coordinates(
     phase: pd.DataFrame,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict[str, SerializedBlock]]:
     discovery = _mask(identity, "discovery")
-    pitch_transform = DiscoveryMahalanobisBlock().fit(pitch.to_numpy(float)[discovery])
+    # The signed v2 contract reserves 16 Pitch coordinates. The discovery
+    # covariance has effective rank 13; the remaining three coordinates are
+    # explicit zeros rather than platform-dependent numerical null-space noise.
+    pitch_transform = DiscoveryMahalanobisBlock(output_dimensions=16).fit(
+        pitch.to_numpy(float)[discovery]
+    )
     pitch_block = pitch_transform.transform(pitch.to_numpy(float))
 
     phase_blocks: list[np.ndarray] = []
