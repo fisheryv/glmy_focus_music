@@ -152,6 +152,7 @@ class AceStepAdapter:
             "sample_rate": audio.get("sample_rate"),
             "time_costs": extra.get("time_costs", {}),
             "model": self.config.model,
+            "model_repository": self.config.model_repository,
             "device": self.config.device,
         }
         return GenerationResult(

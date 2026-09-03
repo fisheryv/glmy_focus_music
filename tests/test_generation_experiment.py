@@ -19,6 +19,8 @@ def test_formal_plan_has_32_complete_eight_candidate_pools() -> None:
     prompts = read_prompts(ROOT, config.prompt_manifest)
     records = build_candidate_plan(config, prompts)
 
+    assert config.ace.model == "acestep-v15-xl-turbo"
+    assert config.ace.model_repository == "ACE-Step/acestep-v15-xl-turbo"
     assert len(prompts) == 32
     assert len(records) == 256
     assert len({record.seed for record in records}) == 256

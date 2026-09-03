@@ -113,8 +113,8 @@ def collect_main(argv: list[str] | None = None) -> int:
     prompts = _prompt_rows(args.prompt_manifest, args.seed_start, args.seeds_per_prompt)
     adapter = None
     if args.backend == "ace":
-        if model_family != "acestep-v15-turbo":
-            raise ValueError("the pinned sampler hook currently supports ACE-Step Turbo only")
+        if model_family != "acestep-v15-xl-turbo":
+            raise ValueError("the pinned sampler hook currently supports ACE-Step XL-Turbo only")
         adapter = AceStepAdapter(root / config.ace.checkout, config.ace)
         adapter.set_topology_corrector(recorder)
     discarded_generator_audio = 0

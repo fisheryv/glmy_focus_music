@@ -68,7 +68,7 @@ def test_synthetic_smoke_pipeline_records_labels_and_trains(tmp_path: Path) -> N
     collection = tmp_path / "collection"
     recorder = TrajectoryRecorder(
         collection,
-        model_family="acestep-v15-turbo",
+        model_family="acestep-v15-xl-turbo",
         ace_model_sha256="a" * 64,
         vae_sha256="b" * 64,
         engineering_smoke=True,

@@ -10,7 +10,8 @@ run_directory = "runs/ace_rerank"
 
 [ace]
 checkout = "ACE-Step-1.5"
-model = "acestep-v15-turbo"
+model = "acestep-v15-xl-turbo"
+model_repository = "ACE-Step/acestep-v15-xl-turbo"
 device = "cuda"
 inference_steps = 8
 shift = 3.0
@@ -36,4 +37,3 @@ success_min_median_improvement = 0.10
 minimum_prompt_pools = 2
 permutations = 99
 bootstrap_resamples = 100
-

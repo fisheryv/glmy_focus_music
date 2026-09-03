@@ -63,7 +63,7 @@ def test_smoke_label_builder_issues_hashed_nonqualifying_manifest(tmp_path: Path
                     prompt_id=f"prompt_{index}",
                     trajectory_id=f"trajectory_{index}",
                     split=split,
-                    model_family="acestep-v15-turbo",
+                    model_family="acestep-v15-xl-turbo",
                     step_number=4,
                     timestep=0.75,
                     is_final=False,

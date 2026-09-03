@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Any
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+ACE_MODEL_NAME = "acestep-v15-xl-turbo"
+ACE_MODEL_REPOSITORY = "ACE-Step/acestep-v15-xl-turbo"
 
 
 class ExperimentConfigError(ValueError):
@@ -29,7 +31,8 @@ class PromptSpec:
 @dataclass(frozen=True, slots=True)
 class AceConfig:
     checkout: str = "ACE-Step-1.5"
-    model: str = "acestep-v15-turbo"
+    model: str = ACE_MODEL_NAME
+    model_repository: str = ACE_MODEL_REPOSITORY
     device: str = "cuda"
     inference_steps: int = 8
     shift: float = 3.0
@@ -86,6 +89,14 @@ class ExperimentConfig:
             raise ExperimentConfigError("workers must be positive")
         if self.ace.inference_steps < 1 or self.ace.shift <= 0:
             raise ExperimentConfigError("ACE inference_steps and shift must be positive")
+        if (
+            self.ace.model != ACE_MODEL_NAME
+            or self.ace.model_repository != ACE_MODEL_REPOSITORY
+        ):
+            raise ExperimentConfigError(
+                f"ACE model must be pinned to {ACE_MODEL_REPOSITORY} "
+                f"with runtime name {ACE_MODEL_NAME}"
+            )
         if self.ace.infer_method not in {"ode", "sde"}:
             raise ExperimentConfigError("ACE infer_method must be 'ode' or 'sde'")
         if self.ace.sampler_mode not in {"euler", "heun"}:

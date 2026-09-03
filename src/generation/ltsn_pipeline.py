@@ -161,8 +161,10 @@ class TrajectoryRecorder:
         selected_steps: Sequence[int] = (4, 5, 6),
         engineering_smoke: bool = False,
     ) -> None:
-        if model_family not in {"acestep-v15-turbo", "acestep-v15-sft"}:
-            raise LTSNContractError("Turbo and SFT trajectories require an explicit model family")
+        if model_family not in {"acestep-v15-xl-turbo", "acestep-v15-xl-sft"}:
+            raise LTSNContractError(
+                "XL-Turbo and XL-SFT trajectories require an explicit model family"
+            )
         for name, value in (("ace_model_sha256", ace_model_sha256), ("vae_sha256", vae_sha256)):
             if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
                 raise LTSNContractError(f"{name} must be a lowercase SHA-256 digest")

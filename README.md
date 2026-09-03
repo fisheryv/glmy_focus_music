@@ -37,6 +37,7 @@ HF 的 `data/{focus,classical}/{discovery,validation,holdout}` 布局，不再�
 
 - `pyglmy`：`49bd5ea7617906f09940dcc9b9718bbfc1482d6f`；
 - ACE-Step 1.5：`de9a3dc7f7ca28c09e4d21822ceba02260b3162a`，上游已包含 sampler corrector hook；
+- ACE 生成模型：[ACE-Step/acestep-v15-xl-turbo](https://huggingface.co/ACE-Step/acestep-v15-xl-turbo)，运行时 checkpoint 名为 `acestep-v15-xl-turbo`；
 - exact scorer：Pitch 16 + Acoustic/Chroma phase `loop_score`，共 18 维；旧 51-D
   运行时输入明确拒绝。
 
