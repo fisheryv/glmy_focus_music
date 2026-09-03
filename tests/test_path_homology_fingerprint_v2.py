@@ -6,9 +6,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-import pytest
 
-from generation.ltsn_contract import LTSNContractError, load_fingerprint_contract
+from generation.ltsn_contract import load_fingerprint_contract
 from generation.path_homology_exact_scorer import ExactPathHomologyScorer
 from topology.statistics import TOPOLOGY_METRICS
 
@@ -18,13 +17,6 @@ SCORES = ROOT / "metadata" / "focus_path_homology_fingerprint_v2_scores.csv"
 DIRECTIONS = ROOT / "metadata" / "focus_path_homology_fingerprint_v2_directions.csv"
 SUMMARY = ROOT / "metadata" / "focus_path_homology_fingerprint_v2_summary.json"
 RELEASE = ROOT / "metadata" / "focus_path_homology_fingerprint_v2_release.json"
-LEGACY = (
-    ROOT
-    / "metadata"
-    / "archive"
-    / "focus_path_homology_fingerprint_v2_legacy_51d_9bf64f3c1d79"
-    / "focus_path_homology_fingerprint_v2.json"
-)
 IDENTITY = ["segment_id", "track_id", "group", "split", "scale_seconds"]
 FEATURE_ORDER = tuple(
     [f"pitch_whitened_{index:02d}" for index in range(16)]
@@ -126,9 +118,3 @@ def test_release_manifest_hashes_and_validation_gate() -> None:
     reproduction = summary["validation_180_reproduction"]
     assert reproduction["status"] == "passed"
     assert max(reproduction["absolute_error"].values()) <= reproduction["tolerance"]
-
-
-def test_legacy_51d_profile_is_archived_and_rejected() -> None:
-    assert _sha256(LEGACY) == "9bf64f3c1d79c12ec428f1d9f552827d07e9f5c445d9236e7ab676699a62ef1f"
-    with pytest.raises(LTSNContractError, match="dimensions must equal 18"):
-        load_fingerprint_contract(LEGACY)

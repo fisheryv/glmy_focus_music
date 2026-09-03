@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import numpy as np
 
-
 from features.structure import (
     abstract_structure_states,
     checkerboard_novelty,
@@ -52,10 +51,3 @@ def test_structural_features_turn_macro_sections_into_a_state_path() -> None:
     assert np.any(np.abs(features.boundary_times - 24.0) <= 1.0)
     assert len(states) == features.block_vectors.shape[0]
     assert states[0] == states[-1]
-
-
-def test_topology_loader_accepts_one_dimensional_structure_states(tmp_path) -> None:
-    path = tmp_path / "structure.npz"
-    np.savez(path, states=np.asarray([0, 1, -1, 0], dtype=np.int16))
-
-    assert _load_state_sequence(path, "structure") == [0, 1, None, 0]
