@@ -26,24 +26,6 @@ from features.batch import (
 from features.batch import (
     _load_config as load_feature_config,
 )
-from repetition.analysis import (
-    _compute_segment as compute_repetition_segment,
-)
-from repetition.analysis import (
-    _load_model as load_repetition_model,
-)
-from repetition.analysis import (
-    load_config as load_repetition_config,
-)
-from tda.analysis import (
-    _compute_segment as compute_tda_segment,
-)
-from tda.analysis import (
-    _load_model as load_tda_model,
-)
-from tda.analysis import (
-    load_config as load_tda_config,
-)
 
 from .experiment import CandidateRecord
 from .target_profile import CORE_FEATURES
@@ -232,6 +214,13 @@ def compute_exact_descriptors(
     records: list[CandidateRecord],
     feature_rows: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
+    from repetition.analysis import _compute_segment as compute_repetition_segment
+    from repetition.analysis import _load_model as load_repetition_model
+    from repetition.analysis import load_config as load_repetition_config
+    from tda.analysis import _compute_segment as compute_tda_segment
+    from tda.analysis import _load_model as load_tda_model
+    from tda.analysis import load_config as load_tda_config
+
     _copy_frozen_model(project_root, run_root)
     tda_model = load_tda_model(run_root)
     repetition_model = load_repetition_model(run_root)

@@ -11,7 +11,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
-from topology.statistics import TOPOLOGY_METRICS
+from topology.metrics import TOPOLOGY_METRICS
 
 from .ltsn_contract import FingerprintContract, LTSNContractError, load_fingerprint_contract
 

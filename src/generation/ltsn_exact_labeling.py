@@ -14,11 +14,8 @@ from features.batch import _read_npz
 from features.pitch_v2 import assign_codebook, chroma_to_tonnetz
 from graphs.transition import build_transition_graph
 from homology.glmy import persistent_path_homology
-from repetition.analysis import _compute_segment as compute_repetition_segment
-from repetition.analysis import _load_model as load_repetition_model
-from repetition.analysis import load_config as load_repetition_config
 from topology.batch import _graph_metrics, _topology_metrics, load_topology_config
-from topology.statistics import TOPOLOGY_METRICS
+from topology.metrics import TOPOLOGY_METRICS
 
 from .exact_features import (
     _copy_frozen_model,
@@ -178,6 +175,10 @@ def _extract_batch(
     codebook_path: Path,
     centers: np.ndarray,
 ) -> tuple[list[dict[str, Any]], Counter[str]]:
+    from repetition.analysis import _compute_segment as compute_repetition_segment
+    from repetition.analysis import _load_model as load_repetition_model
+    from repetition.analysis import load_config as load_repetition_config
+
     records, methods = _copy_snapshot_audio(
         trajectory_manifest,
         work_dir,
