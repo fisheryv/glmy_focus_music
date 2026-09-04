@@ -28,12 +28,12 @@ dcw_high_scaler = 0.02
 dcw_wavelet = "haar"
 
 [scoring]
-target_group = "focus"
-target_split = "discovery"
-target_scale_seconds = 180.0
-covariance_shrinkage = 0.2
-technical_quality_weight = 0.0
+fingerprint_path = "metadata/focus_path_homology_fingerprint_v2.json"
+noninferiority_protocol_path = "configs/ace_reranking_noninferiority.json"
 success_min_median_improvement = 0.10
 minimum_prompt_pools = 2
 permutations = 99
 bootstrap_resamples = 100
+maximum_clip_fraction = 0.01
+minimum_rms = 0.0001
+maximum_dc_offset = 0.05
