@@ -556,7 +556,7 @@ def rank_and_summarize(
         int(row["selected_quality_eligible"]) == 1 for row in pool_rows
     )
     median_improvement = float(np.median(improvements))
-    sufficient = len(evaluable_rows) >= config.scoring.minimum_prompt_pools
+    sufficient = len(pool_rows) >= config.scoring.minimum_prompt_pools
     formal_design = bool(
         len(pool_rows) == 32
         and len(ranked_rows) == 256
@@ -571,6 +571,21 @@ def rank_and_summarize(
         and target_band_hit_rate_improved
         and selected_technical_quality_eligible
     )
+    topology_blockers: list[str] = []
+    if not formal_design:
+        topology_blockers.append("formal_design_failed")
+    if not sufficient:
+        topology_blockers.append(
+            f"complete_prompt_pools={len(pool_rows)}<{config.scoring.minimum_prompt_pools}"
+        )
+    if median_improvement < config.scoring.success_min_median_improvement:
+        topology_blockers.append("median_loss_improvement_below_threshold")
+    if ci_low <= 0.0:
+        topology_blockers.append("bootstrap_ci95_low_not_positive")
+    if not target_band_hit_rate_improved:
+        topology_blockers.append("target_band_hit_rate_not_improved")
+    if not selected_technical_quality_eligible:
+        topology_blockers.append("selected_candidate_failed_technical_quality")
     _write_rows(run_root / "scores.csv", ranked_rows)
     _write_rows(run_root / "pool_summary.csv", pool_rows)
     selected_ids = {row["selected_candidate_id"] for row in pool_rows}
@@ -592,6 +607,7 @@ def rank_and_summarize(
         "topology_passed": topology_passed,
         "formal_design": formal_design,
         "prompt_pools": len(pool_rows),
+        "complete_prompt_pools_sufficient": sufficient,
         "evaluable_positive_loss_prompt_pools": len(evaluable_rows),
         "candidates_scored": len(ranked_rows),
         "selected_candidates": sorted(selected_ids),
@@ -615,7 +631,12 @@ def rank_and_summarize(
         "selection_table_sha256": sha256_file(score_path),
         "pool_summary_sha256": sha256_file(pool_path),
         "gate_issued": False,
-        "gate_blocker": "quality, prompt, and diversity non-inferiority evidence required",
+        "topology_blockers": topology_blockers,
+        "gate_blocker": (
+            "quality, prompt, and diversity non-inferiority evidence required"
+            if topology_passed
+            else "; ".join(topology_blockers)
+        ),
     }
     _write_json(run_root / "summary.json", summary)
     return summary
