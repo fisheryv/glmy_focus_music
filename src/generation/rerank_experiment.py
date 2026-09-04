@@ -32,7 +32,12 @@ from .experiment import (
     write_candidate_manifest,
 )
 from .ltsn_contract import sha256_file
-from .ltsn_pipeline import RERANKING_GATE_NAME, load_reranking_gate
+from .ltsn_pipeline import (
+    RERANKING_GATE_NAME,
+    SURROGATE_TRAINING_GATE_NAME,
+    load_reranking_gate,
+    load_surrogate_training_gate,
+)
 from .path_homology_exact_scorer import ExactPathHomologyScorer
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -792,7 +797,11 @@ def evaluate_noninferiority_table(
 
 
 def _validated_noninferiority(
-    path: Path, summary: dict[str, Any], config: ExperimentConfig
+    path: Path,
+    summary: dict[str, Any],
+    config: ExperimentConfig,
+    *,
+    required_passed: frozenset[str] = frozenset({"quality", "prompt", "diversity"}),
 ) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     bindings = {
@@ -816,9 +825,11 @@ def _validated_noninferiority(
     criteria = payload.get("criteria")
     if not isinstance(criteria, dict) or set(criteria) != {"quality", "prompt", "diversity"}:
         raise ValueError("non-inferiority report must contain quality, prompt, and diversity")
+    if not required_passed.issubset(criteria):
+        raise ValueError("required non-inferiority criteria are invalid")
     for name, criterion in criteria.items():
-        if not isinstance(criterion, dict) or criterion.get("passed") is not True:
-            raise ValueError(f"{name} non-inferiority has not passed")
+        if not isinstance(criterion, dict) or not isinstance(criterion.get("passed"), bool):
+            raise ValueError(f"{name} non-inferiority status is malformed")
         if not str(criterion.get("metric", "")).strip():
             raise ValueError(f"{name} non-inferiority metric is missing")
         evidence_sha256 = str(criterion.get("evidence_sha256", ""))
@@ -847,8 +858,81 @@ def _validated_noninferiority(
         if not math.isfinite(low) or not math.isfinite(high) or low > high:
             raise ValueError(f"{name} confidence interval is malformed")
         calculated_pass = low >= -margin
-        if not calculated_pass:
+        if criterion["passed"] is not calculated_pass:
+            raise ValueError(f"{name} non-inferiority status disagrees with its frozen margin")
+        if name in required_passed and not calculated_pass:
             raise ValueError(f"{name} confidence interval crosses the frozen margin")
+    return payload
+
+
+def issue_surrogate_training_gate(
+    project_root: Path,
+    config: ExperimentConfig,
+    noninferiority_report: Path,
+    output_path: Path,
+) -> dict[str, Any]:
+    """Issue a scope-limited gate for exact labels and LTSN surrogate training."""
+
+    run_root = experiment_root(project_root, config)
+    _, records = ensure_experiment(project_root, config)
+    descriptor_path = run_root / "descriptors_18d.csv"
+    if not descriptor_path.is_file():
+        raise FileNotFoundError("exact 18-D descriptor table is missing")
+    summary = rank_and_summarize(
+        project_root, config, records, _read_descriptor_csv(descriptor_path)
+    )
+    summary_path = run_root / "summary.json"
+    if summary.get("topology_passed") is not True:
+        raise ValueError("exact 18-D topology reranking gate has not passed")
+    evidence = _validated_noninferiority(
+        noninferiority_report,
+        summary,
+        config,
+        required_passed=frozenset({"quality"}),
+    )
+    scorer = ExactPathHomologyScorer.from_json(
+        project_root / config.scoring.fingerprint_path
+    )
+    if summary["fingerprint_json_sha256"] != scorer.contract.artifact_sha256:
+        raise ValueError("reranking summary uses a different frozen 18-D scorer")
+    criteria = evidence["criteria"]
+    payload = {
+        "schema_version": 2,
+        "gate": SURROGATE_TRAINING_GATE_NAME,
+        "status": "passed",
+        "scope": "exact_labeling_and_surrogate_training_only",
+        "experiment_id": config.run_id,
+        "fingerprint_json_sha256": summary["fingerprint_json_sha256"],
+        "median_loss_improvement_fraction": summary[
+            "median_loss_improvement_fraction"
+        ],
+        "bootstrap_ci95_low": summary["median_improvement_bootstrap_95_ci"][0],
+        "target_band_hit_rate_improved": summary["target_band_hit_rate_improved"],
+        "all_selected_technical_quality_eligible": summary[
+            "all_selected_technical_quality_eligible"
+        ],
+        "quality_noninferior": bool(criteria["quality"]["passed"]),
+        "prompt_noninferior": bool(criteria["prompt"]["passed"]),
+        "diversity_preserved": bool(criteria["diversity"]["passed"]),
+        "guidance_promotion_eligible": False,
+        "noninferiority_criteria": {
+            name: {
+                "passed": bool(criterion["passed"]),
+                "estimate": float(criterion["estimate"]),
+                "ci95": [float(value) for value in criterion["ci95"]],
+                "margin": float(criterion["margin"]),
+            }
+            for name, criterion in criteria.items()
+        },
+        "reranking_summary_sha256": sha256_file(summary_path),
+        "candidate_manifest_sha256": summary["candidate_manifest_sha256"],
+        "descriptor_table_sha256": summary["descriptor_table_sha256"],
+        "selection_table_sha256": summary["selection_table_sha256"],
+        "noninferiority_report_sha256": sha256_file(noninferiority_report),
+        "protocol_sha256": evidence["protocol_sha256"],
+    }
+    _write_json(output_path, payload)
+    load_surrogate_training_gate(output_path, scorer.contract)
     return payload
 
 

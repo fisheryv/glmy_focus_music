@@ -10,9 +10,11 @@ import pytest
 from generation.ltsn_contract import LTSNContractError, load_fingerprint_contract, sha256_file
 from generation.ltsn_pipeline import (
     RERANKING_GATE_NAME,
+    SURROGATE_TRAINING_GATE_NAME,
     TrajectorySnapshotRecord,
     build_exact_label_tables,
     load_reranking_gate,
+    load_surrogate_training_gate,
     synthetic_descriptor_rows,
     write_csv_atomic,
 )
@@ -45,6 +47,38 @@ def test_reranking_gate_requires_all_frozen_effect_conditions(tmp_path: Path) ->
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(LTSNContractError, match="quality"):
         load_reranking_gate(path, contract)
+
+
+def test_surrogate_training_gate_records_but_does_not_require_prompt_diversity(
+    tmp_path: Path,
+) -> None:
+    contract = load_fingerprint_contract(FINGERPRINT)
+    payload = {
+        "schema_version": 2,
+        "gate": SURROGATE_TRAINING_GATE_NAME,
+        "status": "passed",
+        "scope": "exact_labeling_and_surrogate_training_only",
+        "fingerprint_json_sha256": contract.artifact_sha256,
+        "median_loss_improvement_fraction": 0.11,
+        "bootstrap_ci95_low": 0.01,
+        "target_band_hit_rate_improved": True,
+        "all_selected_technical_quality_eligible": True,
+        "quality_noninferior": True,
+        "prompt_noninferior": False,
+        "diversity_preserved": False,
+        "guidance_promotion_eligible": False,
+    }
+    path = tmp_path / "training_gate.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    gate = load_surrogate_training_gate(path, contract)
+    assert gate.prompt_noninferior is False
+    assert gate.diversity_preserved is False
+
+    payload["guidance_promotion_eligible"] = True
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(LTSNContractError, match="must not promote"):
+        load_surrogate_training_gate(path, contract)
 
 
 def test_smoke_label_builder_issues_hashed_nonqualifying_manifest(tmp_path: Path) -> None:

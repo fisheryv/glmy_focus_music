@@ -17,6 +17,7 @@ from .rerank_experiment import (
     generate_candidates,
     initialize_noninferiority_report,
     issue_reranking_gate,
+    issue_surrogate_training_gate,
     score_candidates,
 )
 
@@ -195,6 +196,21 @@ def command_issue_gate(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_issue_training_gate(args: argparse.Namespace) -> int:
+    root, config = _load(args)
+    report = args.noninferiority_report or (
+        experiment_root(root, config) / "noninferiority_report.json"
+    )
+    output = args.training_gate_output or (
+        root / "metadata" / "ltsn_surrogate_training_gate.json"
+    )
+    payload = issue_surrogate_training_gate(
+        root, config, report.resolve(), output.resolve()
+    )
+    _print({"ok": True, "output": str(output.resolve()), **payload})
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="focus-ace-rerank")
     parser.add_argument(
@@ -207,6 +223,7 @@ def build_parser() -> argparse.ArgumentParser:
             "run",
             "init-evidence",
             "evaluate-evidence",
+            "issue-training-gate",
             "issue-gate",
         ),
     )
@@ -218,6 +235,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--noninferiority-report", type=Path)
     parser.add_argument("--noninferiority-table", type=Path)
     parser.add_argument("--gate-output", type=Path)
+    parser.add_argument("--training-gate-output", type=Path)
     return parser
 
 
@@ -225,8 +243,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        command_name = args.command.replace("-", "_")
-        return int(globals()[f"command_{command_name}"](args))
+        handler = globals()[f"command_{args.command.replace('-', '_')}"]
+        return int(handler(args))
     except (OSError, RuntimeError, ValueError) as exc:
         parser.error(str(exc))
     return 2

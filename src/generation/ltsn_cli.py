@@ -24,7 +24,7 @@ from .ltsn_exact_labeling import build_exact_snapshot_descriptors
 from .ltsn_pipeline import (
     TrajectoryRecorder,
     build_exact_label_tables,
-    require_ltsn_promotion_gate,
+    require_surrogate_training_gate,
     synthetic_descriptor_rows,
     write_csv_atomic,
 )
@@ -207,7 +207,7 @@ def labels_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--descriptor-table", type=Path)
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--reranking-gate", type=Path)
+    parser.add_argument("--surrogate-training-gate", type=Path)
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument(
         "--batch-size",
@@ -240,8 +240,10 @@ def labels_main(argv: list[str] | None = None) -> int:
         else args.fingerprint
     )
     scorer = ExactPathHomologyScorer.from_json(fingerprint)
-    gate = require_ltsn_promotion_gate(
-        args.reranking_gate, scorer.contract, engineering_smoke=args.engineering_smoke
+    gate = require_surrogate_training_gate(
+        args.surrogate_training_gate,
+        scorer.contract,
+        engineering_smoke=args.engineering_smoke,
     )
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -292,7 +294,7 @@ def train_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--split-manifest", type=Path, required=True)
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
-    parser.add_argument("--reranking-gate", type=Path)
+    parser.add_argument("--surrogate-training-gate", type=Path)
     devices = parser.add_mutually_exclusive_group()
     devices.add_argument("--device")
     devices.add_argument(
@@ -309,7 +311,7 @@ def train_main(argv: list[str] | None = None) -> int:
             split_manifest_path=args.split_manifest,
             config_path=args.config,
             output_dir=args.output_dir,
-            reranking_gate_path=args.reranking_gate,
+            surrogate_training_gate_path=args.surrogate_training_gate,
             engineering_smoke=args.engineering_smoke,
             device_name=args.device,
             device_names=args.devices,
@@ -366,6 +368,7 @@ def guidance_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pair-table", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--mode", choices=("development", "confirmation"), required=True)
+    parser.add_argument("--qualification-report", type=Path)
     parser.add_argument("--bootstrap-resamples", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=20260716)
     args = parser.parse_args(argv)
@@ -375,6 +378,7 @@ def guidance_main(argv: list[str] | None = None) -> int:
         output_path=args.output,
         fingerprint_sha256=contract.artifact_sha256,
         mode=args.mode,
+        qualification_report=args.qualification_report,
         bootstrap_resamples=args.bootstrap_resamples,
         seed=args.seed,
     )
