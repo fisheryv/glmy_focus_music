@@ -140,7 +140,10 @@ def command_score(args: argparse.Namespace) -> int:
     pending = [record for record in records if record.status == "planned"]
     if failed or pending:
         raise ValueError(
-            f"generation is incomplete: planned={len(pending)}, failed={len(failed)}"
+            "generation is incomplete: "
+            f"planned={len(pending)}, failed={len(failed)}; "
+            "resume it with `python -m generation.rerank_cli generate "
+            f"--root {root} --config {args.config} --backend {args.backend} --retry-failed`"
         )
     summary = score_candidates(root, config, records)
     _print(summary)
@@ -222,7 +225,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        return int(globals()[f"command_{args.command}"](args))
+        command_name = args.command.replace("-", "_")
+        return int(globals()[f"command_{command_name}"](args))
     except (OSError, RuntimeError, ValueError) as exc:
         parser.error(str(exc))
     return 2

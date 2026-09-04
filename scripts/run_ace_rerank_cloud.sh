@@ -6,6 +6,8 @@ PYTHON_BIN="${PYTHON_BIN:-${PROJECT_ROOT}/ACE-Step-1.5/.venv/bin/python}"
 CONFIG="${CONFIG:-configs/ace_rerank_180s.toml}"
 RUN_ID="${RUN_ID:-}"
 
+export PYTHONPATH="${PROJECT_ROOT}/src:${PROJECT_ROOT}/packages/pyglmy/src${PYTHONPATH:+:${PYTHONPATH}}"
+
 if [[ ! -x "${PYTHON_BIN}" ]]; then
   echo "Python environment not found: ${PYTHON_BIN}" >&2
   echo "Create the ACE-Step environment and install the root project first." >&2
