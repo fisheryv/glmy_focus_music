@@ -12,8 +12,11 @@ from .experiment import ExperimentConfig, load_experiment_config
 from .fake_backend import FakeMusicBackend
 from .rerank_experiment import (
     ensure_experiment,
+    evaluate_noninferiority_table,
     experiment_root,
     generate_candidates,
+    initialize_noninferiority_report,
+    issue_reranking_gate,
     score_candidates,
 )
 
@@ -35,8 +38,9 @@ def _preflight(root: Path, config: ExperimentConfig, backend_name: str) -> dict[
         "prompt_manifest": root / config.prompt_manifest,
         "state_model": root / "features" / "models" / "state_model.npz",
         "state_model_metadata": root / "features" / "models" / "state_model.json",
-        "tda_features": root / "metadata" / "tda_features.csv",
-        "repetition_features": root / "metadata" / "repetition_homology_features.csv",
+        "pitch_codebook": root / "features" / "models" / "pitch_v2_codebook.npz",
+        "frozen_18d_scorer": root / config.scoring.fingerprint_path,
+        "noninferiority_protocol": root / config.scoring.noninferiority_protocol_path,
         "ace_checkout": checkout / "pyproject.toml",
     }
     dependencies = {
@@ -150,14 +154,67 @@ def command_run(args: argparse.Namespace) -> int:
     return command_score(args)
 
 
+def command_init_evidence(args: argparse.Namespace) -> int:
+    root, config = _load(args)
+    output = args.noninferiority_report or (
+        experiment_root(root, config) / "noninferiority_report.json"
+    )
+    payload = initialize_noninferiority_report(root, config, output.resolve())
+    _print({"ok": True, "output": str(output.resolve()), **payload})
+    return 0
+
+
+def command_evaluate_evidence(args: argparse.Namespace) -> int:
+    root, config = _load(args)
+    if args.noninferiority_table is None:
+        raise ValueError("--noninferiority-table is required")
+    output = args.noninferiority_report or (
+        experiment_root(root, config) / "noninferiority_report.json"
+    )
+    payload = evaluate_noninferiority_table(
+        root,
+        config,
+        args.noninferiority_table.resolve(),
+        output.resolve(),
+    )
+    _print({"ok": True, "output": str(output.resolve()), **payload})
+    return 0
+
+
+def command_issue_gate(args: argparse.Namespace) -> int:
+    root, config = _load(args)
+    report = args.noninferiority_report or (
+        experiment_root(root, config) / "noninferiority_report.json"
+    )
+    output = args.gate_output or (root / "metadata" / "ace_reranking_effect_gate.json")
+    payload = issue_reranking_gate(root, config, report.resolve(), output.resolve())
+    _print({"ok": True, "output": str(output.resolve()), **payload})
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="focus-ace-rerank")
-    parser.add_argument("command", choices=("preflight", "plan", "generate", "score", "run"))
+    parser.add_argument(
+        "command",
+        choices=(
+            "preflight",
+            "plan",
+            "generate",
+            "score",
+            "run",
+            "init-evidence",
+            "evaluate-evidence",
+            "issue-gate",
+        ),
+    )
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--config", type=Path, default=Path("configs/ace_rerank_180s.toml"))
     parser.add_argument("--run-id")
     parser.add_argument("--backend", choices=("ace", "fake"), default="ace")
     parser.add_argument("--retry-failed", action="store_true")
+    parser.add_argument("--noninferiority-report", type=Path)
+    parser.add_argument("--noninferiority-table", type=Path)
+    parser.add_argument("--gate-output", type=Path)
     return parser
 
 

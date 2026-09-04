@@ -2,7 +2,7 @@
 
 本仓库是 `open-focus-classical-600` 研究分析、冻结 18-D exact scorer、ACE-Step
 轨迹采集、逐快照 exact 标签、LTSN 训练/校准/资格检验，以及默认关闭的潜空间拓扑
-corrector 的统一发布仓库。生产目标为 Linux x86_64、Python 3.12、256 GiB 内存和
+corrector 的统一发布仓库。生产目标为 Linux x86\_64、Python 3.12、256 GiB 内存和
 2× NVIDIA L40S。
 
 当前证据边界：代码与本地工程测试可用；真实 Linux/L40S 轨迹、正式标签、三 seed
@@ -80,7 +80,7 @@ Git 发布包含源代码、冻结配置/哈希、18-D scorer、ACE 上游版本
 数据集总许可。仓库软件代码按根目录 [MIT License](LICENSE) 发布；该软件许可不覆盖
 数据集、第三方模型、论文素材或各音频作品。
 
----
+***
 
 # Focus Topology API 与研究分析
 
@@ -258,7 +258,7 @@ python -m focus_topology --version
 
 历史接口 `focus_topology.pipeline.analyze_state_sequence` 继续保留，但只返回固定阈值描述子。新集成建议使用 `analyze_states`。
 
-完整说明见 [docs/library-api.md](docs/library-api.md)，可运行示例见 [examples/library_quickstart.py](examples/library_quickstart.py) 和 [examples/analyze_audio.py](examples/analyze_audio.py)。
+完整说明见 [docs/library-api.md](docs/library-api.md)，可运行示例见 [examples/library\_quickstart.py](examples/library_quickstart.py) 和 [examples/analyze\_audio.py](examples/analyze_audio.py)。
 
 ## 研究复现层
 
@@ -328,3 +328,4 @@ python scripts/build_fresh_open_dataset_report.py
   `metadata/licenses.csv` 中对应的许可使用，不存在覆盖全部音频的单一许可。
 - 跨数据集比较应复用同一个状态模型、阈值集合和预处理配置。
 - 当前项目许可证仍是研究用途边界；公开发布到包索引前，应由项目所有者补充明确的软件许可证。
+

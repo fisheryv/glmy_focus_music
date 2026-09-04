@@ -54,15 +54,15 @@ class AceConfig:
 
 @dataclass(frozen=True, slots=True)
 class ScoringConfig:
-    target_group: str = "focus"
-    target_split: str = "discovery"
-    target_scale_seconds: float = 180.0
-    covariance_shrinkage: float = 0.2
-    technical_quality_weight: float = 0.0
+    fingerprint_path: str = "metadata/focus_path_homology_fingerprint_v2.json"
+    noninferiority_protocol_path: str = "configs/ace_reranking_noninferiority.json"
     success_min_median_improvement: float = 0.10
     minimum_prompt_pools: int = 20
     permutations: int = 999
     bootstrap_resamples: int = 1000
+    maximum_clip_fraction: float = 0.01
+    minimum_rms: float = 0.0001
+    maximum_dc_offset: float = 0.05
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,12 +101,20 @@ class ExperimentConfig:
             raise ExperimentConfigError("ACE infer_method must be 'ode' or 'sde'")
         if self.ace.sampler_mode not in {"euler", "heun"}:
             raise ExperimentConfigError("ACE sampler_mode must be 'euler' or 'heun'")
-        if not 0 <= self.scoring.covariance_shrinkage <= 1:
-            raise ExperimentConfigError("covariance_shrinkage must lie in [0, 1]")
+        if not self.scoring.fingerprint_path.strip() or not (
+            self.scoring.noninferiority_protocol_path.strip()
+        ):
+            raise ExperimentConfigError(
+                "fingerprint_path and noninferiority_protocol_path are required"
+            )
         if self.scoring.minimum_prompt_pools < 2:
             raise ExperimentConfigError("minimum_prompt_pools must be at least 2")
         if self.scoring.permutations < 99 or self.scoring.bootstrap_resamples < 100:
             raise ExperimentConfigError("statistical resample counts are too small")
+        if not 0 <= self.scoring.maximum_clip_fraction <= 1:
+            raise ExperimentConfigError("maximum_clip_fraction must lie in [0, 1]")
+        if self.scoring.minimum_rms <= 0 or self.scoring.maximum_dc_offset <= 0:
+            raise ExperimentConfigError("quality thresholds must be positive")
 
 
 @dataclass(slots=True)

@@ -7,7 +7,7 @@ import shutil
 import tomllib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -21,14 +21,22 @@ from data.preprocess import (
 )
 from features.batch import (
     SegmentJob,
+    _read_npz,
     extract_batch,
 )
 from features.batch import (
     _load_config as load_feature_config,
 )
+from features.pitch_v2 import assign_codebook, chroma_to_tonnetz
+from graphs.transition import build_transition_graph
+from homology.glmy import persistent_path_homology
+from topology.batch import _graph_metrics, _topology_metrics, load_topology_config
+from topology.metrics import TOPOLOGY_METRICS
 
 from .experiment import CandidateRecord
-from .target_profile import CORE_FEATURES
+
+if TYPE_CHECKING:
+    from .path_homology_exact_scorer import ExactPathHomologyScorer
 
 
 def _sha256(path: Path) -> str:
@@ -208,59 +216,106 @@ def _technical_audio_metrics(path: Path) -> dict[str, float]:
     }
 
 
-def compute_exact_descriptors(
+def _pitch_path_homology_descriptors(
+    project_root: Path,
+    run_root: Path,
+    feature_row: dict[str, Any],
+    centers: np.ndarray,
+) -> list[float]:
+    arrays = _read_npz(run_root / feature_row["chroma_relative_path"])
+    chroma = np.asarray(arrays["chroma"], dtype=np.float64)
+    tonnetz = chroma_to_tonnetz(chroma)
+    valid = np.asarray(arrays["valid"], dtype=bool)
+    valid &= np.all(np.isfinite(tonnetz), axis=1) & (np.sum(chroma, axis=1) > 1e-8)
+    raw_states = assign_codebook(tonnetz, centers, valid=valid)
+    states = [int(value) if value >= 0 else None for value in raw_states]
+    config = load_topology_config(project_root)
+    graph = build_transition_graph(
+        states,
+        normalize=True,
+        top_k=config.top_k,
+        include_self_loops=config.include_self_loops,
+    )
+    persistence = persistent_path_homology(
+        graph, config.thresholds, tolerance=config.rank_tolerance
+    )
+    metrics = {**_graph_metrics(states, graph), **_topology_metrics(persistence)}
+    return [float(metrics[name]) for name in TOPOLOGY_METRICS]
+
+
+def compute_frozen_18d_descriptors(
     project_root: Path,
     run_root: Path,
     records: list[CandidateRecord],
     feature_rows: list[dict[str, Any]],
+    scorer: ExactPathHomologyScorer,
 ) -> list[dict[str, Any]]:
+    """Compute the signed Pitch/Acoustic/Chroma teacher for final candidate audio."""
+
+    import json
+
     from repetition.analysis import _compute_segment as compute_repetition_segment
     from repetition.analysis import _load_model as load_repetition_model
     from repetition.analysis import load_config as load_repetition_config
-    from tda.analysis import _compute_segment as compute_tda_segment
-    from tda.analysis import _load_model as load_tda_model
-    from tda.analysis import load_config as load_tda_config
 
+    codebook_path = project_root / "features" / "models" / "pitch_v2_codebook.npz"
+    if not codebook_path.is_file():
+        raise FileNotFoundError(codebook_path)
+    with np.load(codebook_path, allow_pickle=False) as archive:
+        centers = np.asarray(archive["centers"], dtype=np.float64)
     _copy_frozen_model(project_root, run_root)
-    tda_model = load_tda_model(run_root)
     repetition_model = load_repetition_model(run_root)
-    tda_config = load_tda_config(project_root)
     repetition_config = load_repetition_config(project_root)
     record_by_id = {record.candidate_id: record for record in records}
     output: list[dict[str, Any]] = []
-    for row in feature_rows:
-        tda_rows = compute_tda_segment(
+    for feature_row in feature_rows:
+        candidate_id = str(feature_row["segment_id"])
+        if candidate_id not in record_by_id:
+            raise ValueError(f"feature row has no candidate record: {candidate_id}")
+        phase_rows = compute_repetition_segment(
             run_root,
-            row,
-            tda_model,
-            tda_config,
-            ("acoustic_novelty_delay", "rhythm"),
-        )
-        repetition_rows = compute_repetition_segment(
-            run_root,
-            row,
+            feature_row,
             repetition_model,
             repetition_config,
-            ("path_acoustic_phase", "path_rhythm_phase"),
+            ("path_acoustic_phase", "path_chroma_phase"),
             False,
         )
-        tda_lookup = {item["representation"]: item for item in tda_rows}
-        repetition_lookup = {item["representation"]: item for item in repetition_rows}
-        descriptor = {
-            CORE_FEATURES[0]: tda_lookup["acoustic_novelty_delay"]["h0_max_persistence"],
-            CORE_FEATURES[1]: tda_lookup["rhythm"]["h0_total_persistence"],
-            CORE_FEATURES[2]: repetition_lookup["path_acoustic_phase"]["loop_score"],
-            CORE_FEATURES[3]: repetition_lookup["path_rhythm_phase"]["loop_score"],
-        }
-        record = record_by_id[str(row["segment_id"])]
-        technical = _technical_audio_metrics(run_root / record.audio_relative_path)
+        phase = {row["representation"]: row for row in phase_rows}
+        pitch = _pitch_path_homology_descriptors(
+            project_root, run_root, feature_row, centers
+        )
+        acoustic = float(phase["path_acoustic_phase"]["loop_score"])
+        chroma = float(phase["path_chroma_phase"]["loop_score"])
+        score = scorer.score(pitch, [acoustic], [chroma])
+        record = record_by_id[candidate_id]
+        audio_path = run_root / record.audio_relative_path
+        if _sha256(audio_path) != record.audio_sha256:
+            raise ValueError(f"candidate audio hash changed before exact scoring: {candidate_id}")
+        technical = _technical_audio_metrics(audio_path)
         output.append(
             {
-                "candidate_id": record.candidate_id,
+                "candidate_id": candidate_id,
                 "prompt_id": record.prompt_id,
                 "candidate_index": record.candidate_index,
                 "seed": record.seed,
-                **descriptor,
+                "audio_sha256": record.audio_sha256,
+                "fingerprint_json_sha256": scorer.contract.artifact_sha256,
+                "feature_order_json": json.dumps(
+                    list(scorer.contract.feature_order), separators=(",", ":")
+                ),
+                "pitch_descriptors_json": json.dumps(pitch, separators=(",", ":")),
+                "acoustic_loop_score": acoustic,
+                "chroma_loop_score": chroma,
+                "coordinates_json": json.dumps(
+                    score.coordinates[0].tolist(), separators=(",", ":")
+                ),
+                "focus_logit": float(score.focus_logit[0]),
+                "focus_probability": float(score.focus_probability[0]),
+                "focus_band_loss": float(score.focus_band_loss[0]),
+                "pitch_block_l2_norm": float(score.pitch_block_l2_norm[0]),
+                "phase_block_l2_norm": float(score.phase_block_l2_norm[0]),
+                "pitch_v2_codebook_sha256": _sha256(codebook_path),
+                "label_source": "decoded_candidate_exact_18d_v1",
                 **technical,
             }
         )

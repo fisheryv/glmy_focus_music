@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "status": "frozen_before_generation",
+  "criteria": {
+    "quality": {
+      "metric": "blind_quality_score",
+      "direction": "higher_is_better",
+      "margin": 0.0
+    },
+    "prompt": {
+      "metric": "frozen_prompt_alignment_score",
+      "direction": "higher_is_better",
+      "margin": 0.0
+    },
+    "diversity": {
+      "metric": "frozen_embedding_diversity_score",
+      "direction": "higher_is_better",
+      "margin": 0.0
+    }
+  }
+}

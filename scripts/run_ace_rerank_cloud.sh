@@ -26,3 +26,5 @@ fi
 "${PYTHON_BIN}" -m generation.rerank_cli generate "${COMMON_ARGS[@]}" --retry-failed
 "${PYTHON_BIN}" -m generation.rerank_cli score "${COMMON_ARGS[@]}"
 
+echo "Exact 18-D scoring finished; no gate was issued."
+echo "Run evaluate-evidence, then issue-gate after quality/prompt/diversity metrics are ready."
