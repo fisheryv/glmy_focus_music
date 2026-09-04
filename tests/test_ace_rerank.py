@@ -201,7 +201,8 @@ def test_exact_18d_reranking_and_gate_issuance_are_separate(tmp_path: Path) -> N
         record.audio_relative_path = f"data_raw/candidates/{record.candidate_id}.wav"
         record.audio_sha256 = "a" * 64
         pitch = [0.0] * len(scorer.transforms["pitch"]["input_features"])
-        if record.candidate_index == 0:
+        prompt_index = int(record.prompt_id.rsplit("_", 1)[1])
+        if record.candidate_index == 0 and prompt_index < 9:
             pitch[7] = 1.0
         elif record.candidate_index > 1:
             pitch[7] = 0.2 + 0.01 * record.candidate_index
@@ -241,6 +242,10 @@ def test_exact_18d_reranking_and_gate_issuance_are_separate(tmp_path: Path) -> N
 
     assert summary["topology_passed"] is True
     assert summary["verdict"] == "topology_pass_noninferiority_pending"
+    assert summary["prompt_pools"] == 32
+    assert summary["evaluable_positive_loss_prompt_pools"] == 9
+    assert summary["complete_prompt_pools_sufficient"] is True
+    assert summary["topology_blockers"] == []
     assert summary["median_loss_improvement_fraction"] == pytest.approx(1.0)
     assert not (tmp_path / "gate.json").exists()
 
