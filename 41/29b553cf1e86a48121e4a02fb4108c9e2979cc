@@ -1,0 +1,31 @@
+README.md
+  s_d7de5227b9d015::t_f77789f760a665 5,83,261,331
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.2",
+  "base_commit_sha": "4129b553cf1e86a48121e4a02fb4108c9e2979cc",
+  "prompts": {},
+  "sessions": {
+    "s_d7de5227b9d015": {
+      "agent_id": {
+        "tool": "trae",
+        "id": "6a76a0e16f52811629bfc413",
+        "model": "glm-5.3"
+      },
+      "human_author": "fisheryv <yverrr@gmail.com>",
+      "custom_attributes": {
+        "edit_kind": "bash",
+        "client_type": "ide",
+        "source_scene": "agent",
+        "tool_use_id": "6a99bd5392b76cc427019642",
+        "runtime_client": "trae-tob-git-ai",
+        "display_model_name": "glm-5.3",
+        "session_id": "6a76a0e16f52811629bfc413",
+        "external_session_id": "6a76a0e16f52811629bfc413",
+        "operation_id": "6a99bd5392b76cc427019642",
+        "tool_name": "RunCommand"
+      }
+    }
+  }
+}
