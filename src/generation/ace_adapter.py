@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib
+import os
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +45,7 @@ class AceStepAdapter:
         self._handler: Any | None = None
         self._api: tuple[Any, Any, Any] | None = None
         self._topology_corrector: Any | None = None
+        self._device = self.config.device
 
     def set_topology_corrector(self, corrector: Any | None) -> None:
         """Install a qualified experimental corrector on the PyTorch ACE backend."""
@@ -77,10 +79,12 @@ class AceStepAdapter:
             return
         handler_cls, params_cls, generation_config_cls, generate_music = self._import_api()
         handler = handler_cls()
+        device = os.environ.get("ACESTEP_DEVICE", self.config.device)
+        self._device = device
         status, success = handler.initialize_service(
             project_root=str(self.checkout),
             config_path=self.config.model,
-            device=self.config.device,
+            device=device,
             compile_model=self.config.compile_model,
             offload_to_cpu=self.config.offload_to_cpu,
             offload_dit_to_cpu=self.config.offload_dit_to_cpu,
@@ -153,7 +157,7 @@ class AceStepAdapter:
             "time_costs": extra.get("time_costs", {}),
             "model": self.config.model,
             "model_repository": self.config.model_repository,
-            "device": self.config.device,
+            "device": self._device,
         }
         return GenerationResult(
             audio_path=audio_path.resolve(),
