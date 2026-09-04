@@ -20,6 +20,7 @@ from .path_homology_exact_scorer import ExactPathHomologyScorer
 
 TRAJECTORY_SCHEMA_VERSION = 1
 RERANKING_GATE_NAME = "exact_reranking_effect_v1"
+SURROGATE_TRAINING_GATE_NAME = "ltsn_surrogate_training_v1"
 LABEL_SCOPE = "per_snapshot_exact"
 SPLITS = ("train", "development", "calibration", "qualification")
 
@@ -76,6 +77,18 @@ class RerankingGate:
     bootstrap_ci95_low: float
 
 
+@dataclass(frozen=True, slots=True)
+class SurrogateTrainingGate:
+    """Validated evidence permitting exact labeling and surrogate training only."""
+
+    artifact_path: Path
+    artifact_sha256: str
+    median_loss_improvement_fraction: float
+    bootstrap_ci95_low: float
+    prompt_noninferior: bool
+    diversity_preserved: bool
+
+
 def load_reranking_gate(path: Path, contract: FingerprintContract) -> RerankingGate:
     """Load the separate exact-reranking effect gate or reject LTSN promotion."""
 
@@ -107,22 +120,66 @@ def load_reranking_gate(path: Path, contract: FingerprintContract) -> RerankingG
     )
 
 
-def require_ltsn_promotion_gate(
+def load_surrogate_training_gate(
+    path: Path, contract: FingerprintContract
+) -> SurrogateTrainingGate:
+    """Load a scope-limited gate for labels/training without promoting guidance."""
+
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if (
+        payload.get("schema_version") != 2
+        or payload.get("gate") != SURROGATE_TRAINING_GATE_NAME
+        or payload.get("status") != "passed"
+        or payload.get("scope") != "exact_labeling_and_surrogate_training_only"
+    ):
+        raise LTSNContractError("LTSN surrogate training gate has not passed")
+    if payload.get("fingerprint_json_sha256") != contract.artifact_sha256:
+        raise LTSNContractError("surrogate training gate uses a different exact scorer")
+    improvement = _finite(
+        payload.get("median_loss_improvement_fraction"),
+        "median_loss_improvement_fraction",
+    )
+    ci_low = _finite(payload.get("bootstrap_ci95_low"), "bootstrap_ci95_low")
+    if improvement < 0.10 or ci_low <= 0:
+        raise LTSNContractError("surrogate training topology effect is below the frozen gate")
+    if payload.get("target_band_hit_rate_improved") is not True:
+        raise LTSNContractError("surrogate training requires improved target-band hit rate")
+    if payload.get("all_selected_technical_quality_eligible") is not True:
+        raise LTSNContractError("surrogate training selected candidates failed technical quality")
+    if payload.get("quality_noninferior") is not True:
+        raise LTSNContractError("surrogate training requires blind-quality non-inferiority")
+    prompt_noninferior = payload.get("prompt_noninferior")
+    diversity_preserved = payload.get("diversity_preserved")
+    if not isinstance(prompt_noninferior, bool) or not isinstance(diversity_preserved, bool):
+        raise LTSNContractError("surrogate training gate must record prompt and diversity results")
+    if payload.get("guidance_promotion_eligible") is not False:
+        raise LTSNContractError("surrogate training gate must not promote latent guidance")
+    return SurrogateTrainingGate(
+        artifact_path=path.resolve(),
+        artifact_sha256=sha256_file(path),
+        median_loss_improvement_fraction=improvement,
+        bootstrap_ci95_low=ci_low,
+        prompt_noninferior=prompt_noninferior,
+        diversity_preserved=diversity_preserved,
+    )
+
+
+def require_surrogate_training_gate(
     gate_path: Path | None,
     contract: FingerprintContract,
     *,
     engineering_smoke: bool,
-) -> RerankingGate | None:
-    """Enforce Stage 1, allowing only an explicitly non-qualifying smoke bypass."""
+) -> SurrogateTrainingGate | None:
+    """Enforce the scope-limited training gate, with a non-qualifying smoke bypass."""
 
     if engineering_smoke:
         return None
     if gate_path is None:
         raise LTSNContractError(
-            "LTSN labeling/training is blocked until --reranking-gate points to a passed gate; "
-            "use --engineering-smoke only for non-qualifying pipeline tests"
+            "LTSN labeling/training is blocked until --surrogate-training-gate points to a "
+            "passed gate; use --engineering-smoke only for non-qualifying pipeline tests"
         )
-    return load_reranking_gate(gate_path, contract)
+    return load_surrogate_training_gate(gate_path, contract)
 
 
 @dataclass(frozen=True, slots=True)
@@ -313,7 +370,7 @@ def build_exact_label_tables(
     exact_label_table: Path,
     split_manifest: Path,
     scorer: ExactPathHomologyScorer,
-    gate: RerankingGate | None,
+    gate: SurrogateTrainingGate | None,
     engineering_smoke: bool,
 ) -> dict[str, Any]:
     """Join per-snapshot exact descriptors, score them, and issue hashed manifests."""
@@ -395,7 +452,10 @@ def build_exact_label_tables(
                 "ace_model_sha256": trajectory["ace_model_sha256"],
                 "vae_sha256": trajectory["vae_sha256"],
                 "qualification_eligible": str(not engineering_smoke).lower(),
-                "reranking_gate_sha256": "" if gate is None else gate.artifact_sha256,
+                "surrogate_training_gate_sha256": (
+                    "" if gate is None else gate.artifact_sha256
+                ),
+                "guidance_promotion_eligible": "false",
             }
         )
     write_csv_atomic(exact_label_table, label_rows)
@@ -420,7 +480,8 @@ def build_exact_label_tables(
         "training_manifest_sha256": sha256_file(output_manifest),
         "split_manifest_sha256": sha256_file(split_manifest),
         "qualification_eligible": not engineering_smoke,
-        "reranking_gate_sha256": "" if gate is None else gate.artifact_sha256,
+        "surrogate_training_gate_sha256": "" if gate is None else gate.artifact_sha256,
+        "guidance_promotion_eligible": False,
     }
 
 

@@ -1,0 +1,8 @@
+{
+  "schema_version": 2,
+  "gate": "ltsn_surrogate_training_v1",
+  "status": "blocked_template",
+  "scope": "exact_labeling_and_surrogate_training_only",
+  "guidance_promotion_eligible": false,
+  "reason": "Do not copy this template into metadata. Run generation.rerank_cli issue-training-gate after exact topology reranking and blind-quality non-inferiority pass."
+}

@@ -18,6 +18,8 @@ from .ltsn_dataset import LTSNSnapshotDataset, collate_ltsn_batch, read_ltsn_man
 from .ltsn_pipeline import write_json_atomic
 from .ltsn_training import load_checkpoint_model, predict_dataset, spearman_correlation
 
+GUIDANCE_PROMOTION_GATE_NAME = "latent_guidance_promotion_v1"
+
 
 def _load_ensemble(
     ensemble_manifest: Path,
@@ -340,6 +342,7 @@ def evaluate_guidance_pairs(
     output_path: Path,
     fingerprint_sha256: str,
     mode: str,
+    qualification_report: Path | None = None,
     bootstrap_resamples: int = 2000,
     seed: int = 20260716,
 ) -> dict[str, Any]:
@@ -347,6 +350,20 @@ def evaluate_guidance_pairs(
 
     if mode not in {"development", "confirmation"}:
         raise ValueError("mode must be development or confirmation")
+    qualification_sha256 = ""
+    qualification_passed = False
+    if mode == "confirmation":
+        if qualification_report is None:
+            raise LTSNContractError(
+                "confirmation requires a passed independent qualification report"
+            )
+        qualification = json.loads(qualification_report.read_text(encoding="utf-8"))
+        if qualification.get("fingerprint_json_sha256") != fingerprint_sha256:
+            raise LTSNContractError("qualification report uses a different exact scorer")
+        qualification_passed = qualification.get("qualification_passed") is True
+        if not qualification_passed:
+            raise LTSNContractError("independent LTSN qualification has not passed")
+        qualification_sha256 = sha256_file(qualification_report)
     with pair_table.open("r", encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
     if not rows:
@@ -373,14 +390,23 @@ def evaluate_guidance_pairs(
     )
     quality_noninferior = all(row.get("quality_noninferior", "").lower() == "true" for row in rows)
     prompt_noninferior = all(row.get("prompt_noninferior", "").lower() == "true" for row in rows)
+    diversity_preserved = all(
+        row.get("diversity_preserved", "").lower() == "true" for row in rows
+    )
     proxy_exact_passed = (
         direction_agreement >= 0.65
         and float(np.median(exact_improvement[optimized])) > 0
         and quality_noninferior
         and prompt_noninferior
     )
+    if mode == "confirmation":
+        proxy_exact_passed = (
+            proxy_exact_passed and diversity_preserved and qualification_passed
+        )
+    guidance_promotion_eligible = mode == "confirmation" and proxy_exact_passed
     payload = {
         "schema_version": 1,
+        "gate": GUIDANCE_PROMOTION_GATE_NAME,
         "mode": mode,
         "fingerprint_json_sha256": fingerprint_sha256,
         "pair_table_sha256": sha256_file(pair_table),
@@ -392,7 +418,10 @@ def evaluate_guidance_pairs(
         "proxy_exact_direction_agreement": direction_agreement,
         "quality_noninferior": quality_noninferior,
         "prompt_noninferior": prompt_noninferior,
+        "diversity_preserved": diversity_preserved,
         "proxy_exact_direction_gate_passed": proxy_exact_passed,
+        "qualification_report_sha256": qualification_sha256,
+        "guidance_promotion_eligible": guidance_promotion_eligible,
         "status": "passed" if proxy_exact_passed else "failed",
     }
     write_json_atomic(output_path, payload)

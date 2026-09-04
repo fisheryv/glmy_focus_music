@@ -39,7 +39,7 @@ from .ltsn_dataset import (
 from .ltsn_losses import LTSNLossWeights, ltsn_loss, trajectory_delta_loss
 from .ltsn_pipeline import (
     model_data_identity,
-    require_ltsn_promotion_gate,
+    require_surrogate_training_gate,
     write_json_atomic,
 )
 from .path_homology_surrogate import LTSNConfig, LTSNOutput, PathHomologySurrogate
@@ -338,7 +338,7 @@ def _metadata(
     vae_sha256: str,
     model_family: str,
     qualification_eligible: bool,
-    reranking_gate_sha256: str,
+    surrogate_training_gate_sha256: str,
 ) -> dict[str, Any]:
     identities = manifest_identity(manifest_path, records)
     return {
@@ -356,7 +356,8 @@ def _metadata(
         "vae_sha256": vae_sha256,
         "model_family": model_family,
         "qualification_eligible": qualification_eligible,
-        "reranking_gate_sha256": reranking_gate_sha256,
+        "surrogate_training_gate_sha256": surrogate_training_gate_sha256,
+        "guidance_promotion_eligible": False,
     }
 
 
@@ -536,7 +537,7 @@ def train_ensemble(
     split_manifest_path: Path,
     config_path: Path,
     output_dir: Path,
-    reranking_gate_path: Path | None,
+    surrogate_training_gate_path: Path | None,
     engineering_smoke: bool,
     device_name: str | None = None,
     device_names: Sequence[str] | None = None,
@@ -544,8 +545,8 @@ def train_ensemble(
     """Train seed-independent members sequentially or on one explicit GPU each."""
 
     contract = load_fingerprint_contract(fingerprint_path)
-    gate = require_ltsn_promotion_gate(
-        reranking_gate_path, contract, engineering_smoke=engineering_smoke
+    gate = require_surrogate_training_gate(
+        surrogate_training_gate_path, contract, engineering_smoke=engineering_smoke
     )
     model_config, training, loss_weights = load_training_config(config_path)
     training.validate(engineering_smoke=engineering_smoke)
@@ -569,6 +570,21 @@ def train_ensemble(
         raise LTSNContractError(
             "non-smoke training requires a qualification-eligible label manifest"
         )
+    expected_training_gate_sha256 = "" if gate is None else gate.artifact_sha256
+    manifest_gate_values = {
+        row.get("surrogate_training_gate_sha256", "") for row in raw_rows
+    }
+    if manifest_gate_values != {expected_training_gate_sha256}:
+        raise LTSNContractError(
+            "label manifest uses a different surrogate training gate"
+        )
+    guidance_values = {
+        row.get("guidance_promotion_eligible", "false").lower() for row in raw_rows
+    }
+    if guidance_values != {"false"}:
+        raise LTSNContractError(
+            "surrogate training manifest must not claim guidance promotion eligibility"
+        )
     devices = _resolve_training_devices(training.seeds, device_name, device_names)
     for value in devices:
         _validate_training_device(value)
@@ -588,7 +604,7 @@ def train_ensemble(
         vae_sha256=vae_hash,
         model_family=model_family,
         qualification_eligible=qualification_eligible,
-        reranking_gate_sha256="" if gate is None else gate.artifact_sha256,
+        surrogate_training_gate_sha256="" if gate is None else gate.artifact_sha256,
     )
     validate_checkpoint_metadata(metadata, contract)
     train_records = [record for record in records if record.split == "train"]

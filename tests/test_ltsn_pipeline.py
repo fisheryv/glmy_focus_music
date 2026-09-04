@@ -136,7 +136,7 @@ use_bf16 = false
         split_manifest_path=labels / "splits.json",
         config_path=config,
         output_dir=tmp_path / "models",
-        reranking_gate_path=None,
+        surrogate_training_gate_path=None,
         engineering_smoke=True,
         device_name="cpu",
     )

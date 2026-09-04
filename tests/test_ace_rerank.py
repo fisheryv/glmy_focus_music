@@ -22,7 +22,7 @@ from generation.experiment import (
 )
 from generation.fake_backend import FakeMusicBackend
 from generation.ltsn_contract import sha256_file
-from generation.ltsn_pipeline import load_reranking_gate
+from generation.ltsn_pipeline import load_reranking_gate, load_surrogate_training_gate
 from generation.path_homology_exact_scorer import ExactPathHomologyScorer
 from generation.rerank_experiment import (
     _validated_noninferiority,
@@ -31,6 +31,7 @@ from generation.rerank_experiment import (
     generate_candidates,
     initialize_noninferiority_report,
     issue_reranking_gate,
+    issue_surrogate_training_gate,
     rank_and_summarize,
 )
 
@@ -284,6 +285,27 @@ def test_exact_18d_reranking_and_gate_issuance_are_separate(tmp_path: Path) -> N
 
     gate = load_reranking_gate(gate_path, scorer.contract)
     assert gate.median_loss_improvement_fraction == pytest.approx(1.0)
+
+    for row in evidence_rows:
+        row["prompt_selected"] = 0.4
+        row["diversity_selected"] = 0.4
+    with evidence_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=tuple(evidence_rows[0]))
+        writer.writeheader()
+        writer.writerows(evidence_rows)
+    report = evaluate_noninferiority_table(tmp_path, config, evidence_path, report_path)
+    assert report["criteria"]["quality"]["passed"] is True
+    assert report["criteria"]["prompt"]["passed"] is False
+    assert report["criteria"]["diversity"]["passed"] is False
+    training_gate_path = tmp_path / "training_gate.json"
+    issue_surrogate_training_gate(
+        tmp_path, config, report_path, training_gate_path
+    )
+    training_gate = load_surrogate_training_gate(training_gate_path, scorer.contract)
+    assert training_gate.prompt_noninferior is False
+    assert training_gate.diversity_preserved is False
+    with pytest.raises(ValueError, match="prompt confidence interval"):
+        issue_reranking_gate(tmp_path, config, report_path, tmp_path / "blocked_gate.json")
 
 
 def test_noninferiority_report_rejects_wrong_selection_hash(

@@ -6,7 +6,7 @@ PYTHON_BIN="${PYTHON_BIN:-${PROJECT_ROOT}/ACE-Step-1.5/.venv/bin/python}"
 STAGE="${1:-}"
 RUN_ROOT="${RUN_ROOT:-${PROJECT_ROOT}/runs/ltsn_turbo}"
 PROMPT_MANIFEST="${PROMPT_MANIFEST:-${PROJECT_ROOT}/metadata/ltsn_prompts.csv}"
-RERANKING_GATE="${RERANKING_GATE:-${PROJECT_ROOT}/metadata/ace_reranking_effect_gate.json}"
+SURROGATE_TRAINING_GATE="${SURROGATE_TRAINING_GATE:-${PROJECT_ROOT}/metadata/ltsn_surrogate_training_gate.json}"
 FINGERPRINT="${PROJECT_ROOT}/metadata/focus_path_homology_fingerprint_v2.json"
 CONFIG="${PROJECT_ROOT}/configs/ltsn_training.toml"
 
@@ -30,21 +30,21 @@ collect() {
 }
 
 labels() {
-  [[ -f "${RERANKING_GATE}" ]] || { echo "Passed exact_reranking_effect_v1 gate is required: ${RERANKING_GATE}" >&2; exit 3; }
+  [[ -f "${SURROGATE_TRAINING_GATE}" ]] || { echo "Passed ltsn_surrogate_training_v1 gate is required: ${SURROGATE_TRAINING_GATE}" >&2; exit 3; }
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_labels.py" \
     --root "${PROJECT_ROOT}" \
     --fingerprint "${FINGERPRINT}" \
     --trajectory-manifest "${RUN_ROOT}/trajectories/trajectory_manifest.csv" \
     --work-dir "${RUN_ROOT}/exact_work" \
     --output-dir "${RUN_ROOT}/labels" \
-    --reranking-gate "${RERANKING_GATE}" \
+    --surrogate-training-gate "${SURROGATE_TRAINING_GATE}" \
     --workers "${EXACT_WORKERS:-16}" \
     --batch-size "${EXACT_BATCH_SIZE:-256}" \
     --materialize-mode "${MATERIALIZE_MODE:-auto}"
 }
 
 train() {
-  [[ -f "${RERANKING_GATE}" ]] || { echo "Passed exact_reranking_effect_v1 gate is required: ${RERANKING_GATE}" >&2; exit 3; }
+  [[ -f "${SURROGATE_TRAINING_GATE}" ]] || { echo "Passed ltsn_surrogate_training_v1 gate is required: ${SURROGATE_TRAINING_GATE}" >&2; exit 3; }
   local -a train_device_args
   if [[ -n "${TRAIN_DEVICES:-}" ]]; then
     local -a train_devices
@@ -59,7 +59,7 @@ train() {
     --split-manifest "${RUN_ROOT}/labels/split_manifest.json" \
     --config "${CONFIG}" \
     --output-dir "${RUN_ROOT}/models" \
-    --reranking-gate "${RERANKING_GATE}" \
+    --surrogate-training-gate "${SURROGATE_TRAINING_GATE}" \
     "${train_device_args[@]}"
 }
 
@@ -98,10 +98,15 @@ guidance_development() {
 
 guidance_confirmation() {
   : "${PAIR_TABLE:?Set PAIR_TABLE to the fresh 32-prompt x 8-seed confirmation pair CSV}"
+  [[ -f "${RUN_ROOT}/qualification.json" ]] || {
+    echo "Passed independent qualification report is required: ${RUN_ROOT}/qualification.json" >&2
+    exit 3
+  }
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_path_homology_guidance.py" \
     --fingerprint "${FINGERPRINT}" \
     --pair-table "${PAIR_TABLE}" \
     --output "${RUN_ROOT}/guidance_confirmation.json" \
+    --qualification-report "${RUN_ROOT}/qualification.json" \
     --mode confirmation
 }
 
