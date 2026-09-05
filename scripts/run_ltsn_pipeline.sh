@@ -113,7 +113,7 @@ labels() {
     --work-dir "${RUN_ROOT}/exact_work" \
     --output-dir "${RUN_ROOT}/labels" \
     --surrogate-training-gate "${SURROGATE_TRAINING_GATE}" \
-    --workers "${EXACT_WORKERS:-16}" \
+    --workers "${EXACT_WORKERS:-32}" \
     --batch-size "${EXACT_BATCH_SIZE:-256}" \
     --materialize-mode "${MATERIALIZE_MODE:-auto}"
 }

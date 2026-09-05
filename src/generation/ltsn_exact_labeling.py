@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import csv
 import json
+import multiprocessing
+import os
 from collections import Counter
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -34,6 +37,47 @@ from .ltsn_pipeline import (
 from .ltsn_storage import MATERIALIZE_MODES, materialize_file, remove_tree_within
 
 BATCH_RECEIPT_SCHEMA_VERSION = 1
+EXACT_DESCRIPTOR_EXECUTOR = "process_pool_spawn"
+EXACT_WORKER_BLAS_THREADS = 1
+_EXACT_WORKER_STATE: dict[str, Any] | None = None
+_EXACT_THREADPOOL_LIMITER: Any | None = None
+
+
+def _initialize_exact_descriptor_worker(
+    project_root: str,
+    work_dir: str,
+    centers: np.ndarray,
+    codebook_sha256: str,
+) -> None:
+    """Load immutable exact-label state once and clamp native thread pools."""
+
+    for name in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "BLIS_NUM_THREADS",
+    ):
+        os.environ[name] = str(EXACT_WORKER_BLAS_THREADS)
+    from threadpoolctl import threadpool_limits
+
+    from repetition.analysis import _load_model as load_repetition_model
+    from repetition.analysis import load_config as load_repetition_config
+
+    global _EXACT_THREADPOOL_LIMITER, _EXACT_WORKER_STATE
+    _EXACT_THREADPOOL_LIMITER = threadpool_limits(limits=EXACT_WORKER_BLAS_THREADS)
+    project_path = Path(project_root)
+    work_path = Path(work_dir)
+    _EXACT_WORKER_STATE = {
+        "project_root": project_path,
+        "work_dir": work_path,
+        "centers": np.asarray(centers, dtype=np.float64),
+        "codebook_sha256": codebook_sha256,
+        "repetition_model": load_repetition_model(work_path),
+        "repetition_config": load_repetition_config(project_path),
+        "topology_config": load_topology_config(project_path),
+    }
 
 
 def _copy_snapshot_audio(
@@ -88,6 +132,7 @@ def _pitch_descriptors(
     work_dir: Path,
     feature_row: dict[str, Any],
     centers: np.ndarray,
+    topology_config: Any | None = None,
 ) -> list[float]:
     arrays = _read_npz(work_dir / feature_row["chroma_relative_path"])
     chroma = np.asarray(arrays["chroma"], dtype=np.float64)
@@ -96,7 +141,7 @@ def _pitch_descriptors(
     valid &= np.all(np.isfinite(tonnetz), axis=1) & (np.sum(chroma, axis=1) > 1e-8)
     raw_states = assign_codebook(tonnetz, centers, valid=valid)
     states = [int(value) if value >= 0 else None for value in raw_states]
-    config = load_topology_config(project_root)
+    config = topology_config or load_topology_config(project_root)
     graph = build_transition_graph(
         states,
         normalize=True,
@@ -108,6 +153,51 @@ def _pitch_descriptors(
     )
     metrics = {**_graph_metrics(states, graph), **_topology_metrics(persistence)}
     return [float(metrics[name]) for name in TOPOLOGY_METRICS]
+
+
+def _compute_exact_descriptor(
+    task: tuple[dict[str, Any], dict[str, str], str],
+) -> dict[str, Any]:
+    """Compute one snapshot descriptor inside an isolated CPU worker."""
+
+    if _EXACT_WORKER_STATE is None:
+        raise RuntimeError("exact descriptor worker was not initialized")
+    from repetition.analysis import _compute_segment as compute_repetition_segment
+
+    feature_row, trajectory_row, audio_relative_path = task
+    state = _EXACT_WORKER_STATE
+    work_dir = state["work_dir"]
+    sample_id = str(feature_row["segment_id"])
+    phase_rows = compute_repetition_segment(
+        work_dir,
+        feature_row,
+        state["repetition_model"],
+        state["repetition_config"],
+        ("path_acoustic_phase", "path_chroma_phase"),
+        False,
+    )
+    phase = {row["representation"]: row for row in phase_rows}
+    technical = _technical_audio_metrics(work_dir / audio_relative_path)
+    ood = technical["raw_rms"] < 1e-4 or technical["raw_clip_fraction"] > 0.01
+    return {
+        "sample_id": sample_id,
+        "pitch_descriptors_json": json.dumps(
+            _pitch_descriptors(
+                state["project_root"],
+                work_dir,
+                feature_row,
+                state["centers"],
+                state["topology_config"],
+            ),
+            separators=(",", ":"),
+        ),
+        "acoustic_loop_score": float(phase["path_acoustic_phase"]["loop_score"]),
+        "chroma_loop_score": float(phase["path_chroma_phase"]["loop_score"]),
+        "ood_label": int(ood),
+        "label_source": "decoded_snapshot_exact_v1",
+        "audio_sha256": trajectory_row["audio_sha256"],
+        "pitch_v2_codebook_sha256": state["codebook_sha256"],
+    }
 
 
 def _batch_input_sha256(rows: list[dict[str, str]]) -> str:
@@ -175,10 +265,6 @@ def _extract_batch(
     codebook_path: Path,
     centers: np.ndarray,
 ) -> tuple[list[dict[str, Any]], Counter[str]]:
-    from repetition.analysis import _compute_segment as compute_repetition_segment
-    from repetition.analysis import _load_model as load_repetition_model
-    from repetition.analysis import load_config as load_repetition_config
-
     records, methods = _copy_snapshot_audio(
         trajectory_manifest,
         work_dir,
@@ -190,43 +276,52 @@ def _extract_batch(
         project_root, work_dir, processed, workers=workers
     )
     _copy_frozen_model(project_root, work_dir)
-    repetition_model = load_repetition_model(work_dir)
-    repetition_config = load_repetition_config(project_root)
     trajectory_by_id = {row["sample_id"]: row for row in rows}
     record_by_id = {record.candidate_id: record for record in records}
-    output: list[dict[str, Any]] = []
-    for feature_row in feature_rows:
-        sample_id = str(feature_row["segment_id"])
-        phase_rows = compute_repetition_segment(
-            work_dir,
+    feature_ids = [str(row["segment_id"]) for row in feature_rows]
+    expected_ids = sorted(trajectory_by_id)
+    if sorted(feature_ids) != expected_ids or len(set(feature_ids)) != len(feature_ids):
+        raise LTSNContractError("exact feature rows do not match the batch trajectory IDs")
+    tasks = [
+        (
             feature_row,
-            repetition_model,
-            repetition_config,
-            ("path_acoustic_phase", "path_chroma_phase"),
-            False,
+            trajectory_by_id[str(feature_row["segment_id"])],
+            record_by_id[str(feature_row["segment_id"])].audio_relative_path,
         )
-        phase = {row["representation"]: row for row in phase_rows}
-        source_audio = work_dir / record_by_id[sample_id].audio_relative_path
-        technical = _technical_audio_metrics(source_audio)
-        ood = technical["raw_rms"] < 1e-4 or technical["raw_clip_fraction"] > 0.01
-        output.append(
-            {
-                "sample_id": sample_id,
-                "pitch_descriptors_json": json.dumps(
-                    _pitch_descriptors(project_root, work_dir, feature_row, centers),
-                    separators=(",", ":"),
-                ),
-                "acoustic_loop_score": float(
-                    phase["path_acoustic_phase"]["loop_score"]
-                ),
-                "chroma_loop_score": float(phase["path_chroma_phase"]["loop_score"]),
-                "ood_label": int(ood),
-                "label_source": "decoded_snapshot_exact_v1",
-                "audio_sha256": trajectory_by_id[sample_id]["audio_sha256"],
-                "pitch_v2_codebook_sha256": sha256_file(codebook_path),
-            }
-        )
+        for feature_row in feature_rows
+    ]
+    worker_count = min(workers, len(tasks))
+    codebook_sha256 = sha256_file(codebook_path)
+    output: list[dict[str, Any]] = []
+    context = multiprocessing.get_context("spawn")
+    with ProcessPoolExecutor(
+        max_workers=worker_count,
+        mp_context=context,
+        initializer=_initialize_exact_descriptor_worker,
+        initargs=(
+            str(project_root),
+            str(work_dir),
+            centers,
+            codebook_sha256,
+        ),
+    ) as executor:
+        futures = {
+            executor.submit(_compute_exact_descriptor, task): str(task[0]["segment_id"])
+            for task in tasks
+        }
+        for future in as_completed(futures):
+            sample_id = futures[future]
+            try:
+                output.append(future.result())
+            except Exception as error:
+                for pending in futures:
+                    pending.cancel()
+                raise RuntimeError(
+                    f"exact Path Homology failed for snapshot {sample_id}: {error}"
+                ) from error
     output.sort(key=lambda item: item["sample_id"])
+    if [str(item["sample_id"]) for item in output] != expected_ids:
+        raise LTSNContractError("parallel exact descriptors do not match the batch plan")
     return output, methods
 
 
@@ -310,6 +405,10 @@ def build_exact_snapshot_descriptors(
                     "batch_input_sha256": input_sha256,
                     "descriptor_table_sha256": sha256_file(descriptor_path),
                     "materialization_counts": dict(sorted(methods.items())),
+                    "exact_descriptor_executor": EXACT_DESCRIPTOR_EXECUTOR,
+                    "requested_workers": workers,
+                    "effective_workers": min(workers, len(batch_rows)),
+                    "worker_blas_threads": EXACT_WORKER_BLAS_THREADS,
                 },
             )
         output.extend(descriptor_rows)
@@ -330,6 +429,10 @@ def build_exact_snapshot_descriptors(
         "batches": batch_count,
         "resumed_batches": resumed_batches,
         "batch_size": batch_size,
+        "requested_workers": workers,
+        "maximum_effective_workers": min(workers, batch_size, len(rows)),
+        "exact_descriptor_executor": EXACT_DESCRIPTOR_EXECUTOR,
+        "worker_blas_threads": EXACT_WORKER_BLAS_THREADS,
         "materialize_mode": materialize_mode,
         "materialization_counts": dict(sorted(materialization_counts.items())),
         "cleanup_batches": cleanup_batches,

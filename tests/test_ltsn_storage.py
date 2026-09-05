@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import os
 from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
 import pytest
+import threadpoolctl
 
 import generation.ltsn_exact_labeling as exact_labeling
+import repetition.analysis as repetition_analysis
 from generation.ltsn_contract import LTSNContractError, sha256_file
 from generation.ltsn_pipeline import TrajectorySnapshotRecord, write_csv_atomic
 from generation.ltsn_storage import (
@@ -62,6 +65,40 @@ def test_cleanup_helpers_are_confined_to_declared_roots(tmp_path: Path) -> None:
     with pytest.raises(LTSNContractError, match="refusing to delete"):
         remove_generated_audio(outside, output_root)
     assert outside.exists()
+
+
+def test_exact_descriptor_worker_clamps_native_threads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    thread_names = (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "BLIS_NUM_THREADS",
+    )
+    for name in thread_names:
+        monkeypatch.setenv(name, "8")
+    limiter = object()
+    monkeypatch.setattr(threadpoolctl, "threadpool_limits", lambda *, limits: limiter)
+    monkeypatch.setattr(repetition_analysis, "_load_model", lambda _root: {"model": 1})
+    monkeypatch.setattr(repetition_analysis, "load_config", lambda _root: "repetition")
+    monkeypatch.setattr(exact_labeling, "load_topology_config", lambda _root: "topology")
+    monkeypatch.setattr(exact_labeling, "_EXACT_WORKER_STATE", None)
+    monkeypatch.setattr(exact_labeling, "_EXACT_THREADPOOL_LIMITER", None)
+
+    exact_labeling._initialize_exact_descriptor_worker(
+        str(tmp_path),
+        str(tmp_path / "work"),
+        np.zeros((16, 6), dtype=np.float64),
+        "c" * 64,
+    )
+
+    assert all(os.environ[name] == "1" for name in thread_names)
+    assert exact_labeling._EXACT_THREADPOOL_LIMITER is limiter
+    assert exact_labeling._EXACT_WORKER_STATE is not None
+    assert exact_labeling._EXACT_WORKER_STATE["repetition_model"] == {"model": 1}
 
 
 def _trajectory_manifest(tmp_path: Path, count: int = 5) -> Path:
@@ -145,6 +182,9 @@ def test_exact_label_batches_resume_and_cleanup_intermediates(
 
     assert first["batches"] == 3
     assert first["resumed_batches"] == 0
+    assert first["exact_descriptor_executor"] == "process_pool_spawn"
+    assert first["worker_blas_threads"] == 1
+    assert first["requested_workers"] == 1
     assert first["materialization_counts"] == {"hardlink": 5}
     assert len(calls) == 3
     assert not any((work_dir / "batches").glob("*/large-reconstructible-file.bin"))
@@ -159,4 +199,3 @@ def test_exact_label_batches_resume_and_cleanup_intermediates(
     )
     assert second["resumed_batches"] == 3
     assert len(calls) == 3
-

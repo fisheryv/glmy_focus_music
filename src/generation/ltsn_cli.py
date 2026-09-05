@@ -447,7 +447,15 @@ def labels_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--work-dir", type=Path)
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--surrogate-training-gate", type=Path)
-    parser.add_argument("--workers", type=int, default=2)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=2,
+        help=(
+            "preprocessing threads and per-batch exact Path Homology worker processes; "
+            "each exact worker is limited to one native BLAS thread"
+        ),
+    )
     parser.add_argument(
         "--batch-size",
         type=int,
