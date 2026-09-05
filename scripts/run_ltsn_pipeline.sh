@@ -15,18 +15,93 @@ CONFIG="${PROJECT_ROOT}/configs/ltsn_training.toml"
 collect() {
   : "${ACE_MODEL_SHA256:?Set ACE_MODEL_SHA256 to the 64-hex model tree digest}"
   : "${VAE_SHA256:?Set VAE_SHA256 to the 64-hex VAE tree digest}"
-  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/collect_ltsn_trajectories.py" \
-    --root "${PROJECT_ROOT}" \
-    --ace-config "${PROJECT_ROOT}/configs/ace_rerank_180s.toml" \
+  local seed_start="${LTSN_SEED_START:-2026071600}"
+  local seeds_per_prompt="${LTSN_SEEDS_PER_PROMPT:-4}"
+  local -a collect_args=(
+    "${PROJECT_ROOT}/scripts/collect_ltsn_trajectories.py"
+    --root "${PROJECT_ROOT}"
+    --ace-config "${PROJECT_ROOT}/configs/ace_rerank_180s.toml"
+    --prompt-manifest "${PROMPT_MANIFEST}"
+    --backend ace
+    --ace-model-sha256 "${ACE_MODEL_SHA256}"
+    --vae-sha256 "${VAE_SHA256}"
+    --seed-start "${seed_start}"
+    --seeds-per-prompt "${seeds_per_prompt}"
+    --duration-seconds 180
+    --decode-snapshots
+    --discard-generator-final-audio
+    --resume
+  )
+  if [[ -z "${COLLECT_DEVICES:-}" ]]; then
+    "${PYTHON_BIN}" "${collect_args[@]}" --output-dir "${RUN_ROOT}/trajectories"
+    return
+  fi
+
+  local -a collect_devices
+  IFS=',' read -r -a collect_devices <<< "${COLLECT_DEVICES}"
+  local shard_count="${#collect_devices[@]}"
+  (( shard_count > 0 )) || { echo "COLLECT_DEVICES is empty" >&2; return 2; }
+  local -A seen_devices=()
+  local device
+  for device in "${collect_devices[@]}"; do
+    [[ "${device}" =~ ^cuda:[0-9]+$ ]] || {
+      echo "COLLECT_DEVICES entries must be explicit CUDA devices: ${device}" >&2
+      return 2
+    }
+    [[ -z "${seen_devices[${device}]:-}" ]] || {
+      echo "COLLECT_DEVICES contains a duplicate device: ${device}" >&2
+      return 2
+    }
+    seen_devices["${device}"]=1
+  done
+
+  local shards_root="${RUN_ROOT}/trajectories/shards"
+  local logs_root="${RUN_ROOT}/trajectories/logs"
+  mkdir -p "${shards_root}" "${logs_root}"
+  local -a pids=()
+  local -a logs=()
+  stop_collect_workers() {
+    local worker_pid
+    for worker_pid in "${pids[@]}"; do
+      kill -TERM "${worker_pid}" 2>/dev/null || true
+    done
+  }
+  trap 'stop_collect_workers; exit 130' INT TERM
+  local index shard_name shard_dir log_path
+  for index in "${!collect_devices[@]}"; do
+    printf -v shard_name 'shard_%02d' "${index}"
+    shard_dir="${shards_root}/${shard_name}"
+    log_path="${logs_root}/${shard_name}.log"
+    echo "Starting ${shard_name} on ${collect_devices[${index}]} (log: ${log_path})"
+    ACESTEP_DEVICE="${collect_devices[${index}]}" \
+      "${PYTHON_BIN}" "${collect_args[@]}" \
+      --output-dir "${shard_dir}" \
+      --shard-index "${index}" \
+      --shard-count "${shard_count}" \
+      >"${log_path}" 2>&1 &
+    pids+=("$!")
+    logs+=("${log_path}")
+  done
+
+  local failed=0
+  for index in "${!pids[@]}"; do
+    if ! wait "${pids[${index}]}"; then
+      echo "Collection shard ${index} failed; tail of ${logs[${index}]}:" >&2
+      tail -n 80 "${logs[${index}]}" >&2
+      failed=1
+    fi
+  done
+  trap - INT TERM
+  [[ "${failed}" -eq 0 ]] || return 1
+
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/merge_ltsn_trajectory_shards.py" \
+    --shards-root "${shards_root}" \
+    --shard-count "${shard_count}" \
     --prompt-manifest "${PROMPT_MANIFEST}" \
     --output-dir "${RUN_ROOT}/trajectories" \
-    --backend ace \
-    --ace-model-sha256 "${ACE_MODEL_SHA256}" \
-    --vae-sha256 "${VAE_SHA256}" \
-    --seeds-per-prompt "${LTSN_SEEDS_PER_PROMPT:-4}" \
-    --duration-seconds 180 \
-    --decode-snapshots \
-    --discard-generator-final-audio
+    --seed-start "${seed_start}" \
+    --seeds-per-prompt "${seeds_per_prompt}" \
+    --require-audio
 }
 
 labels() {

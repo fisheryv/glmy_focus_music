@@ -17,7 +17,7 @@ from generation.ltsn_pipeline import (
     validate_snapshot_coverage,
     write_csv_atomic,
 )
-from generation.ltsn_cli import collect_main
+from generation.ltsn_cli import collect_main, merge_main
 from generation.ltsn_contract import LTSNContractError
 from generation.ltsn_training import (
     LTSNTrainingConfig,
@@ -156,6 +156,94 @@ def test_synthetic_collect_writes_four_snapshots_per_trajectory(tmp_path: Path) 
     ) as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == 4
+    validate_snapshot_coverage(rows)
+
+
+def test_four_shard_collection_resumes_and_merges_deterministically(
+    tmp_path: Path,
+) -> None:
+    prompts = tmp_path / "prompts.csv"
+    write_csv_atomic(
+        prompts,
+        [
+            {
+                "prompt_id": f"prompt_{index}",
+                "caption": f"soft instrumental focus music {index}",
+                "split": "train",
+                "seed": "",
+                "bpm": "",
+                "keyscale": "",
+                "timesignature": "",
+            }
+            for index in range(2)
+        ],
+    )
+    trajectories = tmp_path / "trajectories"
+    common = [
+        "--root",
+        str(ROOT),
+        "--ace-config",
+        str(ROOT / "configs" / "ace_rerank_180s.toml"),
+        "--prompt-manifest",
+        str(prompts),
+        "--backend",
+        "synthetic",
+        "--ace-model-sha256",
+        "a" * 64,
+        "--vae-sha256",
+        "b" * 64,
+        "--seeds-per-prompt",
+        "4",
+        "--engineering-smoke",
+        "--resume",
+    ]
+    for shard_index in range(4):
+        assert collect_main(
+            [
+                *common,
+                "--output-dir",
+                str(trajectories / "shards" / f"shard_{shard_index:02d}"),
+                "--shard-index",
+                str(shard_index),
+                "--shard-count",
+                "4",
+            ]
+        ) == 0
+    first_manifest = trajectories / "shards" / "shard_00" / "trajectory_manifest.csv"
+    first_digest = first_manifest.read_bytes()
+    assert collect_main(
+        [
+            *common,
+            "--output-dir",
+            str(trajectories / "shards" / "shard_00"),
+            "--shard-index",
+            "0",
+            "--shard-count",
+            "4",
+        ]
+    ) == 0
+    assert first_manifest.read_bytes() == first_digest
+
+    assert merge_main(
+        [
+            "--shards-root",
+            str(trajectories / "shards"),
+            "--shard-count",
+            "4",
+            "--prompt-manifest",
+            str(prompts),
+            "--output-dir",
+            str(trajectories),
+            "--seeds-per-prompt",
+            "4",
+        ]
+    ) == 0
+    with (trajectories / "trajectory_manifest.csv").open(
+        "r", encoding="utf-8-sig", newline=""
+    ) as handle:
+        rows = list(csv.DictReader(handle))
+    assert len({row["trajectory_id"] for row in rows}) == 8
+    assert len(rows) == 32
     validate_snapshot_coverage(rows)
 
 

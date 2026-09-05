@@ -24,10 +24,12 @@ from .ltsn_exact_labeling import build_exact_snapshot_descriptors
 from .ltsn_pipeline import (
     TrajectoryRecorder,
     build_exact_label_tables,
+    merge_trajectory_shard_manifests,
     require_surrogate_training_gate,
     synthetic_descriptor_rows,
     validate_snapshot_coverage,
     write_csv_atomic,
+    write_json_atomic,
 )
 from .ltsn_storage import MATERIALIZE_MODES, remove_generated_audio
 from .ltsn_training import train_ensemble
@@ -43,6 +45,10 @@ def _digest(value: str, name: str) -> str:
     if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
         raise ValueError(f"{name} must be a lowercase SHA-256 digest")
     return value
+
+
+def _file_sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _prompt_rows(path: Path, seed_start: int, seeds_per_prompt: int) -> list[dict[str, Any]]:
@@ -68,6 +74,21 @@ def _prompt_rows(path: Path, seed_start: int, seeds_per_prompt: int) -> list[dic
     return output
 
 
+def _prompt_shard(
+    rows: list[dict[str, Any]], shard_index: int, shard_count: int
+) -> list[dict[str, Any]]:
+    if shard_count < 1 or not 0 <= shard_index < shard_count:
+        raise ValueError("shard index must lie in [0, shard count)")
+    selected = [row for index, row in enumerate(rows) if index % shard_count == shard_index]
+    if not selected:
+        raise ValueError(f"trajectory shard {shard_index} is empty")
+    return selected
+
+
+def _trajectory_id(row: dict[str, Any]) -> str:
+    return f"{row['prompt_id']}__seed{row['seed']}"
+
+
 def collect_main(argv: list[str] | None = None) -> int:
     """Collect no-op trajectories and optionally VAE-decode every selected snapshot."""
 
@@ -82,6 +103,13 @@ def collect_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed-start", type=int, default=2026071600)
     parser.add_argument("--seeds-per-prompt", type=int, default=1)
     parser.add_argument("--duration-seconds", type=float, default=180.0)
+    parser.add_argument("--shard-index", type=int)
+    parser.add_argument("--shard-count", type=int)
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="resume only fully decoded trajectories from the atomic shard manifest",
+    )
     parser.add_argument("--decode-snapshots", action="store_true")
     parser.add_argument(
         "--discard-generator-final-audio",
@@ -99,6 +127,8 @@ def collect_main(argv: list[str] | None = None) -> int:
         parser.error(
             "--discard-generator-final-audio requires --backend ace and --decode-snapshots"
         )
+    if (args.shard_index is None) != (args.shard_count is None):
+        parser.error("--shard-index and --shard-count must be supplied together")
     root = args.root.resolve()
     output_dir = args.output_dir.resolve()
     config = load_experiment_config(root, args.ace_config)
@@ -111,7 +141,92 @@ def collect_main(argv: list[str] | None = None) -> int:
         inference_steps=config.ace.inference_steps,
         engineering_smoke=args.engineering_smoke,
     )
-    prompts = _prompt_rows(args.prompt_manifest, args.seed_start, args.seeds_per_prompt)
+    all_prompts = _prompt_rows(args.prompt_manifest, args.seed_start, args.seeds_per_prompt)
+    prompts = (
+        all_prompts
+        if args.shard_index is None
+        else _prompt_shard(all_prompts, args.shard_index, args.shard_count)
+    )
+    planned_trajectories = {
+        _trajectory_id(row): (str(row["prompt_id"]), str(row["split"]))
+        for row in prompts
+    }
+    planned_trajectory_ids = set(planned_trajectories)
+    if len(planned_trajectories) != len(prompts):
+        raise ValueError("collection plan contains duplicate trajectory IDs")
+    manifest = output_dir / "trajectory_manifest.csv"
+    plan_path = output_dir / "collection_plan.json"
+    config_path = (
+        args.ace_config.resolve()
+        if args.ace_config.is_absolute()
+        else (root / args.ace_config).resolve()
+    )
+    prompt_manifest = args.prompt_manifest.resolve()
+    plan_payload = {
+        "schema_version": 1,
+        "model_family": model_family,
+        "ace_model_sha256": recorder.ace_model_sha256,
+        "vae_sha256": recorder.vae_sha256,
+        "ace_config_sha256": _file_sha256(config_path),
+        "prompt_manifest_sha256": _file_sha256(prompt_manifest),
+        "seed_start": args.seed_start,
+        "seeds_per_prompt": args.seeds_per_prompt,
+        "duration_seconds": args.duration_seconds,
+        "inference_steps": config.ace.inference_steps,
+        "snapshot_steps": sorted(recorder.selected_steps),
+        "decode_snapshots": args.decode_snapshots,
+        "discard_generator_final_audio": args.discard_generator_final_audio,
+        "engineering_smoke": args.engineering_smoke,
+        "shard_index": args.shard_index,
+        "shard_count": args.shard_count,
+        "planned_trajectories": [
+            {
+                "trajectory_id": _trajectory_id(row),
+                "prompt_id": str(row["prompt_id"]),
+                "split": str(row["split"]),
+                "seed": int(row["seed"]),
+            }
+            for row in prompts
+        ],
+    }
+    if plan_path.exists():
+        existing_plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        if existing_plan != plan_payload:
+            raise ValueError(
+                f"collection plan changed; use a new shard directory: {plan_path}"
+            )
+    else:
+        if manifest.exists():
+            raise ValueError(
+                f"cannot safely resume a manifest without collection_plan.json: {manifest}"
+            )
+        write_json_atomic(plan_path, plan_payload)
+    completed_trajectory_ids: frozenset[str] = frozenset()
+    if manifest.exists():
+        if not args.resume:
+            raise FileExistsError(
+                "trajectory manifest already exists; pass --resume or use a new "
+                f"directory: {manifest}"
+            )
+        completed_trajectory_ids = recorder.resume_from_manifest(
+            manifest,
+            require_audio=args.decode_snapshots,
+        )
+        unexpected = completed_trajectory_ids - planned_trajectory_ids
+        if unexpected:
+            raise ValueError(
+                "resumed shard contains trajectories outside the current plan: "
+                f"{sorted(unexpected)[:5]}"
+            )
+        for record in recorder.records:
+            if planned_trajectories.get(record.trajectory_id) != (
+                record.prompt_id,
+                record.split,
+            ):
+                raise ValueError(
+                    "resumed trajectory prompt/split differs from the current plan: "
+                    f"{record.trajectory_id}"
+                )
     adapter = None
     if args.backend == "ace":
         if model_family != "acestep-v15-xl-turbo":
@@ -119,8 +234,11 @@ def collect_main(argv: list[str] | None = None) -> int:
         adapter = AceStepAdapter(root / config.ace.checkout, config.ace)
         adapter.set_topology_corrector(recorder)
     discarded_generator_audio = 0
+    newly_collected = 0
     for row in prompts:
-        trajectory_id = f"{row['prompt_id']}__seed{row['seed']}"
+        trajectory_id = _trajectory_id(row)
+        if trajectory_id in completed_trajectory_ids:
+            continue
         recorder.begin(
             prompt_id=row["prompt_id"], trajectory_id=trajectory_id, split=row["split"]
         )
@@ -187,7 +305,15 @@ def collect_main(argv: list[str] | None = None) -> int:
                 raise RuntimeError("ACE-Step returned no generator audio to discard")
             remove_generated_audio(generated_audio, output_dir / "final_audio")
             discarded_generator_audio += 1
-    manifest = output_dir / "trajectory_manifest.csv"
+        recorder.write_manifest(manifest)
+        newly_collected += 1
+    validate_snapshot_coverage(
+        recorder.records,
+        expected_steps=recorder.selected_steps,
+    )
+    actual_trajectory_ids = {record.trajectory_id for record in recorder.records}
+    if actual_trajectory_ids != planned_trajectory_ids:
+        raise RuntimeError("completed shard differs from its deterministic trajectory plan")
     recorder.write_manifest(manifest)
     _print(
         {
@@ -197,9 +323,112 @@ def collect_main(argv: list[str] | None = None) -> int:
             "trajectories": len(prompts),
             "snapshots": len(recorder.records),
             "decoded_snapshots": sum(bool(record.audio_path) for record in recorder.records),
+            "resumed_trajectories": len(completed_trajectory_ids),
+            "newly_collected_trajectories": newly_collected,
+            "shard_index": args.shard_index,
+            "shard_count": args.shard_count,
+            "collection_plan": str(plan_path),
+            "collection_plan_sha256": _file_sha256(plan_path),
             "discarded_generator_final_audio": discarded_generator_audio,
         }
     )
+    return 0
+
+
+def merge_main(argv: list[str] | None = None) -> int:
+    """Validate and atomically merge independently collected GPU shards."""
+
+    parser = argparse.ArgumentParser(prog="focus-ltsn-merge-shards")
+    parser.add_argument("--shards-root", type=Path, required=True)
+    parser.add_argument("--shard-count", type=int, required=True)
+    parser.add_argument("--prompt-manifest", type=Path, required=True)
+    parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--seed-start", type=int, default=2026071600)
+    parser.add_argument("--seeds-per-prompt", type=int, default=1)
+    parser.add_argument("--require-audio", action="store_true")
+    args = parser.parse_args(argv)
+    if args.shard_count < 1:
+        parser.error("--shard-count must be positive")
+    prompts = _prompt_rows(args.prompt_manifest, args.seed_start, args.seeds_per_prompt)
+    expected_plan = {
+        _trajectory_id(row): (str(row["prompt_id"]), str(row["split"]))
+        for row in prompts
+    }
+    if len(expected_plan) != len(prompts):
+        raise ValueError("collection plan contains duplicate trajectory IDs")
+    shards_root = args.shards_root.resolve()
+    shard_manifests = [
+        shards_root / f"shard_{index:02d}" / "trajectory_manifest.csv"
+        for index in range(args.shard_count)
+    ]
+    missing = [str(path) for path in shard_manifests if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f"missing shard manifests: {missing}")
+    prompt_manifest_sha256 = _file_sha256(args.prompt_manifest.resolve())
+    shard_plan_sha256: list[str] = []
+    common_plan_identity: dict[str, Any] | None = None
+    for index, shard_manifest in enumerate(shard_manifests):
+        plan_path = shard_manifest.parent / "collection_plan.json"
+        if not plan_path.is_file():
+            raise FileNotFoundError(f"missing shard collection plan: {plan_path}")
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        expected_shard = _prompt_shard(prompts, index, args.shard_count)
+        expected_shard_plan = [
+            {
+                "trajectory_id": _trajectory_id(row),
+                "prompt_id": str(row["prompt_id"]),
+                "split": str(row["split"]),
+                "seed": int(row["seed"]),
+            }
+            for row in expected_shard
+        ]
+        if (
+            plan.get("schema_version") != 1
+            or plan.get("shard_index") != index
+            or plan.get("shard_count") != args.shard_count
+            or plan.get("prompt_manifest_sha256") != prompt_manifest_sha256
+            or plan.get("seed_start") != args.seed_start
+            or plan.get("seeds_per_prompt") != args.seeds_per_prompt
+            or plan.get("planned_trajectories") != expected_shard_plan
+            or (args.require_audio and not plan.get("decode_snapshots"))
+        ):
+            raise ValueError(f"shard collection plan differs from merge request: {plan_path}")
+        identity_keys = (
+            "model_family",
+            "ace_model_sha256",
+            "vae_sha256",
+            "ace_config_sha256",
+            "prompt_manifest_sha256",
+            "seed_start",
+            "seeds_per_prompt",
+            "duration_seconds",
+            "inference_steps",
+            "snapshot_steps",
+            "decode_snapshots",
+            "discard_generator_final_audio",
+            "engineering_smoke",
+            "shard_count",
+        )
+        identity = {key: plan.get(key) for key in identity_keys}
+        if common_plan_identity is None:
+            common_plan_identity = identity
+        elif identity != common_plan_identity:
+            raise ValueError("collection shard plans do not share one frozen configuration")
+        shard_plan_sha256.append(_file_sha256(plan_path))
+    output_dir = args.output_dir.resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    summary = merge_trajectory_shard_manifests(
+        shard_manifests,
+        output_manifest=output_dir / "trajectory_manifest.csv",
+        expected_trajectory_plan=expected_plan,
+        require_audio=args.require_audio,
+    )
+    summary["shard_collection_plan_sha256"] = shard_plan_sha256
+    summary_path = output_dir / "trajectory_merge_summary.json"
+    write_json_atomic(summary_path, summary)
+    summary["merge_summary"] = str(summary_path)
+    summary["merge_summary_sha256"] = hashlib.sha256(summary_path.read_bytes()).hexdigest()
+    _print(summary)
     return 0
 
 

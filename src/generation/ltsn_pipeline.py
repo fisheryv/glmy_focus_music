@@ -408,6 +408,70 @@ class TrajectoryRecorder:
         rows = [asdict(record) for record in sorted(self.records, key=lambda item: item.sample_id)]
         write_csv_atomic(path, rows)
 
+    def resume_from_manifest(
+        self,
+        path: Path,
+        *,
+        require_audio: bool,
+    ) -> frozenset[str]:
+        """Restore fully completed trajectories from an atomic shard checkpoint."""
+
+        if self.records:
+            raise LTSNContractError("cannot resume a non-empty trajectory recorder")
+        rows = read_trajectory_manifest(path)
+        records: list[TrajectorySnapshotRecord] = []
+        sample_ids: set[str] = set()
+        for row in rows:
+            sample_id = row.get("sample_id", "")
+            if not sample_id or sample_id in sample_ids:
+                raise LTSNContractError("resumed trajectory manifest has duplicate sample IDs")
+            sample_ids.add(sample_id)
+            if row.get("model_family") != self.model_family:
+                raise LTSNContractError("resumed trajectory manifest changed model family")
+            if row.get("ace_model_sha256") != self.ace_model_sha256:
+                raise LTSNContractError("resumed trajectory manifest changed ACE model hash")
+            if row.get("vae_sha256") != self.vae_sha256:
+                raise LTSNContractError("resumed trajectory manifest changed VAE hash")
+            engineering_smoke = str(row.get("engineering_smoke", "")).lower() == "true"
+            if engineering_smoke != self.engineering_smoke:
+                raise LTSNContractError("resumed trajectory manifest changed smoke status")
+            audio_relative = row.get("audio_path", "")
+            if require_audio and not audio_relative:
+                raise LTSNContractError("resumed decoded trajectory is missing snapshot audio")
+            if audio_relative:
+                audio_path = (path.parent / audio_relative).resolve()
+                if not audio_path.is_file() or sha256_file(audio_path) != row.get(
+                    "audio_sha256", ""
+                ):
+                    raise LTSNContractError(
+                        f"trajectory audio missing or hash-mismatched: {audio_path}"
+                    )
+            records.append(
+                TrajectorySnapshotRecord(
+                    sample_id=sample_id,
+                    prompt_id=row["prompt_id"],
+                    trajectory_id=row["trajectory_id"],
+                    split=row["split"],
+                    model_family=row["model_family"],
+                    step_number=int(row["step_number"]),
+                    timestep=float(row["timestep"]),
+                    is_final=str(row.get("is_final", "")).lower() == "true",
+                    latent_path=row["latent_path"],
+                    latent_sha256=row["latent_sha256"],
+                    audio_path=audio_relative,
+                    audio_sha256=row.get("audio_sha256", ""),
+                    ace_model_sha256=row["ace_model_sha256"],
+                    vae_sha256=row["vae_sha256"],
+                    engineering_smoke=engineering_smoke,
+                    schema_version=int(row.get("schema_version", 0)),
+                )
+            )
+        if any(record.schema_version != TRAJECTORY_SCHEMA_VERSION for record in records):
+            raise LTSNContractError("resumed trajectory manifest changed schema version")
+        validate_snapshot_coverage(records, expected_steps=self.selected_steps)
+        self.records.extend(sorted(records, key=lambda record: record.sample_id))
+        return frozenset(record.trajectory_id for record in records)
+
 
 def validate_snapshot_coverage(
     rows: Sequence[Mapping[str, Any] | TrajectorySnapshotRecord],
@@ -452,6 +516,99 @@ def validate_snapshot_coverage(
                 raise LTSNContractError(
                     f"trajectory {trajectory_id} has inconsistent final-step metadata"
                 )
+
+
+def merge_trajectory_shard_manifests(
+    shard_manifests: Sequence[Path],
+    *,
+    output_manifest: Path,
+    expected_trajectory_plan: Mapping[str, tuple[str, str]],
+    require_audio: bool,
+) -> dict[str, Any]:
+    """Validate independent collection shards and atomically issue one manifest."""
+
+    if not shard_manifests:
+        raise LTSNContractError("at least one trajectory shard is required")
+    expected_ids = set(expected_trajectory_plan)
+    if not expected_ids:
+        raise LTSNContractError("planned collection is empty")
+    output_root = output_manifest.parent.resolve()
+    merged: list[dict[str, Any]] = []
+    sample_ids: set[str] = set()
+    provenance: set[tuple[str, str, str, str]] = set()
+    for shard_manifest in shard_manifests:
+        rows = read_trajectory_manifest(shard_manifest)
+        validate_snapshot_coverage(rows)
+        for source_row in rows:
+            row: dict[str, Any] = dict(source_row)
+            sample_id = str(row.get("sample_id", ""))
+            if not sample_id or sample_id in sample_ids:
+                raise LTSNContractError(
+                    f"trajectory shards contain duplicate sample ID: {sample_id}"
+                )
+            sample_ids.add(sample_id)
+            trajectory_id = str(row.get("trajectory_id", ""))
+            expected_identity = expected_trajectory_plan.get(trajectory_id)
+            actual_identity = (str(row.get("prompt_id", "")), str(row.get("split", "")))
+            if expected_identity != actual_identity:
+                raise LTSNContractError(
+                    "shard trajectory prompt/split differs from the frozen plan: "
+                    f"{trajectory_id}"
+                )
+            provenance.add(
+                (
+                    str(row.get("model_family", "")),
+                    str(row.get("ace_model_sha256", "")),
+                    str(row.get("vae_sha256", "")),
+                    str(row.get("engineering_smoke", "")).lower(),
+                )
+            )
+            for path_key, hash_key in (
+                ("latent_path", "latent_sha256"),
+                ("audio_path", "audio_sha256"),
+            ):
+                relative = str(row.get(path_key, ""))
+                if not relative:
+                    if path_key == "audio_path" and require_audio:
+                        raise LTSNContractError(
+                            f"decoded shard sample is missing audio: {sample_id}"
+                        )
+                    continue
+                source = (shard_manifest.parent / relative).resolve()
+                if not source.is_file() or sha256_file(source) != row.get(hash_key, ""):
+                    raise LTSNContractError(
+                        f"shard artifact missing or hash-mismatched: {source}"
+                    )
+                try:
+                    row[path_key] = source.relative_to(output_root).as_posix()
+                except ValueError as error:
+                    raise LTSNContractError(
+                        f"shard artifact lies outside merged output root: {source}"
+                    ) from error
+            merged.append(row)
+    if len(provenance) != 1:
+        raise LTSNContractError("trajectory shards mix model, VAE, ACE, or smoke provenance")
+    validate_snapshot_coverage(merged)
+    actual_ids = {str(row["trajectory_id"]) for row in merged}
+    if actual_ids != expected_ids:
+        missing = sorted(expected_ids - actual_ids)[:5]
+        unexpected = sorted(actual_ids - expected_ids)[:5]
+        raise LTSNContractError(
+            "merged trajectory IDs differ from the frozen plan; "
+            f"missing={missing}, unexpected={unexpected}"
+        )
+    ordered = sorted(merged, key=lambda row: str(row["sample_id"]))
+    write_csv_atomic(output_manifest, ordered)
+    return {
+        "schema_version": 1,
+        "status": "shards_merged",
+        "shards": len(shard_manifests),
+        "trajectories": len(actual_ids),
+        "snapshots": len(ordered),
+        "decoded_snapshots": sum(bool(row.get("audio_path")) for row in ordered),
+        "trajectory_manifest": str(output_manifest.resolve()),
+        "trajectory_manifest_sha256": sha256_file(output_manifest),
+    }
 
 
 def read_trajectory_manifest(path: Path) -> list[dict[str, str]]:

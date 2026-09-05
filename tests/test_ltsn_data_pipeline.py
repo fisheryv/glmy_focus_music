@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import asdict
 from pathlib import Path
@@ -16,6 +17,7 @@ from generation.ltsn_pipeline import (
     build_exact_label_tables,
     load_reranking_gate,
     load_surrogate_training_gate,
+    merge_trajectory_shard_manifests,
     synthetic_descriptor_rows,
     validate_snapshot_coverage,
     write_csv_atomic,
@@ -34,6 +36,50 @@ def _recorder(tmp_path: Path) -> TrajectoryRecorder:
         vae_sha256="b" * 64,
         engineering_smoke=True,
     )
+
+
+def _write_complete_trajectory(
+    collection: Path,
+    *,
+    trajectory_id: str,
+    prompt_id: str,
+    split: str = "train",
+) -> Path:
+    latents = collection / "latents"
+    latents.mkdir(parents=True, exist_ok=True)
+    rows = []
+    for step in (4, 5, 6, 8):
+        sample_id = f"{trajectory_id}__step{step:02d}__b00"
+        latent_path = latents / f"{sample_id}.npy"
+        np.save(
+            latent_path,
+            np.full((16, 64), step, dtype=np.float32),
+            allow_pickle=False,
+        )
+        rows.append(
+            asdict(
+                TrajectorySnapshotRecord(
+                    sample_id=sample_id,
+                    prompt_id=prompt_id,
+                    trajectory_id=trajectory_id,
+                    split=split,
+                    model_family="acestep-v15-xl-turbo",
+                    step_number=step,
+                    timestep=0.0 if step == 8 else 1.0 - step / 8.0,
+                    is_final=step == 8,
+                    latent_path=latent_path.relative_to(collection).as_posix(),
+                    latent_sha256=sha256_file(latent_path),
+                    audio_path="",
+                    audio_sha256="",
+                    ace_model_sha256="a" * 64,
+                    vae_sha256="b" * 64,
+                    engineering_smoke=False,
+                )
+            )
+        )
+    manifest = collection / "trajectory_manifest.csv"
+    write_csv_atomic(manifest, rows)
+    return manifest
 
 
 @pytest.mark.parametrize("shape", [(32, 64), (2, 32, 64)])
@@ -85,6 +131,87 @@ def test_formal_snapshot_coverage_requires_steps_4_5_6_and_8() -> None:
     complete[-1]["is_final"] = False
     with pytest.raises(LTSNContractError, match="final-step metadata"):
         validate_snapshot_coverage(complete)
+
+
+def test_recorder_resumes_only_complete_hashed_trajectories(tmp_path: Path) -> None:
+    collection = tmp_path / "collection"
+    manifest = _write_complete_trajectory(
+        collection,
+        trajectory_id="prompt__seed7",
+        prompt_id="prompt",
+    )
+    recorder = TrajectoryRecorder(
+        collection,
+        model_family="acestep-v15-xl-turbo",
+        ace_model_sha256="a" * 64,
+        vae_sha256="b" * 64,
+    )
+
+    completed = recorder.resume_from_manifest(manifest, require_audio=False)
+
+    assert completed == frozenset({"prompt__seed7"})
+    assert len(recorder.records) == 4
+    validate_snapshot_coverage(recorder.records)
+
+
+def test_merge_shards_rewrites_paths_and_validates_frozen_plan(tmp_path: Path) -> None:
+    output_dir = tmp_path / "trajectories"
+    first = _write_complete_trajectory(
+        output_dir / "shards" / "shard_00",
+        trajectory_id="prompt_a__seed7",
+        prompt_id="prompt_a",
+    )
+    second = _write_complete_trajectory(
+        output_dir / "shards" / "shard_01",
+        trajectory_id="prompt_b__seed8",
+        prompt_id="prompt_b",
+        split="development",
+    )
+    merged = output_dir / "trajectory_manifest.csv"
+
+    summary = merge_trajectory_shard_manifests(
+        [first, second],
+        output_manifest=merged,
+        expected_trajectory_plan={
+            "prompt_a__seed7": ("prompt_a", "train"),
+            "prompt_b__seed8": ("prompt_b", "development"),
+        },
+        require_audio=False,
+    )
+
+    assert summary["shards"] == 2
+    assert summary["trajectories"] == 2
+    assert summary["snapshots"] == 8
+    with merged.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert {row["trajectory_id"] for row in rows} == {
+        "prompt_a__seed7",
+        "prompt_b__seed8",
+    }
+    assert all(row["latent_path"].startswith("shards/shard_") for row in rows)
+    validate_snapshot_coverage(rows)
+
+
+def test_merge_shards_does_not_issue_manifest_for_incomplete_plan(tmp_path: Path) -> None:
+    output_dir = tmp_path / "trajectories"
+    shard = _write_complete_trajectory(
+        output_dir / "shards" / "shard_00",
+        trajectory_id="prompt_a__seed7",
+        prompt_id="prompt_a",
+    )
+    merged = output_dir / "trajectory_manifest.csv"
+
+    with pytest.raises(LTSNContractError, match="frozen plan"):
+        merge_trajectory_shard_manifests(
+            [shard],
+            output_manifest=merged,
+            expected_trajectory_plan={
+                "prompt_a__seed7": ("prompt_a", "train"),
+                "prompt_b__seed8": ("prompt_b", "train"),
+            },
+            require_audio=False,
+        )
+    assert not merged.exists()
 
 
 def test_reranking_gate_requires_all_frozen_effect_conditions(tmp_path: Path) -> None:

@@ -180,7 +180,7 @@ class AceStepAdapter:
         values = np.asarray(latent, dtype=np.float32)
         if values.ndim != 2 or values.shape[1] != 64 or not np.isfinite(values).all():
             raise ValueError("recorded snapshot latent must have finite shape [T,64]")
-        device = torch.device(self.config.device)
+        device = torch.device(self._device)
         tensor = torch.from_numpy(values).unsqueeze(0).to(device)
         waveforms, _, _ = self._handler._decode_generate_music_pred_latents(
             pred_latents=tensor,
