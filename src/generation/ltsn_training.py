@@ -40,6 +40,7 @@ from .ltsn_losses import LTSNLossWeights, ltsn_loss, trajectory_delta_loss
 from .ltsn_pipeline import (
     model_data_identity,
     require_surrogate_training_gate,
+    validate_snapshot_coverage,
     write_json_atomic,
 )
 from .path_homology_surrogate import LTSNConfig, LTSNOutput, PathHomologySurrogate
@@ -553,6 +554,8 @@ def train_ensemble(
     records = read_ltsn_manifest(manifest_path, contract)
     with manifest_path.open("r", encoding="utf-8-sig", newline="") as handle:
         raw_rows = list(csv.DictReader(handle))
+    if not engineering_smoke:
+        validate_snapshot_coverage(raw_rows)
     split_payload = json.loads(split_manifest_path.read_text(encoding="utf-8"))
     expected_assignments = dict(
         sorted({row["prompt_id"]: row["split"] for row in raw_rows}.items())

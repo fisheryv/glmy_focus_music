@@ -23,6 +23,7 @@ RERANKING_GATE_NAME = "exact_reranking_effect_v1"
 SURROGATE_TRAINING_GATE_NAME = "ltsn_surrogate_training_v1"
 LABEL_SCOPE = "per_snapshot_exact"
 SPLITS = ("train", "development", "calibration", "qualification")
+FORMAL_SNAPSHOT_STEPS = (4, 5, 6, 8)
 
 
 def canonical_json_sha256(payload: Any) -> str:
@@ -315,6 +316,76 @@ class TrajectoryRecorder:
             )
         return xt_next
 
+    def record_final_latent(self, final_latent: Any) -> tuple[str, ...]:
+        """Persist ACE's decoder-input latent as the final sampler-step record."""
+
+        with self._lock:
+            context = self._context
+        if context is None:
+            raise RuntimeError("TrajectoryRecorder.begin() was not called")
+        prompt_id, trajectory_id, split = context
+        if final_latent is None:
+            raise LTSNContractError(
+                "ACE final pred_latents must have finite shape [B,T,64]"
+            )
+        value = final_latent
+        if hasattr(value, "detach"):
+            value = value.detach()
+        if hasattr(value, "cpu"):
+            value = value.cpu()
+        if hasattr(value, "float"):
+            value = value.float()
+        if hasattr(value, "numpy"):
+            value = value.numpy()
+        batch = np.asarray(value, dtype=np.float32)
+        if batch.ndim == 2:
+            batch = batch[None, ...]
+        if (
+            batch.ndim != 3
+            or batch.shape[0] < 1
+            or batch.shape[1] < 1
+            or batch.shape[2] != 64
+            or not np.isfinite(batch).all()
+        ):
+            raise LTSNContractError(
+                "ACE final pred_latents must have finite shape [B,T,64]"
+            )
+        if any(
+            record.trajectory_id == trajectory_id and record.is_final
+            for record in self.records
+        ):
+            raise LTSNContractError(
+                f"trajectory already contains a final latent: {trajectory_id}"
+            )
+        sample_ids: list[str] = []
+        for batch_index, latent in enumerate(batch):
+            sample_id = (
+                f"{trajectory_id}__step{self.inference_steps:02d}__b{batch_index:02d}"
+            )
+            latent_path = self.output_dir / "latents" / f"{sample_id}.npy"
+            self._save_npy_atomic(latent_path, latent)
+            self.records.append(
+                TrajectorySnapshotRecord(
+                    sample_id=sample_id,
+                    prompt_id=prompt_id,
+                    trajectory_id=trajectory_id,
+                    split=split,
+                    model_family=self.model_family,
+                    step_number=self.inference_steps,
+                    timestep=0.0,
+                    is_final=True,
+                    latent_path=latent_path.relative_to(self.output_dir).as_posix(),
+                    latent_sha256=sha256_file(latent_path),
+                    audio_path="",
+                    audio_sha256="",
+                    ace_model_sha256=self.ace_model_sha256,
+                    vae_sha256=self.vae_sha256,
+                    engineering_smoke=self.engineering_smoke,
+                )
+            )
+            sample_ids.append(sample_id)
+        return tuple(sample_ids)
+
     def attach_audio(self, sample_id: str, audio_path: Path) -> None:
         """Attach a separately VAE-decoded snapshot audio artifact."""
 
@@ -336,6 +407,51 @@ class TrajectoryRecorder:
 
         rows = [asdict(record) for record in sorted(self.records, key=lambda item: item.sample_id)]
         write_csv_atomic(path, rows)
+
+
+def validate_snapshot_coverage(
+    rows: Sequence[Mapping[str, Any] | TrajectorySnapshotRecord],
+    *,
+    expected_steps: Sequence[int] = FORMAL_SNAPSHOT_STEPS,
+) -> None:
+    """Require exactly one selected-step snapshot and one final row per trajectory."""
+
+    expected = {int(value) for value in expected_steps}
+    if not expected:
+        raise LTSNContractError("expected snapshot steps cannot be empty")
+    final_step = max(expected)
+    grouped: dict[str, list[tuple[int, bool]]] = {}
+    for row in rows:
+        if isinstance(row, TrajectorySnapshotRecord):
+            trajectory_id = row.trajectory_id
+            step_number = row.step_number
+            is_final = row.is_final
+        else:
+            trajectory_id = str(row.get("trajectory_id", ""))
+            step_number = int(row.get("step_number", 0))
+            raw_final = row.get("is_final", False)
+            is_final = (
+                raw_final
+                if isinstance(raw_final, bool)
+                else str(raw_final).strip().lower() == "true"
+            )
+        if not trajectory_id:
+            raise LTSNContractError("snapshot row is missing trajectory_id")
+        grouped.setdefault(trajectory_id, []).append((step_number, is_final))
+    if not grouped:
+        raise LTSNContractError("snapshot coverage cannot be checked on an empty collection")
+    for trajectory_id, items in grouped.items():
+        steps = [step for step, _ in items]
+        if len(steps) != len(expected) or set(steps) != expected:
+            raise LTSNContractError(
+                f"trajectory {trajectory_id} must contain exactly steps {sorted(expected)}; "
+                f"found {sorted(steps)}"
+            )
+        for step, is_final in items:
+            if is_final is not (step == final_step):
+                raise LTSNContractError(
+                    f"trajectory {trajectory_id} has inconsistent final-step metadata"
+                )
 
 
 def read_trajectory_manifest(path: Path) -> list[dict[str, str]]:
@@ -376,6 +492,8 @@ def build_exact_label_tables(
     """Join per-snapshot exact descriptors, score them, and issue hashed manifests."""
 
     trajectories = read_trajectory_manifest(trajectory_manifest)
+    if not engineering_smoke:
+        validate_snapshot_coverage(trajectories)
     with descriptor_table.open("r", encoding="utf-8-sig", newline="") as handle:
         descriptors = {row["sample_id"]: row for row in csv.DictReader(handle)}
     if len(descriptors) != len(trajectories):

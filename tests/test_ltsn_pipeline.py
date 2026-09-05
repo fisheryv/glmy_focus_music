@@ -2,18 +2,22 @@ from __future__ import annotations
 
 # ruff: noqa: E402, I001
 
+import csv
 from pathlib import Path
 
 import pytest
 
 torch = pytest.importorskip("torch")
 
+from generation import ltsn_training
 from generation.ltsn_pipeline import (
     TrajectoryRecorder,
     build_exact_label_tables,
     synthetic_descriptor_rows,
+    validate_snapshot_coverage,
     write_csv_atomic,
 )
+from generation.ltsn_cli import collect_main
 from generation.ltsn_contract import LTSNContractError
 from generation.ltsn_training import (
     LTSNTrainingConfig,
@@ -42,6 +46,52 @@ def test_three_seed_training_maps_one_explicit_gpu_per_seed() -> None:
         LTSNTrainingConfig(seeds=(7, 7, 8)).validate(engineering_smoke=True)
 
 
+def test_formal_training_rejects_three_step_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manifest = tmp_path / "ltsn_manifest.csv"
+    write_csv_atomic(
+        manifest,
+        [
+            {
+                "sample_id": f"trajectory__step{step:02d}__b00",
+                "trajectory_id": "trajectory",
+                "step_number": step,
+                "is_final": False,
+            }
+            for step in (4, 5, 6)
+        ],
+    )
+    monkeypatch.setattr(ltsn_training, "load_fingerprint_contract", lambda _path: object())
+    monkeypatch.setattr(
+        ltsn_training,
+        "require_surrogate_training_gate",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        ltsn_training,
+        "load_training_config",
+        lambda _path: (
+            ltsn_training.LTSNConfig(),
+            LTSNTrainingConfig(),
+            ltsn_training.LTSNLossWeights(),
+        ),
+    )
+    monkeypatch.setattr(ltsn_training, "read_ltsn_manifest", lambda *_args: [])
+
+    with pytest.raises(LTSNContractError, match="exactly steps"):
+        train_ensemble(
+            fingerprint_path=tmp_path / "fingerprint.json",
+            manifest_path=manifest,
+            split_manifest_path=tmp_path / "split.json",
+            config_path=tmp_path / "training.toml",
+            output_dir=tmp_path / "models",
+            surrogate_training_gate_path=tmp_path / "gate.json",
+            engineering_smoke=False,
+            device_name="cpu",
+        )
+
+
 def _record_split(recorder: TrajectoryRecorder, split: str, index: int) -> None:
     recorder.begin(
         prompt_id=f"prompt_{split}", trajectory_id=f"trajectory_{split}", split=split
@@ -62,6 +112,51 @@ def _record_split(recorder: TrajectoryRecorder, split: str, index: int) -> None:
         )
         assert unchanged.data_ptr() == latent.data_ptr()
     recorder.end()
+
+
+def test_synthetic_collect_writes_four_snapshots_per_trajectory(tmp_path: Path) -> None:
+    prompts = tmp_path / "prompts.csv"
+    write_csv_atomic(
+        prompts,
+        [
+            {
+                "prompt_id": "prompt_train",
+                "caption": "soft instrumental focus music",
+                "split": "train",
+                "seed": "7",
+                "bpm": "",
+                "keyscale": "",
+                "timesignature": "",
+            }
+        ],
+    )
+    output = tmp_path / "collection"
+
+    assert collect_main(
+        [
+            "--root",
+            str(ROOT),
+            "--ace-config",
+            str(ROOT / "configs" / "ace_rerank_180s.toml"),
+            "--prompt-manifest",
+            str(prompts),
+            "--output-dir",
+            str(output),
+            "--backend",
+            "synthetic",
+            "--ace-model-sha256",
+            "a" * 64,
+            "--vae-sha256",
+            "b" * 64,
+            "--engineering-smoke",
+        ]
+    ) == 0
+    with (output / "trajectory_manifest.csv").open(
+        "r", encoding="utf-8-sig", newline=""
+    ) as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 4
+    validate_snapshot_coverage(rows)
 
 
 def test_synthetic_smoke_pipeline_records_labels_and_trains(tmp_path: Path) -> None:

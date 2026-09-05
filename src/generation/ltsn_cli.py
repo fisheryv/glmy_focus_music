@@ -26,6 +26,7 @@ from .ltsn_pipeline import (
     build_exact_label_tables,
     require_surrogate_training_gate,
     synthetic_descriptor_rows,
+    validate_snapshot_coverage,
     write_csv_atomic,
 )
 from .ltsn_storage import MATERIALIZE_MODES, remove_generated_audio
@@ -140,6 +141,11 @@ def collect_main(argv: list[str] | None = None) -> int:
                     )
                 )
                 generated_audio = generated.audio_path
+                if generated.final_latent is None:
+                    raise RuntimeError(
+                        "ACE-Step returned no final pred_latents; disable save-memory mode"
+                    )
+                recorder.record_final_latent(generated.final_latent)
             else:
                 rng = np.random.default_rng(int(row["seed"]))
                 import torch
@@ -160,6 +166,10 @@ def collect_main(argv: list[str] | None = None) -> int:
                         attention_mask=mask,
                     )
                     xt = xt - velocity / config.ace.inference_steps
+            validate_snapshot_coverage(
+                recorder.records[before:],
+                expected_steps=recorder.selected_steps,
+            )
         finally:
             recorder.end()
         if len(recorder.records) == before:
@@ -245,6 +255,11 @@ def labels_main(argv: list[str] | None = None) -> int:
         scorer.contract,
         engineering_smoke=args.engineering_smoke,
     )
+    if not args.engineering_smoke:
+        with args.trajectory_manifest.open(
+            "r", encoding="utf-8-sig", newline=""
+        ) as handle:
+            validate_snapshot_coverage(list(csv.DictReader(handle)))
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
     descriptor_table = args.descriptor_table

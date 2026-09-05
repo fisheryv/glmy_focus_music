@@ -11,17 +11,80 @@ from generation.ltsn_contract import LTSNContractError, load_fingerprint_contrac
 from generation.ltsn_pipeline import (
     RERANKING_GATE_NAME,
     SURROGATE_TRAINING_GATE_NAME,
+    TrajectoryRecorder,
     TrajectorySnapshotRecord,
     build_exact_label_tables,
     load_reranking_gate,
     load_surrogate_training_gate,
     synthetic_descriptor_rows,
+    validate_snapshot_coverage,
     write_csv_atomic,
 )
 from generation.path_homology_exact_scorer import ExactPathHomologyScorer
 
 ROOT = Path(__file__).resolve().parents[1]
 FINGERPRINT = ROOT / "metadata" / "focus_path_homology_fingerprint_v2.json"
+
+
+def _recorder(tmp_path: Path) -> TrajectoryRecorder:
+    return TrajectoryRecorder(
+        tmp_path / "collection",
+        model_family="acestep-v15-xl-turbo",
+        ace_model_sha256="a" * 64,
+        vae_sha256="b" * 64,
+        engineering_smoke=True,
+    )
+
+
+@pytest.mark.parametrize("shape", [(32, 64), (2, 32, 64)])
+def test_record_final_latent_accepts_unbatched_and_batched_arrays(
+    tmp_path: Path, shape: tuple[int, ...]
+) -> None:
+    recorder = _recorder(tmp_path)
+    recorder.begin(prompt_id="prompt", trajectory_id="trajectory", split="train")
+    values = np.arange(np.prod(shape), dtype=np.float32).reshape(shape)
+
+    sample_ids = recorder.record_final_latent(values)
+
+    assert len(sample_ids) == (shape[0] if len(shape) == 3 else 1)
+    assert all(record.step_number == 8 for record in recorder.records)
+    assert all(record.timestep == 0.0 and record.is_final for record in recorder.records)
+    for batch_index, record in enumerate(recorder.records):
+        stored = np.load(recorder.output_dir / record.latent_path, allow_pickle=False)
+        expected = values[batch_index] if values.ndim == 3 else values
+        np.testing.assert_array_equal(stored, expected)
+
+
+def test_record_final_latent_rejects_missing_invalid_and_duplicate_values(
+    tmp_path: Path,
+) -> None:
+    recorder = _recorder(tmp_path)
+    recorder.begin(prompt_id="prompt", trajectory_id="trajectory", split="train")
+    with pytest.raises(LTSNContractError, match=r"\[B,T,64\]"):
+        recorder.record_final_latent(None)
+    with pytest.raises(LTSNContractError, match=r"\[B,T,64\]"):
+        recorder.record_final_latent(np.zeros((32, 63), dtype=np.float32))
+    recorder.record_final_latent(np.zeros((32, 64), dtype=np.float32))
+    with pytest.raises(LTSNContractError, match="already contains a final latent"):
+        recorder.record_final_latent(np.zeros((32, 64), dtype=np.float32))
+
+
+def test_formal_snapshot_coverage_requires_steps_4_5_6_and_8() -> None:
+    complete = [
+        {
+            "sample_id": f"trajectory__step{step:02d}__b00",
+            "trajectory_id": "trajectory",
+            "step_number": step,
+            "is_final": step == 8,
+        }
+        for step in (4, 5, 6, 8)
+    ]
+    validate_snapshot_coverage(complete)
+    with pytest.raises(LTSNContractError, match="exactly steps"):
+        validate_snapshot_coverage(complete[:-1])
+    complete[-1]["is_final"] = False
+    with pytest.raises(LTSNContractError, match="final-step metadata"):
+        validate_snapshot_coverage(complete)
 
 
 def test_reranking_gate_requires_all_frozen_effect_conditions(tmp_path: Path) -> None:
@@ -137,3 +200,51 @@ def test_smoke_label_builder_issues_hashed_nonqualifying_manifest(tmp_path: Path
     assert summary["samples"] == 4
     assert not summary["qualification_eligible"]
     assert len(summary["exact_label_table_sha256"]) == 64
+
+
+def test_formal_label_builder_rejects_three_step_trajectory_manifest(
+    tmp_path: Path,
+) -> None:
+    collection = tmp_path / "collection"
+    latents = collection / "latents"
+    latents.mkdir(parents=True)
+    records = []
+    for step in (4, 5, 6):
+        latent_path = latents / f"step_{step:02d}.npy"
+        np.save(latent_path, np.zeros((32, 64), dtype=np.float32), allow_pickle=False)
+        records.append(
+            asdict(
+                TrajectorySnapshotRecord(
+                    sample_id=f"trajectory__step{step:02d}__b00",
+                    prompt_id="prompt",
+                    trajectory_id="trajectory",
+                    split="train",
+                    model_family="acestep-v15-xl-turbo",
+                    step_number=step,
+                    timestep=1.0 - step / 8.0,
+                    is_final=False,
+                    latent_path=latent_path.relative_to(collection).as_posix(),
+                    latent_sha256=sha256_file(latent_path),
+                    audio_path="",
+                    audio_sha256="",
+                    ace_model_sha256="a" * 64,
+                    vae_sha256="b" * 64,
+                    engineering_smoke=False,
+                )
+            )
+        )
+    trajectory_manifest = collection / "trajectory_manifest.csv"
+    write_csv_atomic(trajectory_manifest, records)
+
+    scorer = ExactPathHomologyScorer.from_json(FINGERPRINT)
+    with pytest.raises(LTSNContractError, match="exactly steps"):
+        build_exact_label_tables(
+            trajectory_manifest=trajectory_manifest,
+            descriptor_table=tmp_path / "unused.csv",
+            output_manifest=tmp_path / "labels" / "manifest.csv",
+            exact_label_table=tmp_path / "labels" / "exact.csv",
+            split_manifest=tmp_path / "labels" / "splits.json",
+            scorer=scorer,
+            gate=None,
+            engineering_smoke=False,
+        )
