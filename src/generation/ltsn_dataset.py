@@ -36,6 +36,7 @@ class LTSNSnapshot:
     ood_label: float
     is_final: bool
     exact_label_table_sha256: str
+    local_anchor_sample_id: str = ""
 
 
 def _parse_bool(value: str) -> bool:
@@ -90,6 +91,7 @@ def read_ltsn_manifest(path: Path, contract: FingerprintContract) -> list[LTSNSn
                     ood_label=float(raw["ood_label"]),
                     is_final=is_final,
                     exact_label_table_sha256=raw["exact_label_table_sha256"].lower(),
+                    local_anchor_sample_id=raw.get("local_anchor_sample_id", "").strip(),
                 )
             )
     if not rows:
@@ -140,6 +142,7 @@ class LTSNSnapshotDataset(Dataset[dict[str, Tensor | str]]):
             "coordinates": torch.tensor(record.coordinates, dtype=torch.float32),
             "focus_logit": torch.tensor(record.focus_logit, dtype=torch.float32),
             "ood_label": torch.tensor(record.ood_label, dtype=torch.float32),
+            "local_anchor_sample_id": record.local_anchor_sample_id,
         }
 
 
@@ -161,7 +164,7 @@ def collate_ltsn_batch(items: Sequence[dict[str, Tensor | str]]) -> dict[str, ob
     result: dict[str, object] = {"latent": batch, "attention_mask": mask}
     for key in tensor_keys:
         result[key] = torch.stack([item[key] for item in items])  # type: ignore[list-item]
-    for key in ("sample_id", "prompt_id", "trajectory_id"):
+    for key in ("sample_id", "prompt_id", "trajectory_id", "local_anchor_sample_id"):
         result[key] = [str(item[key]) for item in items]
     return result
 

@@ -15,7 +15,7 @@ from torch.utils.data import DataLoader
 
 from .ltsn_contract import LTSNContractError, load_fingerprint_contract, sha256_file
 from .ltsn_dataset import LTSNSnapshotDataset, collate_ltsn_batch, read_ltsn_manifest
-from .ltsn_pipeline import write_json_atomic
+from .ltsn_pipeline import canonical_json_sha256, write_json_atomic
 from .ltsn_training import load_checkpoint_model, predict_dataset, spearman_correlation
 
 GUIDANCE_PROMOTION_GATE_NAME = "latent_guidance_promotion_v1"
@@ -28,6 +28,15 @@ def _load_ensemble(
 ) -> tuple[Any, dict[str, Any], list[Any]]:
     contract = load_fingerprint_contract(fingerprint_path)
     payload = json.loads(ensemble_manifest.read_text(encoding="utf-8"))
+    target_contract = payload.get("training_target_contract")
+    target_contract_sha256 = payload.get("metadata", {}).get(
+        "training_target_contract_sha256"
+    )
+    if target_contract_sha256 is not None and (
+        not isinstance(target_contract, dict)
+        or canonical_json_sha256(target_contract) != target_contract_sha256
+    ):
+        raise LTSNContractError("ensemble training target contract is hash-mismatched")
     models = []
     for item in payload.get("checkpoints", []):
         path = ensemble_manifest.parent / item["path"]
@@ -64,6 +73,11 @@ def _ensemble_predictions(
     scores = np.stack([member["predicted_focus_logit"] for member in members])
     ood_logits = np.stack([member["ood_logit"] for member in members])
     base = members[0]
+    active_masks = [
+        model.coordinate_active_mask.detach().cpu().numpy().astype(bool) for model in models
+    ]
+    if any(not np.array_equal(active_masks[0], mask) for mask in active_masks[1:]):
+        raise LTSNContractError("ensemble members use different active-coordinate masks")
     return {
         **{
             name: base[name]
@@ -85,6 +99,7 @@ def _ensemble_predictions(
         "aleatoric_variance": np.exp(logvars).mean(axis=(0, 2)),
         "epistemic_variance": means.var(axis=0).mean(axis=1),
         "total_variance": np.exp(logvars).mean(axis=0) + means.var(axis=0),
+        "active_coordinate_mask": active_masks[0],
     }
 
 
@@ -101,12 +116,18 @@ def calibrate_ensemble(
 
     device = torch.device(device_name or ("cuda" if torch.cuda.is_available() else "cpu"))
     contract, ensemble, models = _load_ensemble(ensemble_manifest, fingerprint_path, device)
+    if sha256_file(manifest_path) != ensemble["metadata"]["training_manifest_sha256"]:
+        raise LTSNContractError("calibration manifest differs from the trained ensemble")
     records = read_ltsn_manifest(manifest_path, contract)
     prediction = _ensemble_predictions(models, _loader(records, "calibration", batch_size), device)
+    labels = prediction["ood_label"]
+    in_distribution = labels < 0.5
+    if not np.any(in_distribution):
+        raise LTSNContractError("calibration requires in-distribution samples")
     residual = np.abs(prediction["coordinates"] - prediction["coordinate_mean"])
     standard = np.sqrt(np.maximum(prediction["total_variance"], 1e-12))
     ratio = residual / standard
-    quantile = np.quantile(ratio, 0.90, axis=0)
+    quantile = np.quantile(ratio[in_distribution], 0.90, axis=0)
     variance_scale = np.maximum((quantile / 1.6448536269514722) ** 2, 1e-8)
     calibrated_variance = prediction["total_variance"] * variance_scale[None, :]
     calibrated_aleatoric = (
@@ -117,10 +138,6 @@ def calibrate_ensemble(
     ).mean(axis=1)
     interval_width = np.mean(2.0 * 1.6448536269514722 * np.sqrt(calibrated_variance), axis=1)
     ood = prediction["ood_probability"]
-    labels = prediction["ood_label"]
-    in_distribution = labels < 0.5
-    if not np.any(in_distribution):
-        raise LTSNContractError("calibration requires in-distribution samples")
     if np.any(labels >= 0.5):
         candidates = np.unique(ood)
         best_threshold = float(candidates[0])
@@ -182,11 +199,21 @@ def _auc(labels: np.ndarray, scores: np.ndarray) -> float | None:
 
 
 def _metrics(prediction: Mapping[str, Any], variance_scale: np.ndarray) -> dict[str, Any]:
-    exact = prediction["coordinates"]
-    mean = prediction["coordinate_mean"]
+    ood_label = prediction["ood_label"]
+    in_distribution = ood_label < 0.5
+    if not np.any(in_distribution):
+        raise LTSNContractError("qualification metrics require in-distribution samples")
+    exact = prediction["coordinates"][in_distribution]
+    mean = prediction["coordinate_mean"][in_distribution]
     coordinate_rhos = [spearman_correlation(mean[:, index], exact[:, index]) for index in range(18)]
+    active_mask = np.asarray(
+        prediction.get("active_coordinate_mask", np.ones(18, dtype=bool)), dtype=bool
+    )
+    if active_mask.shape != (18,) or not active_mask.any():
+        raise LTSNContractError("qualification active-coordinate mask is malformed")
     score_rho = spearman_correlation(
-        prediction["predicted_focus_logit"], prediction["focus_logit"]
+        prediction["predicted_focus_logit"][in_distribution],
+        prediction["focus_logit"][in_distribution],
     )
     pitch_rho = spearman_correlation(
         np.linalg.norm(mean[:, :16], axis=1), np.linalg.norm(exact[:, :16], axis=1)
@@ -194,28 +221,36 @@ def _metrics(prediction: Mapping[str, Any], variance_scale: np.ndarray) -> dict[
     phase_rho = spearman_correlation(
         np.linalg.norm(mean[:, 16:], axis=1), np.linalg.norm(exact[:, 16:], axis=1)
     )
-    variance = prediction["total_variance"] * variance_scale[None, :]
+    variance = prediction["total_variance"][in_distribution] * variance_scale[None, :]
     half_width = 1.6448536269514722 * np.sqrt(np.maximum(variance, 0.0))
-    coverage = float(np.mean((exact >= mean - half_width) & (exact <= mean + half_width)))
+    covered = (exact >= mean - half_width) & (exact <= mean + half_width)
+    coverage = float(np.mean(covered[:, active_mask]))
     ood_prediction = prediction["ood_probability"]
-    ood_label = prediction["ood_label"]
     return {
-        "n": len(exact),
+        "n": len(prediction["coordinates"]),
+        "n_in_distribution": len(exact),
         "focus_logit_spearman": score_rho,
         "coordinate_spearman": coordinate_rhos,
-        "coordinate_median_spearman": float(np.median(coordinate_rhos)),
+        "active_coordinate_count": int(np.count_nonzero(active_mask)),
+        "coordinate_median_spearman": float(np.median(np.asarray(coordinate_rhos)[active_mask])),
         "pitch_block_distance_spearman": pitch_rho,
         "phase_block_distance_spearman": phase_rho,
         "acoustic_loop_coordinate_spearman": coordinate_rhos[16],
         "chroma_loop_coordinate_spearman": coordinate_rhos[17],
         "quartile_ranking_accuracy": _quartile_ranking_accuracy(
-            prediction["focus_logit"], prediction["predicted_focus_logit"]
+            prediction["focus_logit"][in_distribution],
+            prediction["predicted_focus_logit"][in_distribution],
         ),
         "interval_90_coverage": coverage,
         "coordinate_mae": np.mean(np.abs(mean - exact), axis=0).tolist(),
         "coordinate_rmse": np.sqrt(np.mean((mean - exact) ** 2, axis=0)).tolist(),
         "focus_logit_mae": float(
-            np.mean(np.abs(prediction["predicted_focus_logit"] - prediction["focus_logit"]))
+            np.mean(
+                np.abs(
+                    prediction["predicted_focus_logit"][in_distribution]
+                    - prediction["focus_logit"][in_distribution]
+                )
+            )
         ),
         "ood_auroc": _auc(ood_label, ood_prediction),
     }
@@ -252,6 +287,8 @@ def qualify_ensemble(
 
     device = torch.device(device_name or ("cuda" if torch.cuda.is_available() else "cpu"))
     contract, ensemble, models = _load_ensemble(ensemble_manifest, fingerprint_path, device)
+    if sha256_file(manifest_path) != ensemble["metadata"]["training_manifest_sha256"]:
+        raise LTSNContractError("qualification manifest differs from the trained ensemble")
     calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
     if calibration.get("ensemble_manifest_sha256") != sha256_file(ensemble_manifest):
         raise LTSNContractError("calibration belongs to a different ensemble")
@@ -267,8 +304,12 @@ def qualify_ensemble(
     for step in sorted(np.unique(prediction["step_number"])):
         mask = prediction["step_number"] == step
         subset = {
-            name: value[:, mask] if name in {"member_coordinate_mean", "member_logvar"}
-            else value[mask] if isinstance(value, np.ndarray)
+            name: value
+            if name == "active_coordinate_mask"
+            else value[:, mask]
+            if name in {"member_coordinate_mean", "member_logvar"}
+            else value[mask]
+            if isinstance(value, np.ndarray)
             else [item for item, keep in zip(value, mask, strict=True) if keep]
             for name, value in prediction.items()
         }

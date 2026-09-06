@@ -16,7 +16,11 @@ from generation.ltsn_contract import (
     FingerprintContract,
     LTSNContractError,
 )
-from generation.ltsn_losses import block_balanced_huber
+from generation.ltsn_losses import (
+    block_balanced_huber,
+    paired_direction_loss,
+    phase_pair_ranking_loss,
+)
 from generation.path_homology_surrogate import LTSNConfig, LTSNOutput, PathHomologySurrogate
 from generation.topology_corrector import TopologyCorrector, TopologyCorrectorConfig
 
@@ -131,6 +135,56 @@ def test_surrogate_outputs_frozen_dimensions_and_time_conditioning() -> None:
     assert first.coordinate_logvar.shape == (2, 18)
     assert first.ood_logit.shape == (2,)
     assert not torch.allclose(first.coordinate_mean, second.coordinate_mean)
+
+
+def test_v2_inactive_coordinates_are_exact_zero_without_architecture_change() -> None:
+    model = PathHomologySurrogate(
+        _contract(),
+        LTSNConfig(dropout=0.0, inactive_coordinate_indices=(0, 1, 2)),
+    ).eval()
+    latent = torch.randn(2, 40, 64)
+
+    output = model(latent, 0.5, 5)
+
+    assert torch.equal(output.coordinate_mean[:, :3], torch.zeros(2, 3))
+    assert torch.equal(
+        output.coordinate_logvar[:, :3],
+        torch.full((2, 3), model.config.logvar_min),
+    )
+
+
+def test_v2_scaled_and_direction_losses_use_existing_outputs() -> None:
+    prediction = torch.zeros(2, 18)
+    target = torch.zeros(2, 18)
+    target[:, 16:] = torch.tensor([[0.0, 0.0], [1.0, -1.0]])
+    pairs = torch.tensor([[0, 1]])
+    scale = torch.ones(18)
+    scale[16:] = 0.5
+    active = torch.ones(18, dtype=torch.bool)
+    active[:3] = False
+
+    coordinate_loss = block_balanced_huber(
+        prediction,
+        target,
+        coordinate_scale=scale,
+        active_mask=active,
+    )
+    phase_loss = phase_pair_ranking_loss(
+        prediction,
+        target,
+        pairs,
+        coordinate_scale=scale,
+    )
+    aligned = paired_direction_loss(
+        torch.tensor([0.0, 1.0]), torch.tensor([0.0, 1.0]), pairs
+    )
+    reversed_loss = paired_direction_loss(
+        torch.tensor([1.0, 0.0]), torch.tensor([0.0, 1.0]), pairs
+    )
+
+    assert coordinate_loss > 0
+    assert phase_loss > 0
+    assert aligned < reversed_loss
 
 
 def test_block_balanced_loss_does_not_overweight_pitch_dimension_count() -> None:

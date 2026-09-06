@@ -8,8 +8,11 @@ RUN_ROOT="${RUN_ROOT:-${PROJECT_ROOT}/runs/ltsn_turbo}"
 PROMPT_MANIFEST="${PROMPT_MANIFEST:-${PROJECT_ROOT}/metadata/ltsn_prompts.csv}"
 SURROGATE_TRAINING_GATE="${SURROGATE_TRAINING_GATE:-${PROJECT_ROOT}/metadata/ltsn_surrogate_training_gate.json}"
 FINGERPRINT="${PROJECT_ROOT}/metadata/focus_path_homology_fingerprint_v2.json"
-CONFIG="${PROJECT_ROOT}/configs/ltsn_training.toml"
+CONFIG="${LTSN_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training.toml}"
+LTSN_MANIFEST="${LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
+LTSN_SPLIT_MANIFEST="${LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
 DEVELOPMENT_DIR="${DEVELOPMENT_DIR:-${RUN_ROOT}/development_pairs}"
+TRAINING_AUGMENTATION_DIR="${TRAINING_AUGMENTATION_DIR:-${RUN_ROOT}/training_augmentation}"
 
 [[ -x "${PYTHON_BIN}" ]] || { echo "Python environment is missing: ${PYTHON_BIN}" >&2; exit 2; }
 
@@ -119,6 +122,30 @@ labels() {
     --materialize-mode "${MATERIALIZE_MODE:-auto}"
 }
 
+augment_training() {
+  : "${ACE_MODEL_SHA256:?Set ACE_MODEL_SHA256 to the 64-hex model tree digest}"
+  : "${VAE_SHA256:?Set VAE_SHA256 to the 64-hex VAE tree digest}"
+  ACESTEP_DEVICE="${AUGMENT_DEVICE:-cuda:0}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_training_augmentation.py" \
+    --root "${PROJECT_ROOT}" \
+    --source-manifest "${RUN_ROOT}/labels/ltsn_manifest.csv" \
+    --source-split-manifest "${RUN_ROOT}/labels/split_manifest.json" \
+    --ace-config "${PROJECT_ROOT}/configs/ace_rerank_180s.toml" \
+    --fingerprint "${FINGERPRINT}" \
+    --output-dir "${TRAINING_AUGMENTATION_DIR}" \
+    --ace-model-sha256 "${ACE_MODEL_SHA256}" \
+    --vae-sha256 "${VAE_SHA256}" \
+    --trajectories-per-prompt "${AUGMENT_TRAJECTORIES_PER_PROMPT:-1}" \
+    --perturbations-per-anchor "${AUGMENT_PERTURBATIONS_PER_ANCHOR:-2}" \
+    --rms-ratio "${AUGMENT_RMS_RATIO:-0.005}" \
+    --ood-per-prompt "${AUGMENT_OOD_PER_PROMPT:-1}" \
+    --workers "${AUGMENT_EXACT_WORKERS:-8}" \
+    --exact-batch-size "${AUGMENT_EXACT_BATCH_SIZE:-256}" \
+    --materialize-mode "${MATERIALIZE_MODE:-auto}" \
+    --device "${AUGMENT_DEVICE:-cuda:0}" \
+    --resume
+}
+
 train() {
   [[ -f "${SURROGATE_TRAINING_GATE}" ]] || { echo "Passed ltsn_surrogate_training_v1 gate is required: ${SURROGATE_TRAINING_GATE}" >&2; exit 3; }
   local -a train_device_args
@@ -131,8 +158,8 @@ train() {
   fi
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/train_path_homology_surrogate.py" \
     --fingerprint "${FINGERPRINT}" \
-    --manifest "${RUN_ROOT}/labels/ltsn_manifest.csv" \
-    --split-manifest "${RUN_ROOT}/labels/split_manifest.json" \
+    --manifest "${LTSN_MANIFEST}" \
+    --split-manifest "${LTSN_SPLIT_MANIFEST}" \
     --config "${CONFIG}" \
     --output-dir "${RUN_ROOT}/models" \
     --surrogate-training-gate "${SURROGATE_TRAINING_GATE}" \
@@ -142,7 +169,7 @@ train() {
 calibrate() {
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_ltsn_qualification.py" calibrate \
     --fingerprint "${FINGERPRINT}" \
-    --manifest "${RUN_ROOT}/labels/ltsn_manifest.csv" \
+    --manifest "${LTSN_MANIFEST}" \
     --ensemble-manifest "${RUN_ROOT}/models/ensemble_manifest.json" \
     --output "${RUN_ROOT}/calibration.json" \
     --device "${EVAL_DEVICE:-cuda:0}"
@@ -214,7 +241,7 @@ qualify() {
   }
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_ltsn_qualification.py" qualify \
     --fingerprint "${FINGERPRINT}" \
-    --manifest "${RUN_ROOT}/labels/ltsn_manifest.csv" \
+    --manifest "${LTSN_MANIFEST}" \
     --ensemble-manifest "${RUN_ROOT}/models/ensemble_manifest.json" \
     --calibration "${RUN_ROOT}/calibration.json" \
     --guidance-development-report "${RUN_ROOT}/guidance_development.json" \
@@ -252,6 +279,7 @@ guidance_confirmation() {
 case "${STAGE}" in
   collect) collect ;;
   labels) labels ;;
+  augment-training) augment_training ;;
   train) train ;;
   calibrate) calibrate ;;
   development-generate) development_generate ;;
@@ -261,5 +289,5 @@ case "${STAGE}" in
   guidance-development) guidance_development ;;
   qualify) qualify ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|train|calibrate|development-generate|development-score|development-evidence|development-finalize|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|train|calibrate|development-generate|development-score|development-evidence|development-finalize|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
 esac

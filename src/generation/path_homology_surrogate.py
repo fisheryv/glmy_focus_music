@@ -36,6 +36,7 @@ class LTSNConfig:
     dropout: float = 0.1
     logvar_min: float = -8.0
     logvar_max: float = 4.0
+    inactive_coordinate_indices: tuple[int, ...] = ()
 
 
 def _resize_mask(mask: Tensor, length: int) -> Tensor:
@@ -212,6 +213,15 @@ class PathHomologySurrogate(nn.Module):
         self.coordinate_mean_head = nn.Linear(256, FINGERPRINT_DIMENSIONS)
         self.coordinate_logvar_head = nn.Linear(256, FINGERPRINT_DIMENSIONS)
         self.ood_head = nn.Linear(256, 1)
+        inactive = tuple(int(index) for index in cfg.inactive_coordinate_indices)
+        if len(set(inactive)) != len(inactive) or any(
+            not 0 <= index < FINGERPRINT_DIMENSIONS for index in inactive
+        ):
+            raise ValueError("inactive_coordinate_indices must be unique indices in [0,18)")
+        active_mask = torch.ones(FINGERPRINT_DIMENSIONS, dtype=torch.float32)
+        if inactive:
+            active_mask[list(inactive)] = 0.0
+        self.register_buffer("coordinate_active_mask", active_mask, persistent=False)
         self.register_buffer(
             "focus_coef", torch.tensor(contract.classifier_coef, dtype=torch.float32)
         )
@@ -278,9 +288,14 @@ class PathHomologySurrogate(nn.Module):
             dim=-1,
         )
         shared = self.fusion(pooled)
-        coordinate_mean = self.coordinate_mean_head(shared)
+        coordinate_mean = self.coordinate_mean_head(shared) * self.coordinate_active_mask
         coordinate_logvar = self.coordinate_logvar_head(shared).clamp(
             self.config.logvar_min, self.config.logvar_max
+        )
+        coordinate_logvar = torch.where(
+            self.coordinate_active_mask.bool(),
+            coordinate_logvar,
+            torch.full_like(coordinate_logvar, self.config.logvar_min),
         )
         ood_logit = self.ood_head(shared).squeeze(-1)
         focus_logit = coordinate_mean.float() @ self.focus_coef + self.focus_intercept

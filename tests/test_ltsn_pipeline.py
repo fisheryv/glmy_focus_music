@@ -5,11 +5,13 @@ from __future__ import annotations
 import csv
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
 
 from generation import ltsn_training
+from generation.ltsn_evaluation import _metrics
 from generation.ltsn_pipeline import (
     TrajectoryRecorder,
     build_exact_label_tables,
@@ -19,15 +21,190 @@ from generation.ltsn_pipeline import (
 )
 from generation.ltsn_cli import collect_main, merge_main
 from generation.ltsn_contract import LTSNContractError
+from generation.ltsn_dataset import LTSNSnapshot
 from generation.ltsn_training import (
     LTSNTrainingConfig,
+    PromptGroupedBatchSampler,
     _resolve_training_devices,
+    _training_target_contract,
     train_ensemble,
 )
+from generation.ltsn_training_augmentation import (
+    _augmentation_plan,
+    _write_augmentation_trajectory_manifest,
+)
+from generation.path_homology_surrogate import LTSNConfig
 from generation.path_homology_exact_scorer import ExactPathHomologyScorer
 
 ROOT = Path(__file__).resolve().parents[1]
 FINGERPRINT = ROOT / "metadata" / "focus_path_homology_fingerprint_v2.json"
+
+
+def _snapshot(
+    sample_id: str,
+    trajectory_id: str,
+    step: int,
+    *,
+    anchor: str = "",
+    coordinates: tuple[float, ...] = (0.0,) * 18,
+    ood_label: float = 0.0,
+) -> LTSNSnapshot:
+    return LTSNSnapshot(
+        sample_id=sample_id,
+        prompt_id="prompt",
+        trajectory_id=trajectory_id,
+        split="train",
+        step_number=step,
+        timestep=0.5,
+        latent_path=Path("unused.npy"),
+        latent_sha256="a" * 64,
+        coordinates=coordinates,
+        focus_logit=0.0,
+        ood_label=ood_label,
+        is_final=step == 8,
+        exact_label_table_sha256="b" * 64,
+        local_anchor_sample_id=anchor,
+    )
+
+
+def test_prompt_grouped_sampler_keeps_local_pairs_and_trajectory_steps_together() -> None:
+    records = [
+        _snapshot("anchor", "trajectory", 5),
+        _snapshot("step4", "trajectory", 4),
+        _snapshot("step6", "trajectory", 6),
+        _snapshot("local_plus", "local_plus", 5, anchor="anchor"),
+        _snapshot("local_minus", "local_minus", 5, anchor="anchor"),
+    ]
+
+    batches = list(PromptGroupedBatchSampler(records, batch_size=8, seed=7))
+
+    assert len(batches) == 1
+    assert set(batches[0]) == set(range(len(records)))
+    assert batches[0].count(0) == 1
+
+
+def test_prompt_grouped_sampler_length_matches_fragmented_units() -> None:
+    records: list[LTSNSnapshot] = []
+    for group in range(3):
+        anchor = f"anchor_{group}"
+        records.append(_snapshot(anchor, f"trajectory_{group}", 5))
+        records.extend(
+            _snapshot(
+                f"local_{group}_{index}",
+                f"local_{group}_{index}",
+                5,
+                anchor=anchor,
+            )
+            for index in range(4)
+        )
+    sampler = PromptGroupedBatchSampler(records, batch_size=8, seed=7)
+
+    batches = list(sampler)
+
+    assert len(sampler) == len(batches) == 3
+    assert sorted(index for batch in batches for index in batch) == list(range(15))
+
+
+def test_v2_target_contract_uses_only_id_targets_and_requires_ood_class() -> None:
+    low = (0.0, 0.0, 0.0, 1.0, *((0.0,) * 14))
+    high = (0.0, 0.0, 0.0, 3.0, *((0.0,) * 14))
+    ood = (0.0, 0.0, 0.0, 100.0, *((0.0,) * 14))
+    records = [
+        _snapshot("id_low", "t1", 4, coordinates=low),
+        _snapshot("id_high", "t2", 4, coordinates=high),
+        _snapshot("ood", "t3", 4, coordinates=ood, ood_label=1.0),
+    ]
+
+    contract = _training_target_contract(
+        records,
+        LTSNConfig(inactive_coordinate_indices=(0, 1, 2)),
+        LTSNTrainingConfig(require_ood_both_classes=True),
+    )
+
+    assert contract["coordinate_mean"][3] == pytest.approx(2.0)
+    assert contract["coordinate_standard_deviation"][3] == pytest.approx(1.0)
+    assert contract["active_coordinate_mask"][:3] == [False, False, False]
+    assert contract["ood_positive_samples"] == 1
+    assert contract["ood_negative_samples"] == 2
+
+
+def test_augmentation_plan_and_exact_manifest_are_deterministic(tmp_path: Path) -> None:
+    anchor = _snapshot("anchor", "trajectory", 5)
+    first = _augmentation_plan(
+        [anchor],
+        perturbations_per_anchor=2,
+        rms_ratio=0.005,
+        ood_per_prompt=1,
+        seed=7,
+    )
+    second = _augmentation_plan(
+        [anchor],
+        perturbations_per_anchor=2,
+        rms_ratio=0.005,
+        ood_per_prompt=1,
+        seed=7,
+    )
+    assert first == second
+    assert [item["kind"] for item in first] == [
+        "local_direction",
+        "local_direction",
+        "ood_zero",
+    ]
+
+    manifest = tmp_path / "training_augmentation_trajectories.csv"
+    source = {
+        "anchor": {
+            "model_family": "acestep-v15-xl-turbo",
+            "ace_model_sha256": "a" * 64,
+            "vae_sha256": "b" * 64,
+        }
+    }
+    receipts = {
+        item["sample_id"]: {
+            "sample_id": item["sample_id"],
+            "latent_path": f"latents/{item['sample_id']}.npy",
+            "latent_sha256": "c" * 64,
+            "audio_path": f"audio/{item['sample_id']}.wav",
+            "audio_sha256": "d" * 64,
+        }
+        for item in first
+    }
+    _write_augmentation_trajectory_manifest(
+        path=manifest,
+        planned=first,
+        source_by_sample=source,
+        receipt_by_id=receipts,
+    )
+    with manifest.open("r", encoding="utf-8-sig", newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    assert [row["sample_id"] for row in rows] == [item["sample_id"] for item in first]
+    assert rows[0]["local_anchor_sample_id"] == "anchor"
+    assert rows[-1]["local_anchor_sample_id"] == ""
+
+
+def test_qualification_fidelity_metrics_exclude_ood_rows() -> None:
+    exact = np.repeat(np.arange(5, dtype=float)[:, None], 18, axis=1)
+    exact[:, :3] = 0.0
+    mean = exact.copy()
+    mean[-1] = -100.0
+    prediction = {
+        "coordinates": exact,
+        "coordinate_mean": mean,
+        "focus_logit": np.arange(5, dtype=float),
+        "predicted_focus_logit": np.asarray([0.0, 1.0, 2.0, 3.0, -100.0]),
+        "ood_label": np.asarray([0.0, 0.0, 0.0, 0.0, 1.0]),
+        "ood_probability": np.asarray([0.1, 0.1, 0.1, 0.1, 0.9]),
+        "total_variance": np.ones((5, 18), dtype=float),
+        "active_coordinate_mask": np.asarray([False, False, False, *([True] * 15)]),
+    }
+
+    metrics = _metrics(prediction, np.ones(18, dtype=float))
+
+    assert metrics["n"] == 5
+    assert metrics["n_in_distribution"] == 4
+    assert metrics["focus_logit_mae"] == 0.0
+    assert metrics["coordinate_mae"] == [0.0] * 18
+    assert metrics["ood_auroc"] == 1.0
 
 
 def test_three_seed_training_maps_one_explicit_gpu_per_seed() -> None:

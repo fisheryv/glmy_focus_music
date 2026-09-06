@@ -171,3 +171,8 @@ def validate_checkpoint_metadata(
         "vae_sha256",
     ):
         _require_sha256(metadata.get(name), f"checkpoint {name}")
+    if "training_target_contract_sha256" in metadata:
+        _require_sha256(
+            metadata.get("training_target_contract_sha256"),
+            "checkpoint training_target_contract_sha256",
+        )
