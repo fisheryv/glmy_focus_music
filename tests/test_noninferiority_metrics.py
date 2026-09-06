@@ -10,11 +10,15 @@ import pytest
 from generation.experiment import CandidateRecord, write_candidate_manifest
 from generation.ltsn_contract import sha256_file
 from generation.noninferiority_metrics import (
+    DEVELOPMENT_OUTPUT_COLUMNS,
     OUTPUT_COLUMNS,
+    DevelopmentPair,
     PromptPair,
     TransformersClapBackend,
+    build_development_metric_rows,
     build_metric_rows,
     generate_noninferiority_metrics,
+    load_development_evidence_inputs,
     nearest_neighbor_diversity,
     split_audio,
 )
@@ -71,6 +75,87 @@ def test_build_metric_rows_calculates_requested_columns() -> None:
     assert [float(row["diversity_selected"]) for row in rows] == pytest.approx([2.0, 2.0])
     assert rows[0]["quality_baseline"] == ""
     assert rows[0]["quality_selected"] == ""
+
+
+def test_build_development_metric_rows_uses_guided_schema_and_pair_bindings() -> None:
+    pairs = (
+        DevelopmentPair("pair1", "p1", "one", 1, "a", "b"),
+        DevelopmentPair("pair2", "p2", "two", 2, "c", "d"),
+    )
+    embeddings = {
+        "a": np.asarray([1.0, 0.0]),
+        "b": np.asarray([0.0, 1.0]),
+        "c": np.asarray([0.0, 1.0]),
+        "d": np.asarray([-1.0, 0.0]),
+    }
+    text = np.asarray([[1.0, 0.0], [0.0, 1.0]])
+
+    rows = build_development_metric_rows(
+        pairs,
+        embeddings,
+        text,
+        {"pair1": ("0.4", "0.5"), "pair2": ("0.6", "0.7")},
+    )
+
+    assert tuple(rows[0]) == DEVELOPMENT_OUTPUT_COLUMNS
+    assert rows[0]["pair_id"] == "pair1"
+    assert rows[0]["quality_guided"] == "0.5"
+    assert float(rows[0]["prompt_baseline"]) == pytest.approx(1.0)
+    assert float(rows[1]["prompt_guided"]) == pytest.approx(0.0)
+
+
+def test_load_development_evidence_inputs_requires_complete_hash_bound_cohort(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "development"
+    planned: list[dict[str, object]] = []
+    manifest: list[dict[str, object]] = []
+    for prompt_index in range(64):
+        for seed_index in range(4):
+            seed = 1000 + prompt_index * 4 + seed_index
+            prompt_id = f"p{prompt_index:02d}"
+            pair_id = f"{prompt_id}__seed{seed}"
+            planned.append(
+                {
+                    "pair_id": pair_id,
+                    "prompt_id": prompt_id,
+                    "caption": f"caption {prompt_index}",
+                    "seed": seed,
+                }
+            )
+            row: dict[str, object] = {
+                "pair_id": pair_id,
+                "prompt_id": prompt_id,
+                "seed": seed,
+                "baseline_candidate_id": f"{pair_id}__baseline",
+                "guided_candidate_id": f"{pair_id}__guided",
+                "authorization_scope": "development_only",
+            }
+            for arm in ("baseline", "guided"):
+                path = run_root / "data_raw" / arm / f"{pair_id}__{arm}.wav"
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(f"{pair_id}-{arm}".encode())
+                row[f"{arm}_audio_path"] = path.relative_to(run_root).as_posix()
+                row[f"{arm}_audio_sha256"] = sha256_file(path)
+            manifest.append(row)
+    _write_rows(run_root / "development_generation_manifest.csv", manifest)
+    (run_root / "development_generation_plan.json").write_text(
+        json.dumps(
+            {
+                "authorization_scope": "development_only",
+                "planned_pairs": planned,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    inputs = load_development_evidence_inputs(run_root)
+
+    assert len(inputs.pairs) == 256
+    assert len(inputs.audio_paths) == 512
+    assert {pair.prompt_id for pair in inputs.pairs} == {
+        f"p{index:02d}" for index in range(64)
+    }
 
 
 class _FakeBackend:

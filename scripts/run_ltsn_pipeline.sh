@@ -179,11 +179,29 @@ development_score() {
     --workers "${DEVELOPMENT_EXACT_WORKERS:-8}"
 }
 
+development_evidence() {
+  : "${CLAP_REVISION:?Set CLAP_REVISION to the frozen 40-hex Hugging Face commit SHA}"
+  local -a evidence_args=(
+    "${PROJECT_ROOT}/scripts/build_ltsn_development_noninferiority_metrics.py"
+    --root "${PROJECT_ROOT}"
+    --run-root "${DEVELOPMENT_DIR}"
+    --model-id "${CLAP_MODEL_ID:-laion/clap-htsat-fused}"
+    --model-revision "${CLAP_REVISION}"
+    --device "${CLAP_DEVICE:-cuda:0}"
+    --batch-size "${CLAP_BATCH_SIZE:-8}"
+    --segment-seconds "${CLAP_SEGMENT_SECONDS:-10}"
+  )
+  if [[ -n "${DEVELOPMENT_QUALITY_TABLE:-}" ]]; then
+    evidence_args+=(--quality-table "${DEVELOPMENT_QUALITY_TABLE}")
+  fi
+  "${PYTHON_BIN}" "${evidence_args[@]}"
+}
+
 development_finalize() {
-  : "${NONINFERIORITY_EVIDENCE:?Set NONINFERIORITY_EVIDENCE to the numeric paired evidence CSV}"
+  local evidence="${NONINFERIORITY_EVIDENCE:-${DEVELOPMENT_DIR}/development_noninferiority_metrics.csv}"
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_development_pairs.py" finalize \
     --raw-pair-table "${DEVELOPMENT_DIR}/development_pairs_raw.csv" \
-    --evidence-table "${NONINFERIORITY_EVIDENCE}" \
+    --evidence-table "${evidence}" \
     --protocol "${PROJECT_ROOT}/configs/ace_reranking_noninferiority.json" \
     --output-dir "${DEVELOPMENT_DIR}" \
     --bootstrap-resamples "${DEVELOPMENT_BOOTSTRAP_RESAMPLES:-2000}"
@@ -238,9 +256,10 @@ case "${STAGE}" in
   calibrate) calibrate ;;
   development-generate) development_generate ;;
   development-score) development_score ;;
+  development-evidence) development_evidence ;;
   development-finalize) development_finalize ;;
   guidance-development) guidance_development ;;
   qualify) qualify ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|train|calibrate|development-generate|development-score|development-finalize|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|train|calibrate|development-generate|development-score|development-evidence|development-finalize|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
 esac

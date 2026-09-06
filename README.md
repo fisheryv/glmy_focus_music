@@ -63,9 +63,12 @@ bash scripts/run_ltsn_pipeline.sh calibrate
 # 只用 development split 生成 64 prompt x 4 seed 的 baseline/guided 对并精确评分：
 DEVELOPMENT_DEVICE=cuda:0 bash scripts/run_ltsn_pipeline.sh development-generate
 bash scripts/run_ltsn_pipeline.sh development-score
-# 外部盲评/冻结 embedding 指标必须包含同一批 pair_id：
-NONINFERIORITY_EVIDENCE=<development_noninferiority_metrics.csv> \
-  bash scripts/run_ltsn_pipeline.sh development-finalize
+# 先生成 CLAP prompt/diversity 与空白质量列，再填入独立盲评质量分并重跑：
+CLAP_REVISION=<frozen-40-hex-commit> bash scripts/run_ltsn_pipeline.sh development-evidence
+DEVELOPMENT_QUALITY_TABLE=<development_quality_scores.csv> \
+  CLAP_REVISION=<frozen-40-hex-commit> \
+  bash scripts/run_ltsn_pipeline.sh development-evidence
+bash scripts/run_ltsn_pipeline.sh development-finalize
 bash scripts/run_ltsn_pipeline.sh guidance-development
 bash scripts/run_ltsn_pipeline.sh qualify
 # 资格通过并完成全新 32 prompt × 8 seed 配对实验后：

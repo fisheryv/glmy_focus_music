@@ -29,6 +29,20 @@ OUTPUT_COLUMNS = (
     "diversity_selected",
 )
 
+DEVELOPMENT_OUTPUT_COLUMNS = (
+    "pair_id",
+    "prompt_id",
+    "seed",
+    "baseline_candidate_id",
+    "guided_candidate_id",
+    "quality_baseline",
+    "quality_guided",
+    "prompt_baseline",
+    "prompt_guided",
+    "diversity_baseline",
+    "diversity_guided",
+)
+
 _COMMIT_SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -49,6 +63,25 @@ class EvidenceInputs:
     pool_summary_path: Path
     candidate_manifest_path: Path
     prompt_manifest_path: Path
+
+
+@dataclass(frozen=True, slots=True)
+class DevelopmentPair:
+    pair_id: str
+    prompt_id: str
+    caption: str
+    seed: int
+    baseline_candidate_id: str
+    guided_candidate_id: str
+
+
+@dataclass(frozen=True, slots=True)
+class DevelopmentEvidenceInputs:
+    pairs: tuple[DevelopmentPair, ...]
+    audio_paths: dict[str, Path]
+    audio_sha256: dict[str, str]
+    generation_manifest_path: Path
+    generation_plan_path: Path
 
 
 class EmbeddingBackend(Protocol):
@@ -174,6 +207,76 @@ def load_evidence_inputs(
     )
 
 
+def load_development_evidence_inputs(run_root: Path) -> DevelopmentEvidenceInputs:
+    """Load the frozen 64-prompt x 4-seed development-only generation cohort."""
+
+    run_root = run_root.resolve()
+    manifest_path = run_root / "development_generation_manifest.csv"
+    plan_path = run_root / "development_generation_plan.json"
+    manifest_rows = _read_csv(manifest_path)
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    if plan.get("authorization_scope") != "development_only":
+        raise ValueError("development generation plan has an invalid authorization scope")
+    planned_rows = plan.get("planned_pairs")
+    if not isinstance(planned_rows, list):
+        raise ValueError("development generation plan has no planned_pairs")
+    planned = {str(row.get("pair_id", "")): row for row in planned_rows}
+    observed = _unique_by(manifest_rows, "pair_id", source=manifest_path)
+    if len(planned) != 256 or len(observed) != 256 or set(planned) != set(observed):
+        raise ValueError("development evidence requires the complete 256-pair generation plan")
+    prompt_counts: dict[str, int] = {}
+    pairs: list[DevelopmentPair] = []
+    audio_paths: dict[str, Path] = {}
+    audio_hashes: dict[str, str] = {}
+    for pair_id in sorted(planned):
+        expected = planned[pair_id]
+        row = observed[pair_id]
+        prompt_id = str(expected.get("prompt_id", ""))
+        caption = str(expected.get("caption", "")).strip()
+        seed = int(expected["seed"])
+        if (
+            not prompt_id
+            or not caption
+            or row.get("prompt_id") != prompt_id
+            or int(row["seed"]) != seed
+            or row.get("authorization_scope") != "development_only"
+        ):
+            raise ValueError(f"development generation binding mismatch: {pair_id}")
+        prompt_counts[prompt_id] = prompt_counts.get(prompt_id, 0) + 1
+        baseline_id = row.get("baseline_candidate_id", "").strip()
+        guided_id = row.get("guided_candidate_id", "").strip()
+        if baseline_id != f"{pair_id}__baseline" or guided_id != f"{pair_id}__guided":
+            raise ValueError(f"development candidate binding mismatch: {pair_id}")
+        for arm, candidate_id in (("baseline", baseline_id), ("guided", guided_id)):
+            path = _resolve_audio_path(run_root, row.get(f"{arm}_audio_path", ""))
+            expected_hash = row.get(f"{arm}_audio_sha256", "").lower()
+            if not path.is_file() or not _SHA256.fullmatch(expected_hash):
+                raise ValueError(f"development audio is missing or has no hash: {candidate_id}")
+            if sha256_file(path) != expected_hash:
+                raise ValueError(f"development audio SHA-256 mismatch: {candidate_id}")
+            audio_paths[candidate_id] = path
+            audio_hashes[candidate_id] = expected_hash
+        pairs.append(
+            DevelopmentPair(
+                pair_id=pair_id,
+                prompt_id=prompt_id,
+                caption=caption,
+                seed=seed,
+                baseline_candidate_id=baseline_id,
+                guided_candidate_id=guided_id,
+            )
+        )
+    if len(prompt_counts) != 64 or set(prompt_counts.values()) != {4}:
+        raise ValueError("development evidence requires exactly 64 prompts x 4 seeds")
+    return DevelopmentEvidenceInputs(
+        pairs=tuple(pairs),
+        audio_paths=audio_paths,
+        audio_sha256=audio_hashes,
+        generation_manifest_path=manifest_path,
+        generation_plan_path=plan_path,
+    )
+
+
 def normalize_embeddings(values: np.ndarray) -> np.ndarray:
     matrix = np.asarray(values, dtype=np.float64)
     if matrix.ndim != 2 or matrix.shape[0] == 0:
@@ -295,6 +398,38 @@ def _load_quality_table(
     return result
 
 
+def _load_development_quality_table(
+    path: Path | None, pairs: Sequence[DevelopmentPair]
+) -> dict[str, tuple[str, str]]:
+    if path is None:
+        return {}
+    rows = _unique_by(_read_csv(path), "pair_id", source=path)
+    expected = {pair.pair_id: pair for pair in pairs}
+    if set(rows) != set(expected):
+        raise ValueError("quality table must contain exactly one row per development pair")
+    result: dict[str, tuple[str, str]] = {}
+    for pair_id, pair in expected.items():
+        row = rows[pair_id]
+        bindings = {
+            "prompt_id": pair.prompt_id,
+            "seed": str(pair.seed),
+            "baseline_candidate_id": pair.baseline_candidate_id,
+            "guided_candidate_id": pair.guided_candidate_id,
+        }
+        if any((row.get(name) or "").strip() != value for name, value in bindings.items()):
+            raise ValueError(f"quality development-pair binding mismatch: {pair_id}")
+        baseline = (row.get("quality_baseline") or "").strip()
+        guided = (row.get("quality_guided") or "").strip()
+        try:
+            values = (float(baseline), float(guided))
+        except ValueError as exc:
+            raise ValueError(f"quality scores are not numeric: {pair_id}") from exc
+        if not all(math.isfinite(value) for value in values):
+            raise ValueError(f"quality scores are not finite: {pair_id}")
+        result[pair_id] = (baseline, guided)
+    return result
+
+
 def build_metric_rows(
     pairs: Sequence[PromptPair],
     candidate_embeddings: dict[str, np.ndarray],
@@ -336,11 +471,64 @@ def build_metric_rows(
     return rows
 
 
+def build_development_metric_rows(
+    pairs: Sequence[DevelopmentPair],
+    candidate_embeddings: dict[str, np.ndarray],
+    text_embeddings: np.ndarray,
+    quality: dict[str, tuple[str, str]] | None = None,
+) -> list[dict[str, str]]:
+    if not pairs:
+        raise ValueError("no development pairs were supplied")
+    text = normalize_embeddings(text_embeddings)
+    if text.shape[0] != len(pairs):
+        raise ValueError("text backend returned the wrong number of development embeddings")
+    baseline = normalize_embeddings(
+        np.stack([candidate_embeddings[pair.baseline_candidate_id] for pair in pairs])
+    )
+    guided = normalize_embeddings(
+        np.stack([candidate_embeddings[pair.guided_candidate_id] for pair in pairs])
+    )
+    if baseline.shape[1] != text.shape[1] or guided.shape[1] != text.shape[1]:
+        raise ValueError("development audio and text embedding dimensions differ")
+    baseline_diversity = nearest_neighbor_diversity(baseline)
+    guided_diversity = nearest_neighbor_diversity(guided)
+    quality = quality or {}
+    rows: list[dict[str, str]] = []
+    for index, pair in enumerate(pairs):
+        quality_values = quality.get(pair.pair_id, ("", ""))
+        rows.append(
+            {
+                "pair_id": pair.pair_id,
+                "prompt_id": pair.prompt_id,
+                "seed": str(pair.seed),
+                "baseline_candidate_id": pair.baseline_candidate_id,
+                "guided_candidate_id": pair.guided_candidate_id,
+                "quality_baseline": quality_values[0],
+                "quality_guided": quality_values[1],
+                "prompt_baseline": format(float(baseline[index] @ text[index]), ".17g"),
+                "prompt_guided": format(float(guided[index] @ text[index]), ".17g"),
+                "diversity_baseline": format(float(baseline_diversity[index]), ".17g"),
+                "diversity_guided": format(float(guided_diversity[index]), ".17g"),
+            }
+        )
+    return rows
+
+
 def _write_csv_atomic(path: Path, rows: Sequence[dict[str, str]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".part")
     with temporary.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=OUTPUT_COLUMNS)
+        writer.writeheader()
+        writer.writerows(rows)
+    os.replace(temporary, path)
+
+
+def _write_development_csv_atomic(path: Path, rows: Sequence[dict[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".part")
+    with temporary.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=DEVELOPMENT_OUTPUT_COLUMNS)
         writer.writeheader()
         writer.writerows(rows)
     os.replace(temporary, path)
@@ -508,6 +696,108 @@ def generate_noninferiority_metrics(
             "path": str(output_path.resolve()),
             "sha256": sha256_file(output_path),
             "rows": len(rows),
+            "quality_columns_complete": quality_table_path is not None,
+        },
+    }
+    _write_json_atomic(audit_path, audit)
+    return audit
+
+
+def generate_development_noninferiority_metrics(
+    *,
+    run_root: Path,
+    output_path: Path,
+    audit_path: Path,
+    backend: EmbeddingBackend,
+    model_id: str,
+    model_revision: str,
+    device: str,
+    batch_size: int,
+    segment_seconds: float,
+    quality_table_path: Path | None = None,
+) -> dict[str, Any]:
+    """Build numeric prompt/diversity evidence for development-only guided pairs."""
+
+    inputs = load_development_evidence_inputs(run_root)
+    quality = _load_development_quality_table(quality_table_path, inputs.pairs)
+    candidate_embeddings: dict[str, np.ndarray] = {}
+    for candidate_id, path in inputs.audio_paths.items():
+        candidate_embeddings[candidate_id] = embed_track(
+            path,
+            backend,
+            segment_seconds=segment_seconds,
+            batch_size=batch_size,
+        )
+    captions = [pair.caption for pair in inputs.pairs]
+    text_batches: list[np.ndarray] = []
+    for start in range(0, len(captions), batch_size):
+        text_batches.append(backend.embed_text(captions[start : start + batch_size]))
+    text_embeddings = np.concatenate(text_batches, axis=0)
+    rows = build_development_metric_rows(
+        inputs.pairs, candidate_embeddings, text_embeddings, quality
+    )
+    _write_development_csv_atomic(output_path, rows)
+
+    versions: dict[str, str] = {}
+    for package in ("numpy", "scipy", "soundfile", "torch", "transformers"):
+        try:
+            versions[package] = importlib.metadata.version(package)
+        except importlib.metadata.PackageNotFoundError:
+            versions[package] = "UNAVAILABLE"
+    audit = {
+        "schema_version": 1,
+        "metric_contract": "development_clap_prompt_and_cohort_diversity_v1",
+        "authorization_scope": "development_only",
+        "created_at": datetime.now(UTC).isoformat(),
+        "model": {
+            "id": model_id,
+            "requested_revision": model_revision.lower(),
+            "resolved_commit": backend.model_commit,
+        },
+        "runtime": {
+            "device": device,
+            "batch_size": batch_size,
+            "package_versions": versions,
+        },
+        "audio": {
+            "sampling_rate": backend.sampling_rate,
+            "segment_seconds": segment_seconds,
+            "segmentation": (
+                "contiguous non-overlapping windows; zero-pad final window; "
+                "valid-sample-weighted mean of L2-normalized window embeddings; "
+                "L2-normalize track embedding"
+            ),
+        },
+        "formulas": {
+            "prompt": "cosine(normalized_track_audio_embedding, normalized_prompt_text_embedding)",
+            "diversity": "1 - max_{j != i} cosine(normalized_track_i, normalized_track_j)",
+            "diversity_cohorts": "baseline and guided cohorts are evaluated separately",
+            "direction": "higher_is_better",
+        },
+        "inputs": {
+            "generation_manifest": {
+                "path": str(inputs.generation_manifest_path),
+                "sha256": sha256_file(inputs.generation_manifest_path),
+            },
+            "generation_plan": {
+                "path": str(inputs.generation_plan_path),
+                "sha256": sha256_file(inputs.generation_plan_path),
+            },
+            "quality_table": (
+                {
+                    "path": str(quality_table_path.resolve()),
+                    "sha256": sha256_file(quality_table_path),
+                }
+                if quality_table_path is not None
+                else None
+            ),
+            "audio_sha256": dict(sorted(inputs.audio_sha256.items())),
+        },
+        "output": {
+            "path": str(output_path.resolve()),
+            "sha256": sha256_file(output_path),
+            "rows": len(rows),
+            "prompts": len({pair.prompt_id for pair in inputs.pairs}),
             "quality_columns_complete": quality_table_path is not None,
         },
     }
