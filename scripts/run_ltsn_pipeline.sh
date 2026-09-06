@@ -9,6 +9,7 @@ PROMPT_MANIFEST="${PROMPT_MANIFEST:-${PROJECT_ROOT}/metadata/ltsn_prompts.csv}"
 SURROGATE_TRAINING_GATE="${SURROGATE_TRAINING_GATE:-${PROJECT_ROOT}/metadata/ltsn_surrogate_training_gate.json}"
 FINGERPRINT="${PROJECT_ROOT}/metadata/focus_path_homology_fingerprint_v2.json"
 CONFIG="${PROJECT_ROOT}/configs/ltsn_training.toml"
+DEVELOPMENT_DIR="${DEVELOPMENT_DIR:-${RUN_ROOT}/development_pairs}"
 
 [[ -x "${PYTHON_BIN}" ]] || { echo "Python environment is missing: ${PYTHON_BIN}" >&2; exit 2; }
 
@@ -147,6 +148,47 @@ calibrate() {
     --device "${EVAL_DEVICE:-cuda:0}"
 }
 
+development_generate() {
+  : "${ACE_MODEL_SHA256:?Set ACE_MODEL_SHA256 to the 64-hex model tree digest}"
+  : "${VAE_SHA256:?Set VAE_SHA256 to the 64-hex VAE tree digest}"
+  ACESTEP_DEVICE="${DEVELOPMENT_DEVICE:-cuda:0}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_development_pairs.py" generate \
+    --root "${PROJECT_ROOT}" \
+    --ace-config "${PROJECT_ROOT}/configs/ace_rerank_180s.toml" \
+    --prompt-manifest "${PROMPT_MANIFEST}" \
+    --fingerprint "${FINGERPRINT}" \
+    --ensemble-manifest "${RUN_ROOT}/models/ensemble_manifest.json" \
+    --calibration "${RUN_ROOT}/calibration.json" \
+    --output-dir "${DEVELOPMENT_DIR}" \
+    --ace-model-sha256 "${ACE_MODEL_SHA256}" \
+    --vae-sha256 "${VAE_SHA256}" \
+    --seed-start "${LTSN_SEED_START:-2026071600}" \
+    --seeds-per-prompt "${DEVELOPMENT_SEEDS_PER_PROMPT:-4}" \
+    --expected-development-prompts "${EXPECTED_DEVELOPMENT_PROMPTS:-64}" \
+    --duration-seconds "${DEVELOPMENT_DURATION_SECONDS:-180}" \
+    --device "${DEVELOPMENT_DEVICE:-cuda:0}" \
+    --resume
+}
+
+development_score() {
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_development_pairs.py" score \
+    --root "${PROJECT_ROOT}" \
+    --ace-config "${PROJECT_ROOT}/configs/ace_rerank_180s.toml" \
+    --fingerprint "${FINGERPRINT}" \
+    --output-dir "${DEVELOPMENT_DIR}" \
+    --workers "${DEVELOPMENT_EXACT_WORKERS:-8}"
+}
+
+development_finalize() {
+  : "${NONINFERIORITY_EVIDENCE:?Set NONINFERIORITY_EVIDENCE to the numeric paired evidence CSV}"
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_development_pairs.py" finalize \
+    --raw-pair-table "${DEVELOPMENT_DIR}/development_pairs_raw.csv" \
+    --evidence-table "${NONINFERIORITY_EVIDENCE}" \
+    --protocol "${PROJECT_ROOT}/configs/ace_reranking_noninferiority.json" \
+    --output-dir "${DEVELOPMENT_DIR}" \
+    --bootstrap-resamples "${DEVELOPMENT_BOOTSTRAP_RESAMPLES:-2000}"
+}
+
 qualify() {
   [[ -f "${RUN_ROOT}/guidance_development.json" ]] || {
     echo "Run guidance-development with a decoded exact pair table before qualification" >&2
@@ -163,10 +205,14 @@ qualify() {
 }
 
 guidance_development() {
-  : "${PAIR_TABLE:?Set PAIR_TABLE to the decoded exact/proxy development pair CSV}"
+  local pair_table="${PAIR_TABLE:-${DEVELOPMENT_DIR}/development_pairs.csv}"
+  [[ -f "${pair_table}" ]] || {
+    echo "Finalized development-only pair table is required: ${pair_table}" >&2
+    exit 3
+  }
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_path_homology_guidance.py" \
     --fingerprint "${FINGERPRINT}" \
-    --pair-table "${PAIR_TABLE}" \
+    --pair-table "${pair_table}" \
     --output "${RUN_ROOT}/guidance_development.json" \
     --mode development
 }
@@ -190,8 +236,11 @@ case "${STAGE}" in
   labels) labels ;;
   train) train ;;
   calibrate) calibrate ;;
+  development-generate) development_generate ;;
+  development-score) development_score ;;
+  development-finalize) development_finalize ;;
   guidance-development) guidance_development ;;
   qualify) qualify ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|train|calibrate|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|train|calibrate|development-generate|development-score|development-finalize|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
 esac

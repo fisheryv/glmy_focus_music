@@ -60,8 +60,13 @@ export RERANKING_GATE=$PWD/metadata/ace_reranking_effect_gate.json
 bash scripts/run_ltsn_pipeline.sh labels
 TRAIN_DEVICES=cuda:0,cuda:1,cuda:2 bash scripts/run_ltsn_pipeline.sh train
 bash scripts/run_ltsn_pipeline.sh calibrate
-# 生成并 exact 解码 development 引导对后：
-PAIR_TABLE=<development-pairs.csv> bash scripts/run_ltsn_pipeline.sh guidance-development
+# 只用 development split 生成 64 prompt x 4 seed 的 baseline/guided 对并精确评分：
+DEVELOPMENT_DEVICE=cuda:0 bash scripts/run_ltsn_pipeline.sh development-generate
+bash scripts/run_ltsn_pipeline.sh development-score
+# 外部盲评/冻结 embedding 指标必须包含同一批 pair_id：
+NONINFERIORITY_EVIDENCE=<development_noninferiority_metrics.csv> \
+  bash scripts/run_ltsn_pipeline.sh development-finalize
+bash scripts/run_ltsn_pipeline.sh guidance-development
 bash scripts/run_ltsn_pipeline.sh qualify
 # 资格通过并完成全新 32 prompt × 8 seed 配对实验后：
 PAIR_TABLE=<confirmation-pairs.csv> bash scripts/run_ltsn_pipeline.sh guidance-confirmation
@@ -328,4 +333,3 @@ python scripts/build_fresh_open_dataset_report.py
   `metadata/licenses.csv` 中对应的许可使用，不存在覆盖全部音频的单一许可。
 - 跨数据集比较应复用同一个状态模型、阈值集合和预处理配置。
 - 当前项目许可证仍是研究用途边界；公开发布到包索引前，应由项目所有者补充明确的软件许可证。
-

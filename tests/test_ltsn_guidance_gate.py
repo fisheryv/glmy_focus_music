@@ -19,7 +19,13 @@ ROOT = Path(__file__).resolve().parents[1]
 FINGERPRINT = ROOT / "metadata" / "focus_path_homology_fingerprint_v2.json"
 
 
-def _write_pairs(path: Path, fingerprint_sha256: str, *, diversity: bool) -> None:
+def _write_pairs(
+    path: Path,
+    fingerprint_sha256: str,
+    *,
+    diversity: bool,
+    scope: str = "qualified_confirmation",
+) -> None:
     rows = [
         {
             "prompt_id": f"p{index}",
@@ -31,6 +37,7 @@ def _write_pairs(path: Path, fingerprint_sha256: str, *, diversity: bool) -> Non
             "quality_noninferior": "true",
             "prompt_noninferior": "true",
             "diversity_preserved": str(diversity).lower(),
+            "authorization_scope": scope,
         }
         for index in range(2)
     ]
@@ -93,5 +100,62 @@ def test_confirmation_rejects_missing_qualification(tmp_path: Path) -> None:
             output_path=tmp_path / "confirmation.json",
             fingerprint_sha256=fingerprint_sha256,
             mode="confirmation",
+            bootstrap_resamples=100,
+        )
+
+
+def test_development_pairs_are_scope_limited_and_never_promotable(tmp_path: Path) -> None:
+    fingerprint_sha256 = load_fingerprint_contract(FINGERPRINT).artifact_sha256
+    pairs = tmp_path / "pairs.csv"
+    _write_pairs(
+        pairs,
+        fingerprint_sha256,
+        diversity=True,
+        scope="development_only",
+    )
+
+    report = evaluate_guidance_pairs(
+        pair_table=pairs,
+        output_path=tmp_path / "development.json",
+        fingerprint_sha256=fingerprint_sha256,
+        mode="development",
+        bootstrap_resamples=100,
+    )
+
+    assert report["authorization_scope"] == "development_only"
+    assert report["guidance_promotion_eligible"] is False
+
+
+@pytest.mark.parametrize(
+    ("mode", "scope"),
+    [
+        ("development", "qualified_confirmation"),
+        ("confirmation", "development_only"),
+    ],
+)
+def test_guidance_evaluator_rejects_cross_scope_pairs(
+    tmp_path: Path, mode: str, scope: str
+) -> None:
+    fingerprint_sha256 = load_fingerprint_contract(FINGERPRINT).artifact_sha256
+    pairs = tmp_path / "pairs.csv"
+    _write_pairs(pairs, fingerprint_sha256, diversity=True, scope=scope)
+    qualification = tmp_path / "qualification.json"
+    qualification.write_text(
+        json.dumps(
+            {
+                "qualification_passed": True,
+                "fingerprint_json_sha256": fingerprint_sha256,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(LTSNContractError, match="authorization_scope"):
+        evaluate_guidance_pairs(
+            pair_table=pairs,
+            output_path=tmp_path / "report.json",
+            fingerprint_sha256=fingerprint_sha256,
+            mode=mode,
+            qualification_report=qualification if mode == "confirmation" else None,
             bootstrap_resamples=100,
         )

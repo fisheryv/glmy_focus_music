@@ -280,6 +280,18 @@ def qualify_ensemble(
     direction_payload = None
     if guidance_development_report is not None:
         direction_payload = json.loads(guidance_development_report.read_text(encoding="utf-8"))
+        if direction_payload.get("mode") != "development":
+            raise LTSNContractError("qualification requires a development guidance report")
+        if direction_payload.get("authorization_scope") != "development_only":
+            raise LTSNContractError(
+                "qualification requires authorization_scope=development_only"
+            )
+        if direction_payload.get("fingerprint_json_sha256") != contract.artifact_sha256:
+            raise LTSNContractError("development guidance report uses a different exact scorer")
+        if direction_payload.get("guidance_promotion_eligible") is not False:
+            raise LTSNContractError(
+                "development guidance evidence must not claim promotion eligibility"
+            )
         gates["decoded_exact_direction_agreement"] = bool(
             direction_payload.get("proxy_exact_direction_gate_passed")
         )
@@ -350,6 +362,9 @@ def evaluate_guidance_pairs(
 
     if mode not in {"development", "confirmation"}:
         raise ValueError("mode must be development or confirmation")
+    expected_scope = (
+        "development_only" if mode == "development" else "qualified_confirmation"
+    )
     qualification_sha256 = ""
     qualification_passed = False
     if mode == "confirmation":
@@ -368,6 +383,10 @@ def evaluate_guidance_pairs(
         rows = list(csv.DictReader(handle))
     if not rows:
         raise LTSNContractError("guidance pair table is empty")
+    if any(row.get("authorization_scope") != expected_scope for row in rows):
+        raise LTSNContractError(
+            f"{mode} guidance pairs require authorization_scope={expected_scope}"
+        )
     if any(row.get("fingerprint_json_sha256") != fingerprint_sha256 for row in rows):
         raise LTSNContractError("guidance pair table uses a different exact scorer")
     prompt_ids = np.asarray([row["prompt_id"] for row in rows])
@@ -408,6 +427,7 @@ def evaluate_guidance_pairs(
         "schema_version": 1,
         "gate": GUIDANCE_PROMOTION_GATE_NAME,
         "mode": mode,
+        "authorization_scope": expected_scope,
         "fingerprint_json_sha256": fingerprint_sha256,
         "pair_table_sha256": sha256_file(pair_table),
         "pairs": len(rows),

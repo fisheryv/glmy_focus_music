@@ -25,6 +25,7 @@ class TopologyCorrectorConfig:
 
     enabled: bool = False
     qualification_passed: bool = False
+    authorization_scope: str = "qualified"
     guidance_scale: float = 1.0
     rms_clip_ratio: float = 0.005
     step_weights: Mapping[int, float] = field(
@@ -41,6 +42,8 @@ class TopologyCorrectorConfig:
     def validate(self) -> None:
         """Reject activation without qualification and calibrated thresholds."""
 
+        if self.authorization_scope not in {"qualified", "development_only"}:
+            raise LTSNContractError("unknown topology-corrector authorization scope")
         if self.rms_clip_ratio not in _ALLOWED_RMS_RATIOS:
             raise LTSNContractError("rms_clip_ratio must be 0.25%, 0.5%, or 1.0%")
         if self.guidance_scale < 0 or not math.isfinite(self.guidance_scale):
@@ -49,9 +52,13 @@ class TopologyCorrectorConfig:
             value <= 0 or not math.isfinite(value) for value in self.variance_scale
         ):
             raise LTSNContractError("variance_scale must contain 18 finite positive values")
+        if self.authorization_scope == "development_only" and self.qualification_passed:
+            raise LTSNContractError(
+                "development-only correction must not claim passed qualification"
+            )
         if not self.enabled:
             return
-        if not self.qualification_passed:
+        if self.authorization_scope == "qualified" and not self.qualification_passed:
             raise LTSNContractError("sampling guidance requires passed LTSN qualification")
         thresholds = (
             self.ood_probability_threshold,

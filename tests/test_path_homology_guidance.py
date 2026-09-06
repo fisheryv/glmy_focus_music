@@ -14,6 +14,7 @@ from generation.ltsn_contract import (
     CANONICAL_FEATURE_ORDER,
     DISTANCE_WEIGHTS,
     FingerprintContract,
+    LTSNContractError,
 )
 from generation.ltsn_losses import block_balanced_huber
 from generation.path_homology_surrogate import LTSNConfig, LTSNOutput, PathHomologySurrogate
@@ -86,6 +87,35 @@ def _corrector(model: nn.Module, contract: FingerprintContract) -> TopologyCorre
         max_interval_width=10.0,
     )
     return TopologyCorrector([model], contract, [_checkpoint(contract)], config)
+
+
+def test_development_only_corrector_is_active_without_claiming_qualification() -> None:
+    contract = _contract()
+    config = TopologyCorrectorConfig(
+        enabled=True,
+        qualification_passed=False,
+        authorization_scope="development_only",
+        ood_probability_threshold=0.5,
+        max_aleatoric_variance=1.0,
+        max_epistemic_variance=1.0,
+        max_interval_width=10.0,
+    )
+
+    corrector = TopologyCorrector(
+        [_LinearSurrogate()], contract, [_checkpoint(contract)], config
+    )
+
+    assert corrector.is_active
+    with pytest.raises(LTSNContractError, match="must not claim"):
+        TopologyCorrectorConfig(
+            enabled=True,
+            qualification_passed=True,
+            authorization_scope="development_only",
+            ood_probability_threshold=0.5,
+            max_aleatoric_variance=1.0,
+            max_epistemic_variance=1.0,
+            max_interval_width=10.0,
+        ).validate()
 
 
 def test_surrogate_outputs_frozen_dimensions_and_time_conditioning() -> None:
