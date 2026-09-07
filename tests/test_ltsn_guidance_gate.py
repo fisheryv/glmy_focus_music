@@ -24,6 +24,7 @@ def _write_pairs(
     fingerprint_sha256: str,
     *,
     diversity: bool,
+    quality: str = "true",
     scope: str = "qualified_confirmation",
 ) -> None:
     rows = [
@@ -34,9 +35,10 @@ def _write_pairs(
             "exact_focus_band_loss_after": 0.5,
             "proxy_focus_band_loss_before": 1.0,
             "proxy_focus_band_loss_after": 0.6,
-            "quality_noninferior": "true",
+            "quality_noninferior": quality,
             "prompt_noninferior": "true",
             "diversity_preserved": str(diversity).lower(),
+            "guided_technical_quality_eligible": "true",
             "authorization_scope": scope,
         }
         for index in range(2)
@@ -75,6 +77,10 @@ def test_confirmation_is_the_guidance_promotion_gate(tmp_path: Path) -> None:
     assert report["status"] == "passed"
     assert report["guidance_promotion_eligible"] is True
     assert len(report["qualification_report_sha256"]) == 64
+    assert report["blind_quality_is_gate"] is False
+    assert report["optimized_exact_improved_pairs"] == 2
+    assert report["optimized_exact_tied_pairs"] == 0
+    assert report["optimized_exact_worsened_pairs"] == 0
 
     _write_pairs(pairs, fingerprint_sha256, diversity=False)
     report = evaluate_guidance_pairs(
@@ -87,6 +93,39 @@ def test_confirmation_is_the_guidance_promotion_gate(tmp_path: Path) -> None:
     )
     assert report["status"] == "failed"
     assert report["guidance_promotion_eligible"] is False
+
+
+@pytest.mark.parametrize("quality", ["false", "not_evaluated"])
+def test_blind_quality_is_diagnostic_not_a_gate(
+    tmp_path: Path, quality: str
+) -> None:
+    fingerprint_sha256 = load_fingerprint_contract(FINGERPRINT).artifact_sha256
+    qualification = tmp_path / "qualification.json"
+    qualification.write_text(
+        json.dumps(
+            {
+                "qualification_passed": True,
+                "fingerprint_json_sha256": fingerprint_sha256,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pairs = tmp_path / "pairs.csv"
+    _write_pairs(pairs, fingerprint_sha256, diversity=True, quality=quality)
+
+    report = evaluate_guidance_pairs(
+        pair_table=pairs,
+        output_path=tmp_path / "confirmation.json",
+        fingerprint_sha256=fingerprint_sha256,
+        mode="confirmation",
+        qualification_report=qualification,
+        bootstrap_resamples=100,
+    )
+
+    assert report["status"] == "passed"
+    assert report["guidance_promotion_eligible"] is True
+    assert report["quality_noninferior"] is (False if quality == "false" else None)
+    assert report["blind_quality_evidence_available"] is (quality != "not_evaluated")
 
 
 def test_confirmation_rejects_missing_qualification(tmp_path: Path) -> None:

@@ -13,7 +13,10 @@ from generation.noninferiority_metrics import (
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Build frozen CLAP and blind-quality evidence for LTSN development pairs."
+        description=(
+            "Build frozen CLAP prompt/diversity evidence for LTSN development pairs; "
+            "blind quality is an optional diagnostic."
+        )
     )
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--run-root", type=Path, required=True)
@@ -69,11 +72,8 @@ def main(argv: list[str] | None = None) -> int:
                 "prompts": audit["output"]["prompts"],
                 "output_sha256": audit["output"]["sha256"],
                 "quality_columns_complete": audit["output"]["quality_columns_complete"],
-                "next_step": (
-                    "run development-finalize"
-                    if audit["output"]["quality_columns_complete"]
-                    else "obtain blinded quality scores and rerun with --quality-table"
-                ),
+                "blind_quality_is_gate": False,
+                "next_step": "run development-finalize",
             },
             ensure_ascii=False,
             indent=2,

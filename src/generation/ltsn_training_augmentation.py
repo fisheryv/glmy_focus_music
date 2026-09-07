@@ -1,4 +1,4 @@
-"""Exact-labelled local and OOD latent augmentation for structure-preserving LTSN V2."""
+"""Exact-labelled local and held-out OOD augmentation for LTSN V3."""
 
 from __future__ import annotations
 
@@ -115,6 +115,7 @@ def _augmentation_plan(
                     "step_number": anchor.step_number,
                     "timestep": anchor.timestep,
                     "kind": "local_direction",
+                    "split": "train",
                     "seed": item_seed,
                     "rms_ratio": rms_ratio,
                     "sign": sign,
@@ -138,6 +139,7 @@ def _augmentation_plan(
                         if (prompt_rank[anchor.prompt_id] + ood_index) % 2 == 0
                         else "ood_scale_high"
                     ),
+                    "split": "train",
                     "seed": seed + 10_000_000 + anchor_index,
                     "rms_ratio": 0.0,
                     "sign": 0.0,
@@ -146,6 +148,63 @@ def _augmentation_plan(
     sample_ids = [item["sample_id"] for item in planned]
     if len(set(sample_ids)) != len(sample_ids):
         raise LTSNContractError("augmentation plan contains duplicate sample IDs")
+    return planned
+
+
+def _evaluation_ood_plan(
+    records: list[LTSNSnapshot],
+    *,
+    ood_per_prompt: int,
+    seed: int,
+) -> list[dict[str, Any]]:
+    """Create prompt-held-out OOD examples with transforms unseen in training."""
+
+    if ood_per_prompt < 0:
+        raise ValueError("evaluation OOD count must be non-negative")
+    grouped: dict[tuple[str, str], list[LTSNSnapshot]] = defaultdict(list)
+    for record in records:
+        if (
+            record.split in {"calibration", "qualification"}
+            and record.step_number == 5
+            and not record.is_final
+        ):
+            grouped[(record.split, record.prompt_id)].append(record)
+    planned: list[dict[str, Any]] = []
+    for prompt_rank, ((split, prompt_id), candidates) in enumerate(sorted(grouped.items())):
+        ordered = sorted(candidates, key=lambda item: (item.trajectory_id, item.sample_id))
+        if len(ordered) < ood_per_prompt:
+            raise LTSNContractError(
+                f"{split} prompt lacks {ood_per_prompt} step-5 OOD anchors: {prompt_id}"
+            )
+        for ood_index, anchor in enumerate(ordered[:ood_per_prompt]):
+            kind = (
+                "ood_time_reverse"
+                if (prompt_rank + ood_index) % 2 == 0
+                else "ood_channel_roll"
+            )
+            planned.append(
+                {
+                    "sample_id": f"{anchor.sample_id}__heldout_ood{ood_index:02d}",
+                    "anchor_sample_id": anchor.sample_id,
+                    "prompt_id": prompt_id,
+                    "step_number": anchor.step_number,
+                    "timestep": anchor.timestep,
+                    "kind": kind,
+                    "split": split,
+                    "seed": seed + 20_000_000 + prompt_rank * max(ood_per_prompt, 1) + ood_index,
+                    "rms_ratio": 0.0,
+                    "sign": 0.0,
+                }
+            )
+    expected_prompts = {
+        (record.split, record.prompt_id)
+        for record in records
+        if record.split in {"calibration", "qualification"}
+    }
+    if ood_per_prompt and set(grouped) != expected_prompts:
+        raise LTSNContractError(
+            "every calibration/qualification prompt must provide a step-5 OOD anchor"
+        )
     return planned
 
 
@@ -188,6 +247,10 @@ def _materialize_augmentation(
         augmented = np.zeros_like(latent)
     elif item["kind"] == "ood_scale_high":
         augmented = latent * 4.0
+    elif item["kind"] == "ood_time_reverse":
+        augmented = np.ascontiguousarray(latent[::-1])
+    elif item["kind"] == "ood_channel_roll":
+        augmented = np.roll(latent, shift=17, axis=1).copy()
     else:
         raise LTSNContractError(f"unknown augmentation kind: {item['kind']}")
     latent_path = output_dir / "latents" / f"{item['sample_id']}.npy"
@@ -248,7 +311,7 @@ def _write_augmentation_trajectory_manifest(
                 "sample_id": item["sample_id"],
                 "prompt_id": item["prompt_id"],
                 "trajectory_id": item["sample_id"],
-                "split": "train",
+                "split": item["split"],
                 "model_family": anchor["model_family"],
                 "step_number": item["step_number"],
                 "timestep": item["timestep"],
@@ -284,6 +347,7 @@ def build_ltsn_training_augmentation(
     perturbations_per_anchor: int = 2,
     rms_ratio: float = 0.005,
     ood_per_prompt: int = 1,
+    evaluation_ood_per_prompt: int = 1,
     seed: int = 2026071600,
     duration_seconds: float = 180.0,
     workers: int = 8,
@@ -293,9 +357,14 @@ def build_ltsn_training_augmentation(
     device_name: str = "cuda:0",
     resume: bool = False,
 ) -> dict[str, Any]:
-    """Decode, exact-score, and append train-only V2 augmentation records."""
+    """Append train-only local/OOD and prompt-held-out evaluation OOD records."""
 
-    if trajectories_per_prompt < 1 or perturbations_per_anchor < 1 or ood_per_prompt < 0:
+    if (
+        trajectories_per_prompt < 1
+        or perturbations_per_anchor < 1
+        or ood_per_prompt < 0
+        or evaluation_ood_per_prompt < 0
+    ):
         raise ValueError("augmentation counts are invalid")
     if rms_ratio not in {0.0025, 0.005, 0.01}:
         raise ValueError("rms_ratio must be 0.0025, 0.005, or 0.01")
@@ -303,8 +372,10 @@ def build_ltsn_training_augmentation(
         raise ValueError("exact LTSN training augmentation is frozen to 180 seconds")
     root = root.resolve()
     output_dir = output_dir.resolve()
+
     def resolve(path: Path) -> Path:
         return path if path.is_absolute() else root / path
+
     source_manifest_path = resolve(source_manifest_path)
     source_split_manifest_path = resolve(source_split_manifest_path)
     ace_config_path = resolve(ace_config_path)
@@ -325,10 +396,17 @@ def build_ltsn_training_augmentation(
         ood_per_prompt=ood_per_prompt,
         seed=seed,
     )
+    planned.extend(
+        _evaluation_ood_plan(
+            source_records,
+            ood_per_prompt=evaluation_ood_per_prompt,
+            seed=seed,
+        )
+    )
     plan_path = output_dir / "training_augmentation_plan.json"
     plan = {
-        "schema_version": 2,
-        "scope": "train_only_local_direction_and_ood_v2",
+        "schema_version": 3,
+        "scope": "train_local_ood_and_heldout_evaluation_ood_v3",
         "source_manifest_sha256": sha256_file(source_manifest_path),
         "source_split_manifest_sha256": sha256_file(source_split_manifest_path),
         "ace_config_sha256": sha256_file(ace_config_path),
@@ -339,6 +417,7 @@ def build_ltsn_training_augmentation(
         "perturbations_per_anchor": perturbations_per_anchor,
         "rms_ratio": rms_ratio,
         "ood_per_prompt": ood_per_prompt,
+        "evaluation_ood_per_prompt": evaluation_ood_per_prompt,
         "seed": seed,
         "duration_seconds": duration_seconds,
         "exact_batch_size": exact_batch_size,
@@ -355,7 +434,7 @@ def build_ltsn_training_augmentation(
     config = load_experiment_config(root, ace_config_path)
     os.environ["ACESTEP_DEVICE"] = device_name
     adapter = AceStepAdapter(root / config.ace.checkout, config.ace)
-    anchor_by_id = {record.sample_id: record for record in anchors}
+    anchor_by_id = {record.sample_id: record for record in source_records}
     receipts = [
         _materialize_augmentation(
             item=item,
@@ -439,7 +518,7 @@ def build_ltsn_training_augmentation(
             {
                 "sample_id": item["sample_id"],
                 "trajectory_id": item["sample_id"],
-                "split": "train",
+                "split": item["split"],
                 "step_number": item["step_number"],
                 "timestep": item["timestep"],
                 "latent_path": os.path.relpath(
@@ -458,13 +537,13 @@ def build_ltsn_training_augmentation(
         )
         augmented_rows.append(augmented)
 
-    exact_label_path = output_dir / "exact_snapshot_labels_v2.csv"
+    exact_label_path = output_dir / "exact_snapshot_labels_v3.csv"
     write_csv_atomic(
         exact_label_path,
         _rectangular([*old_labels, *new_labels], label_columns),
     )
     label_sha256 = sha256_file(exact_label_path)
-    manifest_path = output_dir / "ltsn_manifest_v2.csv"
+    manifest_path = output_dir / "ltsn_manifest_v3.csv"
     manifest_columns = list(source_rows[0])
     for column in ("local_anchor_sample_id", "training_augmentation_kind"):
         if column not in manifest_columns:
@@ -480,24 +559,34 @@ def build_ltsn_training_augmentation(
     split_payload = json.loads(source_split_manifest_path.read_text(encoding="utf-8"))
     split_payload.update(
         {
-            "schema_version": 2,
-            "training_augmentation_scope": "train_only",
+            "schema_version": 3,
+            "training_augmentation_scope": "train_local_ood_and_heldout_evaluation_ood",
             "source_split_manifest_sha256": sha256_file(source_split_manifest_path),
             "augmentation_plan_sha256": plan_sha256,
             "training_manifest_sha256": sha256_file(manifest_path),
         }
     )
-    split_path = output_dir / "split_manifest_v2.json"
+    split_path = output_dir / "split_manifest_v3.json"
     write_json_atomic(split_path, split_payload)
     summary = {
-        "schema_version": 2,
-        "scope": "train_only_local_direction_and_ood_v2",
+        "schema_version": 3,
+        "scope": "train_local_ood_and_heldout_evaluation_ood_v3",
         "source_samples": len(source_rows),
         "augmentation_samples": len(augmented_rows),
         "local_direction_samples": sum(
             item["kind"] == "local_direction" for item in planned
         ),
         "ood_samples": sum(item["kind"].startswith("ood_") for item in planned),
+        "evaluation_ood_samples": sum(
+            item["split"] in {"calibration", "qualification"} for item in planned
+        ),
+        "ood_samples_by_split": {
+            split: sum(
+                item["split"] == split and item["kind"].startswith("ood_")
+                for item in planned
+            )
+            for split in ("train", "calibration", "qualification")
+        },
         "prompts": len({item["prompt_id"] for item in planned}),
         "plan_sha256": plan_sha256,
         "trajectory_manifest_sha256": sha256_file(trajectory_manifest_path),
@@ -512,6 +601,7 @@ def build_ltsn_training_augmentation(
                 "perturbations_per_anchor": perturbations_per_anchor,
                 "rms_ratio": rms_ratio,
                 "ood_per_prompt": ood_per_prompt,
+                "evaluation_ood_per_prompt": evaluation_ood_per_prompt,
                 "seed": seed,
                 "exact_batch_size": exact_batch_size,
             }

@@ -16,7 +16,10 @@ def _digest(value: str) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Build exact-labelled train-only local/OOD augmentation for LTSN V2."
+        description=(
+            "Build exact-labelled train local/OOD augmentation plus held-out "
+            "calibration/qualification OOD for LTSN V3."
+        )
     )
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--source-manifest", type=Path, required=True)
@@ -30,6 +33,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--perturbations-per-anchor", type=int, default=2)
     parser.add_argument("--rms-ratio", type=float, default=0.005)
     parser.add_argument("--ood-per-prompt", type=int, default=1)
+    parser.add_argument("--evaluation-ood-per-prompt", type=int, default=1)
     parser.add_argument("--seed", type=int, default=2026071600)
     parser.add_argument("--duration-seconds", type=float, default=180.0)
     parser.add_argument("--workers", type=int, default=8)
@@ -56,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
         perturbations_per_anchor=args.perturbations_per_anchor,
         rms_ratio=args.rms_ratio,
         ood_per_prompt=args.ood_per_prompt,
+        evaluation_ood_per_prompt=args.evaluation_ood_per_prompt,
         seed=args.seed,
         duration_seconds=args.duration_seconds,
         workers=args.workers,

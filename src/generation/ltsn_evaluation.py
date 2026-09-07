@@ -18,7 +18,8 @@ from .ltsn_dataset import LTSNSnapshotDataset, collate_ltsn_batch, read_ltsn_man
 from .ltsn_pipeline import canonical_json_sha256, write_json_atomic
 from .ltsn_training import load_checkpoint_model, predict_dataset, spearman_correlation
 
-GUIDANCE_PROMOTION_GATE_NAME = "latent_guidance_promotion_v1"
+LEGACY_GUIDANCE_PROMOTION_GATE_NAME = "latent_guidance_promotion_v1"
+GUIDANCE_PROMOTION_GATE_NAME = "latent_guidance_promotion_v2"
 
 
 def _load_ensemble(
@@ -327,6 +328,13 @@ def qualify_ensemble(
             raise LTSNContractError(
                 "qualification requires authorization_scope=development_only"
             )
+        if (
+            direction_payload.get("schema_version") != 2
+            or direction_payload.get("gate") != GUIDANCE_PROMOTION_GATE_NAME
+        ):
+            raise LTSNContractError(
+                "qualification requires the V2 latent-guidance promotion contract"
+            )
         if direction_payload.get("fingerprint_json_sha256") != contract.artifact_sha256:
             raise LTSNContractError("development guidance report uses a different exact scorer")
         if direction_payload.get("guidance_promotion_eligible") is not False:
@@ -389,6 +397,19 @@ def _cluster_bootstrap_interval(
     return float(lower), float(upper)
 
 
+def _optional_noninferiority_flag(
+    rows: Sequence[Mapping[str, str]], name: str
+) -> tuple[bool | None, bool]:
+    values = {(row.get(name) or "").strip().lower() for row in rows}
+    if values <= {"", "not_evaluated"}:
+        return None, False
+    if values == {"true"}:
+        return True, True
+    if values == {"false"}:
+        return False, True
+    raise LTSNContractError(f"guidance pair table has inconsistent {name} values")
+
+
 def evaluate_guidance_pairs(
     *,
     pair_table: Path,
@@ -441,31 +462,73 @@ def evaluate_guidance_pairs(
     exact_improvement = exact_before - exact_after
     proxy_improvement = proxy_before - proxy_after
     optimized = proxy_improvement > 0
-    if not np.any(optimized):
-        direction_agreement = 0.0
-    else:
-        direction_agreement = float(np.mean(exact_improvement[optimized] > 0))
+    optimized_exact = exact_improvement[optimized]
+    improved = int(np.count_nonzero(optimized_exact > 0))
+    tied = int(np.count_nonzero(optimized_exact == 0))
+    worsened = int(np.count_nonzero(optimized_exact < 0))
+    direction_agreement = (
+        0.0 if not len(optimized_exact) else float(improved / len(optimized_exact))
+    )
+    optimized_exact_median = (
+        0.0 if not len(optimized_exact) else float(np.median(optimized_exact))
+    )
+    optimized_exact_mean = (
+        0.0 if not len(optimized_exact) else float(np.mean(optimized_exact))
+    )
+    optimized_correlation = (
+        None
+        if len(optimized_exact) < 2
+        else spearman_correlation(proxy_improvement[optimized], optimized_exact)
+    )
     ci_low, ci_high = _cluster_bootstrap_interval(
         exact_improvement, prompt_ids, resamples=bootstrap_resamples, seed=seed
     )
-    quality_noninferior = all(row.get("quality_noninferior", "").lower() == "true" for row in rows)
-    prompt_noninferior = all(row.get("prompt_noninferior", "").lower() == "true" for row in rows)
-    diversity_preserved = all(
-        row.get("diversity_preserved", "").lower() == "true" for row in rows
+    quality_noninferior, blind_quality_evidence_available = _optional_noninferiority_flag(
+        rows, "quality_noninferior"
+    )
+    prompt_noninferior, prompt_evidence_available = _optional_noninferiority_flag(
+        rows, "prompt_noninferior"
+    )
+    diversity_preserved, diversity_evidence_available = _optional_noninferiority_flag(
+        rows, "diversity_preserved"
+    )
+    latent_changed_values = {
+        (row.get("latent_changed") or "").strip().lower() for row in rows
+    }
+    if latent_changed_values == {""}:
+        latent_identity_evidence_available = False
+    elif latent_changed_values <= {"true", "false"}:
+        latent_identity_evidence_available = True
+    else:
+        raise LTSNContractError("guidance pair table has malformed latent_changed values")
+    latent_changed_pairs = (
+        sum(row.get("latent_changed", "").lower() == "true" for row in rows)
+        if latent_identity_evidence_available
+        else None
+    )
+    if not prompt_evidence_available:
+        raise LTSNContractError("prompt non-inferiority evidence is required")
+    technical_quality_eligible = all(
+        row.get("guided_technical_quality_eligible", "").lower() == "true"
+        for row in rows
     )
     proxy_exact_passed = (
         direction_agreement >= 0.65
-        and float(np.median(exact_improvement[optimized])) > 0
-        and quality_noninferior
-        and prompt_noninferior
+        and optimized_exact_median > 0
+        and prompt_noninferior is True
+        and technical_quality_eligible
     )
     if mode == "confirmation":
+        if not diversity_evidence_available:
+            raise LTSNContractError("confirmation requires diversity evidence")
         proxy_exact_passed = (
-            proxy_exact_passed and diversity_preserved and qualification_passed
+            proxy_exact_passed
+            and diversity_preserved is True
+            and qualification_passed
         )
     guidance_promotion_eligible = mode == "confirmation" and proxy_exact_passed
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "gate": GUIDANCE_PROMOTION_GATE_NAME,
         "mode": mode,
         "authorization_scope": expected_scope,
@@ -477,9 +540,31 @@ def evaluate_guidance_pairs(
         "cluster_bootstrap_ci95": [ci_low, ci_high],
         "proxy_optimized_pairs": int(np.count_nonzero(optimized)),
         "proxy_exact_direction_agreement": direction_agreement,
+        "optimized_exact_improved_pairs": improved,
+        "optimized_exact_tied_pairs": tied,
+        "optimized_exact_worsened_pairs": worsened,
+        "optimized_exact_median_improvement": optimized_exact_median,
+        "optimized_exact_mean_improvement": optimized_exact_mean,
+        "optimized_proxy_exact_spearman": optimized_correlation,
+        "exact_zero_loss_before_pairs": int(np.count_nonzero(exact_before == 0)),
+        "exact_zero_loss_after_pairs": int(np.count_nonzero(exact_after == 0)),
+        "optimized_exact_zero_loss_before_pairs": int(
+            np.count_nonzero(exact_before[optimized] == 0)
+        ),
+        "optimized_exact_zero_loss_after_pairs": int(
+            np.count_nonzero(exact_after[optimized] == 0)
+        ),
+        "latent_identity_evidence_available": latent_identity_evidence_available,
+        "latent_changed_pairs": latent_changed_pairs,
+        "latent_noop_pairs": (
+            None if latent_changed_pairs is None else len(rows) - latent_changed_pairs
+        ),
+        "blind_quality_is_gate": False,
+        "blind_quality_evidence_available": blind_quality_evidence_available,
         "quality_noninferior": quality_noninferior,
         "prompt_noninferior": prompt_noninferior,
         "diversity_preserved": diversity_preserved,
+        "all_guided_technical_quality_eligible": technical_quality_eligible,
         "proxy_exact_direction_gate_passed": proxy_exact_passed,
         "qualification_report_sha256": qualification_sha256,
         "guidance_promotion_eligible": guidance_promotion_eligible,

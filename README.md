@@ -53,21 +53,20 @@ python scripts/build_ltsn_prompt_manifest.py
 
 export ACE_MODEL_SHA256=<64-hex>
 export VAE_SHA256=<64-hex>
+export RUN_ROOT=$PWD/runs/ltsn_turbo_v3
 
 bash scripts/run_ltsn_pipeline.sh collect
 # 完成独立 reranking、质量、prompt 和多样性评价并签发通过的 gate 后：
 export RERANKING_GATE=$PWD/metadata/ace_reranking_effect_gate.json
 bash scripts/run_ltsn_pipeline.sh labels
+bash scripts/run_ltsn_pipeline.sh augment-training
 TRAIN_DEVICES=cuda:0,cuda:1,cuda:2 bash scripts/run_ltsn_pipeline.sh train
 bash scripts/run_ltsn_pipeline.sh calibrate
 # 只用 development split 生成 64 prompt x 4 seed 的 baseline/guided 对并精确评分：
 DEVELOPMENT_DEVICE=cuda:0 bash scripts/run_ltsn_pipeline.sh development-generate
 bash scripts/run_ltsn_pipeline.sh development-score
-# 先生成 CLAP prompt/diversity 与空白质量列，再填入独立盲评质量分并重跑：
+# CLAP prompt/diversity 是门禁证据；盲评质量列可留空，仅作为可选诊断：
 CLAP_REVISION=<frozen-40-hex-commit> bash scripts/run_ltsn_pipeline.sh development-evidence
-DEVELOPMENT_QUALITY_TABLE=<development_quality_scores.csv> \
-  CLAP_REVISION=<frozen-40-hex-commit> \
-  bash scripts/run_ltsn_pipeline.sh development-evidence
 bash scripts/run_ltsn_pipeline.sh development-finalize
 bash scripts/run_ltsn_pipeline.sh guidance-development
 bash scripts/run_ltsn_pipeline.sh qualify
@@ -79,6 +78,11 @@ PAIR_TABLE=<confirmation-pairs.csv> bash scripts/run_ltsn_pipeline.sh guidance-c
 这是三个相互独立的进程，不是 DDP。未设置 `TRAIN_DEVICES` 时仍使用 `TRAIN_DEVICE`
 （默认 `cuda:0`）顺序训练，保持单卡兼容。完整门禁、存储峰值、断点续跑和最终
 32 prompt × 8 seed 配对评估见 [Linux/NVIDIA 指引](docs/ltsn-linux-training-and-evaluation.md)。
+V3 不改变 LTSN 网络结构；augmentation 会额外为 calibration/qualification prompt
+构造与训练变换不同的 OOD 样本，使 OOD AUROC 成为可计算的独立门禁。盲评质量若通过
+`DEVELOPMENT_QUALITY_TABLE` 提供会被记录，但不参与 `latent_guidance_promotion_v2`。
+若已有完整且哈希有效的旧版 collection/labels，可将 `SOURCE_LTSN_MANIFEST` 和
+`SOURCE_LTSN_SPLIT_MANIFEST` 指向旧 labels 后从 `augment-training` 开始，不必重新采集。
 
 ## 发布内容与排除项
 

@@ -19,6 +19,7 @@ class LTSNLossWeights:
     coordinate: float = 1.0
     nll: float = 0.25
     score: float = 0.5
+    focus_band: float = 0.0
     ranking: float = 0.2
     trajectory_delta: float = 0.2
     phase_ranking: float = 0.0
@@ -179,6 +180,28 @@ def paired_direction_loss(
     ).mean()
 
 
+def focus_band_classification_loss(
+    predicted_focus_logit: Tensor,
+    exact_focus_logit: Tensor,
+    in_distribution: Tensor,
+    *,
+    focus_band_threshold: float | None,
+) -> Tensor:
+    """Classify the frozen Focus band using the existing Focus-logit readout."""
+
+    if focus_band_threshold is None or not in_distribution.any():
+        return predicted_focus_logit.sum() * 0.0
+    if not math.isfinite(focus_band_threshold):
+        raise ValueError("focus_band_threshold must be finite")
+    predicted_margin = predicted_focus_logit.float()[in_distribution] - float(
+        focus_band_threshold
+    )
+    target = (
+        exact_focus_logit.float()[in_distribution] >= float(focus_band_threshold)
+    ).to(predicted_margin.dtype)
+    return F.binary_cross_entropy_with_logits(predicted_margin, target)
+
+
 def phase_pair_ranking_loss(
     predicted_coordinates: Tensor,
     exact_coordinates: Tensor,
@@ -223,6 +246,7 @@ def ltsn_loss(
     coordinate_scale: Tensor | None = None,
     active_mask: Tensor | None = None,
     ood_positive_weight: Tensor | None = None,
+    focus_band_threshold: float | None = None,
     weights: LTSNLossWeights | None = None,
 ) -> LTSNLossResult:
     """Compute the complete development-start LTSN objective and components."""
@@ -252,6 +276,12 @@ def ltsn_loss(
             output.focus_logit.float()[in_distribution],
             exact_focus_logit.float()[in_distribution],
         )
+    focus_band = focus_band_classification_loss(
+        output.focus_logit,
+        exact_focus_logit,
+        in_distribution,
+        focus_band_threshold=focus_band_threshold,
+    )
     ranking = same_prompt_ranking_loss(
         output.focus_logit.float(), exact_focus_logit.float(), pair_indices
     )
@@ -281,6 +311,7 @@ def ltsn_loss(
         selected.coordinate * coordinate
         + selected.nll * nll
         + selected.score * score
+        + selected.focus_band * focus_band
         + selected.ranking * ranking
         + selected.trajectory_delta * delta
         + selected.phase_ranking * phase_ranking
@@ -292,6 +323,7 @@ def ltsn_loss(
         coordinate=coordinate,
         nll=nll,
         score=score,
+        focus_band=focus_band,
         ranking=ranking,
         trajectory_delta=delta,
         phase_ranking=phase_ranking,

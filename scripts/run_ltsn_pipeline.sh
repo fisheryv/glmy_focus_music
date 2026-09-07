@@ -4,15 +4,18 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-${PROJECT_ROOT}/ACE-Step-1.5/.venv/bin/python}"
 STAGE="${1:-}"
-RUN_ROOT="${RUN_ROOT:-${PROJECT_ROOT}/runs/ltsn_turbo}"
+RUN_ROOT="${RUN_ROOT:-${PROJECT_ROOT}/runs/ltsn_turbo_v3}"
 PROMPT_MANIFEST="${PROMPT_MANIFEST:-${PROJECT_ROOT}/metadata/ltsn_prompts.csv}"
 SURROGATE_TRAINING_GATE="${SURROGATE_TRAINING_GATE:-${PROJECT_ROOT}/metadata/ltsn_surrogate_training_gate.json}"
 FINGERPRINT="${PROJECT_ROOT}/metadata/focus_path_homology_fingerprint_v2.json"
-CONFIG="${LTSN_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training.toml}"
-LTSN_MANIFEST="${LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
-LTSN_SPLIT_MANIFEST="${LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
+CONFIG="${LTSN_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v3.toml}"
+GUIDANCE_PROTOCOL="${GUIDANCE_PROTOCOL:-${PROJECT_ROOT}/configs/ltsn_guidance_noninferiority_v2.json}"
 DEVELOPMENT_DIR="${DEVELOPMENT_DIR:-${RUN_ROOT}/development_pairs}"
 TRAINING_AUGMENTATION_DIR="${TRAINING_AUGMENTATION_DIR:-${RUN_ROOT}/training_augmentation}"
+SOURCE_LTSN_MANIFEST="${SOURCE_LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
+SOURCE_LTSN_SPLIT_MANIFEST="${SOURCE_LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
+LTSN_MANIFEST="${LTSN_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/ltsn_manifest_v3.csv}"
+LTSN_SPLIT_MANIFEST="${LTSN_SPLIT_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/split_manifest_v3.json}"
 
 [[ -x "${PYTHON_BIN}" ]] || { echo "Python environment is missing: ${PYTHON_BIN}" >&2; exit 2; }
 
@@ -128,8 +131,8 @@ augment_training() {
   ACESTEP_DEVICE="${AUGMENT_DEVICE:-cuda:0}" \
     "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_training_augmentation.py" \
     --root "${PROJECT_ROOT}" \
-    --source-manifest "${RUN_ROOT}/labels/ltsn_manifest.csv" \
-    --source-split-manifest "${RUN_ROOT}/labels/split_manifest.json" \
+    --source-manifest "${SOURCE_LTSN_MANIFEST}" \
+    --source-split-manifest "${SOURCE_LTSN_SPLIT_MANIFEST}" \
     --ace-config "${PROJECT_ROOT}/configs/ace_rerank_180s.toml" \
     --fingerprint "${FINGERPRINT}" \
     --output-dir "${TRAINING_AUGMENTATION_DIR}" \
@@ -139,6 +142,7 @@ augment_training() {
     --perturbations-per-anchor "${AUGMENT_PERTURBATIONS_PER_ANCHOR:-2}" \
     --rms-ratio "${AUGMENT_RMS_RATIO:-0.005}" \
     --ood-per-prompt "${AUGMENT_OOD_PER_PROMPT:-1}" \
+    --evaluation-ood-per-prompt "${AUGMENT_EVALUATION_OOD_PER_PROMPT:-1}" \
     --workers "${AUGMENT_EXACT_WORKERS:-8}" \
     --exact-batch-size "${AUGMENT_EXACT_BATCH_SIZE:-256}" \
     --materialize-mode "${MATERIALIZE_MODE:-auto}" \
@@ -229,7 +233,7 @@ development_finalize() {
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_development_pairs.py" finalize \
     --raw-pair-table "${DEVELOPMENT_DIR}/development_pairs_raw.csv" \
     --evidence-table "${evidence}" \
-    --protocol "${PROJECT_ROOT}/configs/ace_reranking_noninferiority.json" \
+    --protocol "${GUIDANCE_PROTOCOL}" \
     --output-dir "${DEVELOPMENT_DIR}" \
     --bootstrap-resamples "${DEVELOPMENT_BOOTSTRAP_RESAMPLES:-2000}"
 }

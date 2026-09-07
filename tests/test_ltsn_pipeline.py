@@ -31,8 +31,10 @@ from generation.ltsn_training import (
 )
 from generation.ltsn_training_augmentation import (
     _augmentation_plan,
+    _evaluation_ood_plan,
     _write_augmentation_trajectory_manifest,
 )
+from generation.ltsn_losses import focus_band_classification_loss
 from generation.path_homology_surrogate import LTSNConfig
 from generation.path_homology_exact_scorer import ExactPathHomologyScorer
 
@@ -128,6 +130,28 @@ def test_v2_target_contract_uses_only_id_targets_and_requires_ood_class() -> Non
     assert contract["ood_negative_samples"] == 2
 
 
+def test_focus_band_loss_uses_existing_focus_logit_and_frozen_threshold() -> None:
+    exact = torch.tensor([0.5, 2.5])
+    correct = torch.tensor([0.0, 3.0])
+    reversed_prediction = torch.tensor([3.0, 0.0])
+    in_distribution = torch.tensor([True, True])
+
+    correct_loss = focus_band_classification_loss(
+        correct,
+        exact,
+        in_distribution,
+        focus_band_threshold=1.5,
+    )
+    reversed_loss = focus_band_classification_loss(
+        reversed_prediction,
+        exact,
+        in_distribution,
+        focus_band_threshold=1.5,
+    )
+
+    assert correct_loss < reversed_loss
+
+
 def test_augmentation_plan_and_exact_manifest_are_deterministic(tmp_path: Path) -> None:
     anchor = _snapshot("anchor", "trajectory", 5)
     first = _augmentation_plan(
@@ -180,6 +204,43 @@ def test_augmentation_plan_and_exact_manifest_are_deterministic(tmp_path: Path) 
     assert [row["sample_id"] for row in rows] == [item["sample_id"] for item in first]
     assert rows[0]["local_anchor_sample_id"] == "anchor"
     assert rows[-1]["local_anchor_sample_id"] == ""
+
+
+def test_evaluation_ood_is_prompt_held_out_and_uses_unseen_transforms() -> None:
+    records = []
+    for split in ("calibration", "qualification"):
+        for prompt_index in range(2):
+            sample = _snapshot(
+                f"{split}_{prompt_index}",
+                f"{split}_trajectory_{prompt_index}",
+                5,
+            )
+            sample = LTSNSnapshot(
+                sample_id=sample.sample_id,
+                prompt_id=f"{split}_prompt_{prompt_index}",
+                trajectory_id=sample.trajectory_id,
+                split=split,
+                step_number=sample.step_number,
+                timestep=sample.timestep,
+                latent_path=sample.latent_path,
+                latent_sha256=sample.latent_sha256,
+                coordinates=sample.coordinates,
+                focus_logit=sample.focus_logit,
+                ood_label=sample.ood_label,
+                is_final=sample.is_final,
+                exact_label_table_sha256=sample.exact_label_table_sha256,
+                local_anchor_sample_id=sample.local_anchor_sample_id,
+            )
+            records.append(sample)
+
+    planned = _evaluation_ood_plan(records, ood_per_prompt=1, seed=7)
+
+    assert len(planned) == 4
+    assert {item["split"] for item in planned} == {"calibration", "qualification"}
+    assert {item["kind"] for item in planned} == {
+        "ood_time_reverse",
+        "ood_channel_roll",
+    }
 
 
 def test_qualification_fidelity_metrics_exclude_ood_rows() -> None:

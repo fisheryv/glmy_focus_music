@@ -298,6 +298,8 @@ def _training_target_contract(
     records: Sequence[LTSNSnapshot],
     model_config: LTSNConfig,
     training: LTSNTrainingConfig,
+    *,
+    focus_band_threshold: float | None = None,
 ) -> dict[str, Any]:
     coordinates = np.asarray([record.coordinates for record in records], dtype=np.float64)
     if coordinates.ndim != 2 or coordinates.shape[1] != 18:
@@ -328,7 +330,7 @@ def _training_target_contract(
         else min(training.ood_positive_weight_cap, max(1.0, negatives / positives))
     )
     return {
-        "schema_version": 1,
+        "schema_version": 2 if focus_band_threshold is not None else 1,
         "source": "train_split_only",
         "coordinate_mean": np.mean(id_coordinates, axis=0).tolist(),
         "coordinate_standard_deviation": standard_deviation.tolist(),
@@ -338,6 +340,11 @@ def _training_target_contract(
         "ood_positive_samples": positives,
         "ood_negative_samples": negatives,
         "ood_positive_weight": positive_weight,
+        **(
+            {"focus_band_threshold": float(focus_band_threshold)}
+            if focus_band_threshold is not None
+            else {}
+        ),
     }
 
 
@@ -411,6 +418,7 @@ def _loss(
         ood_positive_weight=torch.tensor(
             target_contract["ood_positive_weight"], device=device, dtype=torch.float32
         ),
+        focus_band_threshold=target_contract.get("focus_band_threshold"),
         weights=weights,
     )
     trajectory_pairs = _trajectory_pairs(
@@ -887,7 +895,12 @@ def train_ensemble(
     development_records = [record for record in records if record.split == "development"]
     if not train_records or not development_records:
         raise LTSNContractError("training requires non-empty train and development splits")
-    target_contract = _training_target_contract(train_records, model_config, training)
+    target_contract = _training_target_contract(
+        train_records,
+        model_config,
+        training,
+        focus_band_threshold=contract.focus_band_threshold,
+    )
     metadata = _metadata(
         contract=contract,
         config_path=config_path,

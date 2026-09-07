@@ -11,6 +11,7 @@ pytest.importorskip("torch")
 from generation.ltsn_contract import LTSNContractError
 from generation.ltsn_development_pairs import (
     AUTHORIZATION_SCOPE,
+    _validate_pair_decode_identity,
     build_development_plan,
     finalize_development_pairs,
 )
@@ -148,6 +149,42 @@ def _protocol(path: Path) -> None:
     )
 
 
+def _v2_protocol(path: Path) -> None:
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "status": "frozen_before_generation",
+                "gate_contract": "latent_guidance_promotion_v2",
+                "criteria": {
+                    "quality": {
+                        "metric": "blind_quality_score",
+                        "direction": "higher_is_better",
+                        "margin": 0.0,
+                        "evidence_required": False,
+                        "gate_modes": [],
+                    },
+                    "prompt": {
+                        "metric": "prompt",
+                        "direction": "higher_is_better",
+                        "margin": 0.0,
+                        "evidence_required": True,
+                        "gate_modes": ["development", "confirmation"],
+                    },
+                    "diversity": {
+                        "metric": "diversity",
+                        "direction": "higher_is_better",
+                        "margin": 0.0,
+                        "evidence_required": True,
+                        "gate_modes": ["confirmation"],
+                    },
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 def test_finalize_binds_numeric_evidence_and_remains_non_promotable(tmp_path: Path) -> None:
     raw = tmp_path / "raw.csv"
     evidence = tmp_path / "evidence.csv"
@@ -204,3 +241,49 @@ def test_finalize_rejects_incomplete_or_non_numeric_evidence(tmp_path: Path) -> 
             output_dir=tmp_path,
             bootstrap_resamples=10,
         )
+
+
+def test_v2_finalize_accepts_missing_blind_quality_as_diagnostic(
+    tmp_path: Path,
+) -> None:
+    raw = tmp_path / "raw.csv"
+    evidence = tmp_path / "evidence.csv"
+    protocol = tmp_path / "protocol.json"
+    raw_rows = _raw_rows()
+    evidence_rows = _evidence_rows(raw_rows)
+    for row in evidence_rows:
+        row["quality_baseline"] = ""
+        row["quality_guided"] = ""
+    _write_csv(raw, raw_rows)
+    _write_csv(evidence, evidence_rows)
+    _v2_protocol(protocol)
+
+    report = finalize_development_pairs(
+        raw_pair_table=raw,
+        evidence_table=evidence,
+        protocol_path=protocol,
+        output_dir=tmp_path,
+        bootstrap_resamples=100,
+    )
+
+    assert report["schema_version"] == 2
+    assert report["blind_quality_is_gate"] is False
+    assert report["blind_quality_evidence_available"] is False
+    assert report["quality_noninferior"] is None
+    assert report["prompt_noninferior"] is True
+    rows = list(csv.DictReader((tmp_path / "development_pairs.csv").open()))
+    assert {row["quality_noninferior"] for row in rows} == {"not_evaluated"}
+
+
+def test_identical_latents_require_identical_shared_decode() -> None:
+    baseline = {"latent_sha256": "a" * 64, "audio_sha256": "b" * 64}
+    assert _validate_pair_decode_identity(baseline, dict(baseline)) is False
+    with pytest.raises(LTSNContractError, match="identical.*latents"):
+        _validate_pair_decode_identity(
+            baseline,
+            {"latent_sha256": "a" * 64, "audio_sha256": "c" * 64},
+        )
+    assert _validate_pair_decode_identity(
+        baseline,
+        {"latent_sha256": "d" * 64, "audio_sha256": "c" * 64},
+    ) is True

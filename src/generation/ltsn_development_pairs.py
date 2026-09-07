@@ -31,6 +31,7 @@ AUTHORIZATION_SCOPE = "development_only"
 GENERATION_MANIFEST = "development_generation_manifest.csv"
 RAW_PAIR_TABLE = "development_pairs_raw.csv"
 FINAL_PAIR_TABLE = "development_pairs.csv"
+PAIR_DECODER_CONTRACT = "ace_vae_decode_latent_to_audio_v1"
 
 
 def _relative(path: Path, parent: Path) -> str:
@@ -196,6 +197,8 @@ def _resume_arm(receipt_path: Path, output_dir: Path, plan_sha256: str) -> dict[
         raise LTSNContractError("development arm receipt belongs to a different plan")
     if receipt.get("authorization_scope") != AUTHORIZATION_SCOPE:
         raise LTSNContractError("development arm receipt has an invalid scope")
+    if receipt.get("decoder_contract") != PAIR_DECODER_CONTRACT:
+        raise LTSNContractError("development arm used a different decoder contract")
     for kind in ("audio", "latent"):
         path = output_dir / receipt[f"{kind}_path"]
         if not path.is_file() or sha256_file(path) != receipt[f"{kind}_sha256"]:
@@ -254,11 +257,13 @@ def _generate_arm(
         raise LTSNContractError("ACE returned a different seed for a development arm")
     latent = _latent_array(result.final_latent)
     _save_npy_atomic(latent_path, latent)
-    audio_path.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(result.audio_path, audio_path)
+    adapter.decode_latent_to_audio(latent, audio_path)
+    generated_audio = result.audio_path.resolve()
+    if generated_audio != audio_path.resolve() and generated_audio.is_file():
+        generated_audio.unlink()
     focus_logit, focus_loss = _proxy_focus_loss(latent, models, contract, device)
     receipt = {
-        "schema_version": 1,
+        "schema_version": 2,
         "pair_id": row["pair_id"],
         "prompt_id": row["prompt_id"],
         "seed": row["seed"],
@@ -271,10 +276,25 @@ def _generate_arm(
         "proxy_focus_logit": focus_logit,
         "proxy_focus_band_loss": focus_loss,
         "authorization_scope": AUTHORIZATION_SCOPE,
+        "decoder_contract": PAIR_DECODER_CONTRACT,
         "plan_sha256": plan_sha256,
     }
     write_json_atomic(receipt_path, receipt)
     return receipt
+
+
+def _validate_pair_decode_identity(
+    baseline: Mapping[str, Any], guided: Mapping[str, Any]
+) -> bool:
+    """Require deterministic shared decoding whenever guidance is a latent no-op."""
+
+    latent_changed = baseline["latent_sha256"] != guided["latent_sha256"]
+    if not latent_changed and baseline["audio_sha256"] != guided["audio_sha256"]:
+        raise LTSNContractError(
+            "identical baseline/guided latents decoded to different audio; "
+            "the paired decoder contract is not deterministic"
+        )
+    return latent_changed
 
 
 def _validate_partial_generation_manifest(
@@ -293,6 +313,7 @@ def _validate_partial_generation_manifest(
         if (
             row.get("authorization_scope") != AUTHORIZATION_SCOPE
             or row.get("plan_sha256") != plan_sha256
+            or row.get("decoder_contract") != PAIR_DECODER_CONTRACT
             or row.get("prompt_id") != planned["prompt_id"]
             or int(row["seed"]) != planned["seed"]
         ):
@@ -307,6 +328,16 @@ def _validate_partial_generation_manifest(
                     raise LTSNContractError(
                         f"resumed generation artifact hash mismatch: {planned['pair_id']}"
                     )
+        _validate_pair_decode_identity(
+            {
+                "latent_sha256": row["baseline_latent_sha256"],
+                "audio_sha256": row["baseline_audio_sha256"],
+            },
+            {
+                "latent_sha256": row["guided_latent_sha256"],
+                "audio_sha256": row["guided_audio_sha256"],
+            },
+        )
 
 
 def generate_development_pairs(
@@ -383,7 +414,7 @@ def generate_development_pairs(
     )
     plan_path = output_dir / "development_generation_plan.json"
     plan = {
-        "schema_version": 1,
+        "schema_version": 2,
         "authorization_scope": AUTHORIZATION_SCOPE,
         "prompt_manifest_sha256": sha256_file(prompt_manifest),
         "ace_config_sha256": sha256_file(ace_config),
@@ -397,6 +428,7 @@ def generate_development_pairs(
         "expected_development_prompts": expected_development_prompts,
         "duration_seconds": duration_seconds,
         "inference_steps": config.ace.inference_steps,
+        "decoder_contract": PAIR_DECODER_CONTRACT,
         "corrector": {
             "guidance_scale": corrector_config.guidance_scale,
             "rms_clip_ratio": corrector_config.rms_clip_ratio,
@@ -446,6 +478,9 @@ def generate_development_pairs(
             )
             for arm in ("baseline", "guided")
         }
+        latent_changed = _validate_pair_decode_identity(
+            arms["baseline"], arms["guided"]
+        )
         completed.append(
             {
                 "pair_id": row["pair_id"],
@@ -462,6 +497,8 @@ def generate_development_pairs(
                 "guided_latent_path": arms["guided"]["latent_path"],
                 "baseline_latent_sha256": arms["baseline"]["latent_sha256"],
                 "guided_latent_sha256": arms["guided"]["latent_sha256"],
+                "latent_changed": str(latent_changed).lower(),
+                "decoder_contract": PAIR_DECODER_CONTRACT,
                 "proxy_focus_band_loss_before": arms["baseline"][
                     "proxy_focus_band_loss"
                 ],
@@ -497,11 +534,23 @@ def _validate_generation_rows(
             raise LTSNContractError(f"generation pair binding mismatch: {pair_id}")
         if row.get("plan_sha256") != plan_sha256:
             raise LTSNContractError("generation row belongs to a different plan")
+        if row.get("decoder_contract") != PAIR_DECODER_CONTRACT:
+            raise LTSNContractError("generation row used a different decoder contract")
         for arm in ("baseline", "guided"):
             for kind in ("audio", "latent"):
                 path = output_dir / row[f"{arm}_{kind}_path"]
                 if not path.is_file() or sha256_file(path) != row[f"{arm}_{kind}_sha256"]:
                     raise LTSNContractError(f"{pair_id} {arm} {kind} hash mismatch")
+        _validate_pair_decode_identity(
+            {
+                "latent_sha256": row["baseline_latent_sha256"],
+                "audio_sha256": row["baseline_audio_sha256"],
+            },
+            {
+                "latent_sha256": row["guided_latent_sha256"],
+                "audio_sha256": row["guided_audio_sha256"],
+            },
+        )
 
 
 def score_development_pairs(
@@ -591,6 +640,10 @@ def score_development_pairs(
                 "guided_candidate_id": row["guided_candidate_id"],
                 "baseline_audio_sha256": row["baseline_audio_sha256"],
                 "guided_audio_sha256": row["guided_audio_sha256"],
+                "baseline_latent_sha256": row["baseline_latent_sha256"],
+                "guided_latent_sha256": row["guided_latent_sha256"],
+                "latent_changed": row["latent_changed"],
+                "decoder_contract": row["decoder_contract"],
                 "exact_focus_band_loss_before": baseline["focus_band_loss"],
                 "exact_focus_band_loss_after": guided["focus_band_loss"],
                 "proxy_focus_band_loss_before": row["proxy_focus_band_loss_before"],
@@ -685,7 +738,8 @@ def finalize_development_pairs(
         ):
             raise LTSNContractError(f"evidence pair binding mismatch: {pair_id}")
     protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
-    if protocol.get("schema_version") != 1 or protocol.get("status") != "frozen_before_generation":
+    protocol_version = protocol.get("schema_version")
+    if protocol_version not in {1, 2} or protocol.get("status") != "frozen_before_generation":
         raise LTSNContractError("non-inferiority protocol is not frozen-before-generation")
     specifications = protocol.get("criteria")
     if not isinstance(specifications, dict) or set(specifications) != {
@@ -694,19 +748,47 @@ def finalize_development_pairs(
         "diversity",
     }:
         raise LTSNContractError("protocol must define quality, prompt, and diversity")
+    if protocol_version == 2 and protocol.get("gate_contract") != "latent_guidance_promotion_v2":
+        raise LTSNContractError("V2 protocol has an invalid guidance gate contract")
     ordered_ids = sorted(raw)
     prompt_ids = np.asarray([raw[pair_id]["prompt_id"] for pair_id in ordered_ids])
     criteria: dict[str, Any] = {}
     for index, (name, specification) in enumerate(specifications.items()):
         baseline_column = f"{name}_baseline"
         guided_column = f"{name}_guided"
+        evidence_required = bool(specification.get("evidence_required", True))
+        gate_modes = specification.get(
+            "gate_modes", ["development", "confirmation"] if protocol_version == 1 else []
+        )
+        if not isinstance(gate_modes, list) or any(
+            value not in {"development", "confirmation"} for value in gate_modes
+        ):
+            raise LTSNContractError(f"invalid protocol gate_modes for {name}")
         try:
-            baseline = np.asarray(
-                [float(evidence[pair_id][baseline_column]) for pair_id in ordered_ids]
+            baseline_text = [evidence[pair_id].get(baseline_column, "") for pair_id in ordered_ids]
+            guided_text = [evidence[pair_id].get(guided_column, "") for pair_id in ordered_ids]
+            evidence_available = all(
+                str(value).strip() for value in (*baseline_text, *guided_text)
             )
-            guided = np.asarray(
-                [float(evidence[pair_id][guided_column]) for pair_id in ordered_ids]
-            )
+            if not evidence_available:
+                if evidence_required:
+                    raise ValueError
+                if any(str(value).strip() for value in (*baseline_text, *guided_text)):
+                    raise ValueError
+                criteria[name] = {
+                    "passed": None,
+                    "evidence_available": False,
+                    "required_for_gate": False,
+                    "gate_modes": gate_modes,
+                    "metric": specification["metric"],
+                    "direction": specification["direction"],
+                    "margin": float(specification["margin"]),
+                    "estimate": None,
+                    "ci95": None,
+                }
+                continue
+            baseline = np.asarray([float(value) for value in baseline_text])
+            guided = np.asarray([float(value) for value in guided_text])
         except (KeyError, TypeError, ValueError) as exc:
             raise LTSNContractError(f"numeric {name} evidence is missing or malformed") from exc
         if not np.isfinite(baseline).all() or not np.isfinite(guided).all():
@@ -728,6 +810,9 @@ def finalize_development_pairs(
             raise LTSNContractError(f"invalid non-inferiority margin for {name}")
         criteria[name] = {
             "passed": low >= -margin,
+            "evidence_available": True,
+            "required_for_gate": bool(gate_modes),
+            "gate_modes": gate_modes,
             "metric": specification["metric"],
             "direction": direction,
             "margin": margin,
@@ -738,7 +823,9 @@ def finalize_development_pairs(
         raw[pair_id].get("guided_technical_quality_eligible", "").lower() == "true"
         for pair_id in ordered_ids
     )
-    quality_noninferior = criteria["quality"]["passed"] and guided_technical_quality
+    quality_noninferior = criteria["quality"]["passed"]
+    if protocol_version == 1:
+        quality_noninferior = bool(quality_noninferior and guided_technical_quality)
     prompt_noninferior = criteria["prompt"]["passed"]
     diversity_preserved = criteria["diversity"]["passed"]
     final_rows: list[dict[str, Any]] = []
@@ -746,13 +833,17 @@ def finalize_development_pairs(
         final_rows.append(
             {
                 **raw[pair_id],
-                "quality_baseline": evidence[pair_id]["quality_baseline"],
-                "quality_guided": evidence[pair_id]["quality_guided"],
+                "quality_baseline": evidence[pair_id].get("quality_baseline", ""),
+                "quality_guided": evidence[pair_id].get("quality_guided", ""),
                 "prompt_baseline": evidence[pair_id]["prompt_baseline"],
                 "prompt_guided": evidence[pair_id]["prompt_guided"],
                 "diversity_baseline": evidence[pair_id]["diversity_baseline"],
                 "diversity_guided": evidence[pair_id]["diversity_guided"],
-                "quality_noninferior": str(quality_noninferior).lower(),
+                "quality_noninferior": (
+                    "not_evaluated"
+                    if quality_noninferior is None
+                    else str(quality_noninferior).lower()
+                ),
                 "prompt_noninferior": str(prompt_noninferior).lower(),
                 "diversity_preserved": str(diversity_preserved).lower(),
             }
@@ -761,7 +852,7 @@ def finalize_development_pairs(
     final_path = output_dir / FINAL_PAIR_TABLE
     write_csv_atomic(final_path, final_rows)
     report = {
-        "schema_version": 1,
+        "schema_version": 2 if protocol_version == 2 else 1,
         "mode": "development",
         "authorization_scope": AUTHORIZATION_SCOPE,
         "guidance_promotion_eligible": False,
@@ -782,6 +873,8 @@ def finalize_development_pairs(
         "protocol_sha256": sha256_file(protocol_path),
         "criteria": criteria,
         "all_guided_technical_quality_eligible": guided_technical_quality,
+        "blind_quality_is_gate": False if protocol_version == 2 else True,
+        "blind_quality_evidence_available": criteria["quality"]["evidence_available"],
         "quality_noninferior": quality_noninferior,
         "prompt_noninferior": prompt_noninferior,
         "diversity_preserved": diversity_preserved,
