@@ -107,6 +107,7 @@ def _validate_runtime_bindings(
     fingerprint_sha256: str,
     ace_model_sha256: str,
     vae_sha256: str,
+    allow_ood_ablation: bool = False,
 ) -> Mapping[str, Any]:
     metadata = ensemble.get("metadata")
     if not isinstance(metadata, dict):
@@ -126,10 +127,30 @@ def _validate_runtime_bindings(
     for name, value in expected.items():
         if metadata.get(name) != value:
             raise LTSNContractError(f"ensemble {name} binding mismatch")
-    if calibration.get("status") != "frozen":
-        raise LTSNContractError("development correction requires frozen calibration")
-    if calibration.get("qualification_eligible") is not True:
-        raise LTSNContractError("calibration is not qualification eligible")
+    if allow_ood_ablation:
+        valid_ablation = (
+            calibration.get("status") == "development_ood_ablation_only"
+            and calibration.get("authorization_scope") == AUTHORIZATION_SCOPE
+            and calibration.get("qualification_eligible") is False
+            and calibration.get("ood_ablation_only") is True
+            and float(calibration.get("ood_probability_threshold", -1.0)) == 1.0
+            and isinstance(calibration.get("source_calibration_sha256"), str)
+            and len(calibration["source_calibration_sha256"]) == 64
+        )
+        if not valid_ablation:
+            raise LTSNContractError(
+                "--allow-ood-ablation requires a bound development-only OOD ablation artifact"
+            )
+    else:
+        if (
+            calibration.get("schema_version") != 3
+            or calibration.get("status") != "frozen"
+            or calibration.get("qualification_eligible") is not True
+            or calibration.get("ood_calibration_gate_passed") is not True
+        ):
+            raise LTSNContractError(
+                "development correction requires a passed schema-v3 OOD calibration"
+            )
     calibration_bindings = {
         "fingerprint_json_sha256": fingerprint_sha256,
         "ensemble_manifest_sha256": sha256_file(ensemble_manifest),
@@ -453,6 +474,7 @@ def generate_development_pairs(
     require_all_members_out_of_band: bool = False,
     require_all_member_improvement: bool = False,
     minimum_member_gradient_cosine: float = -1.0,
+    allow_ood_ablation: bool = False,
 ) -> dict[str, Any]:
     """Generate same-prompt/seed baseline and development-only guided arms."""
 
@@ -498,6 +520,7 @@ def generate_development_pairs(
         fingerprint_sha256=contract.artifact_sha256,
         ace_model_sha256=ace_model_sha256,
         vae_sha256=vae_sha256,
+        allow_ood_ablation=allow_ood_ablation,
     )
     corrector_config = _corrector_config(
         calibration,
@@ -521,6 +544,7 @@ def generate_development_pairs(
         "fingerprint_json_sha256": contract.artifact_sha256,
         "ensemble_manifest_sha256": sha256_file(ensemble_manifest),
         "calibration_sha256": sha256_file(calibration_path),
+        "ood_ablation_only": bool(calibration.get("ood_ablation_only", False)),
         "ace_model_sha256": ace_model_sha256,
         "vae_sha256": vae_sha256,
         "seed_start": seed_start,
@@ -620,6 +644,7 @@ def generate_development_pairs(
                 "proxy_focus_band_loss_before": arms["baseline"]["proxy_focus_band_loss"],
                 "proxy_focus_band_loss_after": arms["guided"]["proxy_focus_band_loss"],
                 "authorization_scope": AUTHORIZATION_SCOPE,
+                "ood_ablation_only": str(bool(plan.get("ood_ablation_only", False))).lower(),
                 "plan_sha256": plan_sha256,
             }
         )
@@ -646,6 +671,8 @@ def _validate_generation_rows(
         planned = expected[pair_id]
         if row.get("authorization_scope") != AUTHORIZATION_SCOPE:
             raise LTSNContractError("generation manifest contains a non-development scope")
+        if row.get("ood_ablation_only") != str(bool(plan.get("ood_ablation_only", False))).lower():
+            raise LTSNContractError("generation row has a mismatched OOD ablation status")
         if row.get("prompt_id") != planned["prompt_id"] or int(row["seed"]) != planned["seed"]:
             raise LTSNContractError(f"generation pair binding mismatch: {pair_id}")
         if row.get("plan_sha256") != plan_sha256:
@@ -765,6 +792,7 @@ def score_development_pairs(
                 "baseline_technical_quality_eligible": str(baseline_eligible).lower(),
                 "guided_technical_quality_eligible": str(guided_eligible).lower(),
                 "authorization_scope": AUTHORIZATION_SCOPE,
+                "ood_ablation_only": row["ood_ablation_only"],
             }
         )
     raw_path = output_dir / RAW_PAIR_TABLE
@@ -821,6 +849,10 @@ def finalize_development_pairs(
     fingerprints = {row.get("fingerprint_json_sha256", "") for row in raw_rows}
     if len(fingerprints) != 1 or len(next(iter(fingerprints))) != 64:
         raise LTSNContractError("raw pairs do not share one frozen fingerprint")
+    ablation_values = {row.get("ood_ablation_only", "false").lower() for row in raw_rows}
+    if not ablation_values <= {"true", "false"} or len(ablation_values) != 1:
+        raise LTSNContractError("raw pairs have inconsistent OOD ablation status")
+    ood_ablation_only = ablation_values == {"true"}
     prompt_counts: dict[str, int] = {}
     for row in raw_rows:
         prompt_id = row.get("prompt_id", "")
@@ -965,6 +997,7 @@ def finalize_development_pairs(
         "schema_version": 2 if protocol_version == 2 else 1,
         "mode": "development",
         "authorization_scope": AUTHORIZATION_SCOPE,
+        "ood_ablation_only": ood_ablation_only,
         "guidance_promotion_eligible": False,
         "pairs": len(final_rows),
         "prompts": len(np.unique(prompt_ids)),

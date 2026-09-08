@@ -3,6 +3,7 @@ from __future__ import annotations
 # ruff: noqa: E402, I001
 
 import csv
+import json
 from pathlib import Path
 
 import numpy as np
@@ -11,7 +12,12 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from generation import ltsn_training
-from generation.ltsn_evaluation import _matched_step_ood_summary, _metrics
+from generation.ltsn_evaluation import (
+    _matched_step_ood_summary,
+    _metrics,
+    _ood_calibration_summary,
+    create_development_ood_ablation,
+)
 from generation.ltsn_pipeline import (
     TrajectoryRecorder,
     build_exact_label_tables,
@@ -302,6 +308,89 @@ def test_ood_gate_requires_every_step_and_uses_worst_matched_step() -> None:
     assert summary["required_steps_present"] is True
     assert summary["worst_step_auroc"] == pytest.approx(0.83)
     assert summary["macro_auroc"] == pytest.approx(0.87)
+
+
+def test_ood_calibration_preserves_correction_step_id_and_requires_discrimination() -> None:
+    labels: list[float] = []
+    probabilities: list[float] = []
+    steps: list[int] = []
+    for step, maximum in ((4, 0.20), (5, 0.16), (6, 0.18), (8, 0.14)):
+        id_probabilities = np.linspace(0.01, maximum, 20)
+        labels.extend([0.0] * len(id_probabilities) + [1.0] * 20)
+        probabilities.extend(id_probabilities.tolist() + np.linspace(0.80, 0.99, 20).tolist())
+        steps.extend([step] * 40)
+
+    summary = _ood_calibration_summary(
+        np.asarray(labels), np.asarray(probabilities), np.asarray(steps)
+    )
+
+    assert summary["threshold"] == pytest.approx(np.quantile(np.linspace(0.01, 0.20, 20), 0.95))
+    assert summary["passed"] is True
+    assert all(summary["gate"].values())
+    assert summary["by_step"]["4"]["id_acceptance_rate"] == pytest.approx(0.95)
+    assert summary["by_step"]["6"]["ood_sensitivity"] == pytest.approx(1.0)
+    assert summary["by_step"]["8"]["ood_auroc"] == pytest.approx(1.0)
+
+
+def test_ood_calibration_rejects_chance_level_head() -> None:
+    labels: list[float] = []
+    probabilities: list[float] = []
+    steps: list[int] = []
+    shared = np.linspace(0.01, 0.20, 20)
+    for step in (4, 5, 6, 8):
+        labels.extend([0.0] * 20 + [1.0] * 20)
+        probabilities.extend(shared.tolist() + shared.tolist())
+        steps.extend([step] * 40)
+
+    summary = _ood_calibration_summary(
+        np.asarray(labels), np.asarray(probabilities), np.asarray(steps)
+    )
+
+    assert summary["passed"] is False
+    assert summary["gate"]["correction_step_id_acceptance"] is True
+    assert summary["gate"]["matched_step_ood_auroc"] is False
+    assert summary["gate"]["matched_step_ood_sensitivity"] is False
+
+
+def test_development_ood_ablation_is_explicit_and_cannot_overwrite_source(
+    tmp_path: Path,
+) -> None:
+    calibration = tmp_path / "calibration.json"
+    calibration.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "status": "failed",
+                "qualification_eligible": False,
+                "fingerprint_json_sha256": "a" * 64,
+                "ensemble_manifest_sha256": "b" * 64,
+                "variance_scale": [1.0] * 18,
+                "ood_probability_threshold": 0.2,
+                "max_aleatoric_variance": 1.0,
+                "max_epistemic_variance": 1.0,
+                "max_interval_width": 1.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "calibration_ood_ablation.json"
+
+    payload = create_development_ood_ablation(
+        calibration_path=calibration,
+        output_path=output,
+    )
+
+    assert payload["status"] == "development_ood_ablation_only"
+    assert payload["authorization_scope"] == "development_only"
+    assert payload["qualification_eligible"] is False
+    assert payload["ood_ablation_only"] is True
+    assert payload["ood_probability_threshold"] == 1.0
+    assert payload["source_ood_probability_threshold"] == 0.2
+    with pytest.raises(LTSNContractError, match="must not overwrite"):
+        create_development_ood_ablation(
+            calibration_path=calibration,
+            output_path=calibration,
+        )
 
 
 def test_three_seed_training_maps_one_explicit_gpu_per_seed() -> None:

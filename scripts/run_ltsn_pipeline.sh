@@ -19,6 +19,7 @@ LTSN_MANIFEST="${LTSN_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/ltsn_manifest_v3.cs
 LTSN_SPLIT_MANIFEST="${LTSN_SPLIT_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/split_manifest_v3.json}"
 MODEL_DIR="${LTSN_MODEL_DIR:-${RUN_ROOT}/models}"
 CALIBRATION_PATH="${LTSN_CALIBRATION_PATH:-${RUN_ROOT}/calibration.json}"
+OOD_ABLATION_CALIBRATION_PATH="${LTSN_OOD_ABLATION_CALIBRATION_PATH:-${RUN_ROOT}/calibration_ood_ablation.json}"
 GUIDANCE_DEVELOPMENT_PATH="${LTSN_GUIDANCE_DEVELOPMENT_PATH:-${RUN_ROOT}/guidance_development.json}"
 QUALIFICATION_PATH="${LTSN_QUALIFICATION_PATH:-${RUN_ROOT}/qualification.json}"
 
@@ -215,10 +216,29 @@ calibrate() {
     --device "${EVAL_DEVICE:-cuda:0}"
 }
 
+calibrate_ood_ablation() {
+  [[ -f "${CALIBRATION_PATH}" ]] || {
+    echo "Run calibrate before creating the development-only OOD ablation" >&2
+    exit 3
+  }
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_calibration_ablation.py" \
+    --calibration "${CALIBRATION_PATH}" \
+    --output "${OOD_ABLATION_CALIBRATION_PATH}"
+}
+
 development_generate() {
   : "${ACE_MODEL_SHA256:?Set ACE_MODEL_SHA256 to the 64-hex model tree digest}"
   : "${VAE_SHA256:?Set VAE_SHA256 to the 64-hex VAE tree digest}"
+  local development_calibration="${CALIBRATION_PATH}"
   local -a corrector_args=(--rms-clip-ratio "${DEVELOPMENT_RMS_CLIP_RATIO:-0.005}")
+  if [[ "${DEVELOPMENT_OOD_ABLATION:-0}" == "1" ]]; then
+    development_calibration="${OOD_ABLATION_CALIBRATION_PATH}"
+    [[ -f "${development_calibration}" ]] || {
+      echo "Run calibrate-ood-ablation before development OOD ablation" >&2
+      exit 3
+    }
+    corrector_args+=(--allow-ood-ablation)
+  fi
   if [[ "${DEVELOPMENT_REQUIRE_ALL_MEMBERS_OOB:-0}" == "1" ]]; then
     corrector_args+=(--require-all-members-out-of-band)
   fi
@@ -235,7 +255,7 @@ development_generate() {
     --prompt-manifest "${PROMPT_MANIFEST}" \
     --fingerprint "${FINGERPRINT}" \
     --ensemble-manifest "${MODEL_DIR}/ensemble_manifest.json" \
-    --calibration "${CALIBRATION_PATH}" \
+    --calibration "${development_calibration}" \
     --output-dir "${DEVELOPMENT_DIR}" \
     --ace-model-sha256 "${ACE_MODEL_SHA256}" \
     --vae-sha256 "${VAE_SHA256}" \
@@ -333,6 +353,7 @@ case "${STAGE}" in
   augment-on-policy) augment_on_policy ;;
   train) train ;;
   calibrate) calibrate ;;
+  calibrate-ood-ablation) calibrate_ood_ablation ;;
   development-generate) development_generate ;;
   development-score) development_score ;;
   development-evidence) development_evidence ;;
@@ -340,5 +361,5 @@ case "${STAGE}" in
   guidance-development) guidance_development ;;
   qualify) qualify ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|train|calibrate|development-generate|development-score|development-evidence|development-finalize|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|train|calibrate|calibrate-ood-ablation|development-generate|development-score|development-evidence|development-finalize|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
 esac

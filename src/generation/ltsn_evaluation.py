@@ -20,6 +20,11 @@ from .ltsn_training import load_checkpoint_model, predict_dataset, spearman_corr
 
 LEGACY_GUIDANCE_PROMOTION_GATE_NAME = "latent_guidance_promotion_v1"
 GUIDANCE_PROMOTION_GATE_NAME = "latent_guidance_promotion_v2"
+OOD_CALIBRATION_REQUIRED_STEPS = (4, 5, 6, 8)
+OOD_CORRECTION_STEPS = (4, 5, 6)
+OOD_ID_ACCEPTANCE_MINIMUM = 0.95
+OOD_AUROC_MINIMUM = 0.80
+OOD_SENSITIVITY_MINIMUM = 0.80
 
 
 def _load_ensemble(
@@ -71,6 +76,7 @@ def _ensemble_predictions(
     logvars = np.stack([member["coordinate_logvar"] for member in members])
     scores = np.stack([member["predicted_focus_logit"] for member in members])
     ood_logits = np.stack([member["ood_logit"] for member in members])
+    member_ood_probability = 1.0 / (1.0 + np.exp(-ood_logits))
     base = members[0]
     active_masks = [
         model.coordinate_active_mask.detach().cpu().numpy().astype(bool) for model in models
@@ -94,11 +100,119 @@ def _ensemble_predictions(
         "member_coordinate_mean": means,
         "member_logvar": logvars,
         "predicted_focus_logit": scores.mean(axis=0),
-        "ood_probability": (1.0 / (1.0 + np.exp(-ood_logits))).max(axis=0),
+        "ood_probability": member_ood_probability.max(axis=0),
+        "member_ood_probability": member_ood_probability,
         "aleatoric_variance": np.exp(logvars).mean(axis=(0, 2)),
         "epistemic_variance": means.var(axis=0).mean(axis=1),
         "total_variance": np.exp(logvars).mean(axis=0) + means.var(axis=0),
         "active_coordinate_mask": active_masks[0],
+    }
+
+
+def _ood_calibration_summary(
+    labels: np.ndarray,
+    probabilities: np.ndarray,
+    steps: np.ndarray,
+) -> dict[str, Any]:
+    """Select an ID-preserving threshold and audit matched OOD discrimination."""
+
+    labels = np.asarray(labels, dtype=float)
+    probabilities = np.asarray(probabilities, dtype=float)
+    steps = np.asarray(steps, dtype=int)
+    if labels.shape != probabilities.shape or labels.shape != steps.shape or labels.ndim != 1:
+        raise LTSNContractError("OOD calibration arrays must be aligned one-dimensional values")
+    if not np.isfinite(labels).all() or not np.isfinite(probabilities).all():
+        raise LTSNContractError("OOD calibration arrays must be finite")
+    if np.any((probabilities < 0.0) | (probabilities > 1.0)):
+        raise LTSNContractError("OOD probabilities must lie in [0, 1]")
+
+    id_quantiles: dict[int, float] = {}
+    for step in OOD_CORRECTION_STEPS:
+        step_id = (steps == step) & (labels < 0.5)
+        if not np.any(step_id):
+            raise LTSNContractError(
+                f"calibration requires in-distribution samples at correction step {step}"
+            )
+        id_quantiles[step] = float(np.quantile(probabilities[step_id], 0.95))
+    threshold = max(id_quantiles.values())
+
+    by_step: dict[str, dict[str, Any]] = {}
+    for step in OOD_CALIBRATION_REQUIRED_STEPS:
+        step_mask = steps == step
+        step_id = step_mask & (labels < 0.5)
+        step_ood = step_mask & (labels >= 0.5)
+        predicted_ood = probabilities > threshold
+        id_acceptance = None if not np.any(step_id) else float(np.mean(~predicted_ood[step_id]))
+        sensitivity = None if not np.any(step_ood) else float(np.mean(predicted_ood[step_ood]))
+        specificity = id_acceptance
+        balanced = (
+            None
+            if sensitivity is None or specificity is None
+            else 0.5 * (sensitivity + specificity)
+        )
+        by_step[str(step)] = {
+            "id_samples": int(np.count_nonzero(step_id)),
+            "ood_samples": int(np.count_nonzero(step_ood)),
+            "id_probability_q95": (
+                None if not np.any(step_id) else float(np.quantile(probabilities[step_id], 0.95))
+            ),
+            "id_acceptance_rate": id_acceptance,
+            "ood_sensitivity": sensitivity,
+            "balanced_accuracy": balanced,
+            "ood_auroc": _auc(labels[step_mask], probabilities[step_mask]),
+        }
+
+    required_steps_present = all(
+        by_step[str(step)]["id_samples"] > 0 and by_step[str(step)]["ood_samples"] > 0
+        for step in OOD_CALIBRATION_REQUIRED_STEPS
+    )
+    correction_id_acceptance_passed = all(
+        isinstance(by_step[str(step)]["id_acceptance_rate"], (int, float))
+        and by_step[str(step)]["id_acceptance_rate"] >= OOD_ID_ACCEPTANCE_MINIMUM
+        for step in OOD_CORRECTION_STEPS
+    )
+    matched_auroc_passed = all(
+        isinstance(by_step[str(step)]["ood_auroc"], (int, float))
+        and math.isfinite(by_step[str(step)]["ood_auroc"])
+        and by_step[str(step)]["ood_auroc"] >= OOD_AUROC_MINIMUM
+        for step in OOD_CALIBRATION_REQUIRED_STEPS
+    )
+    matched_sensitivity_passed = all(
+        isinstance(by_step[str(step)]["ood_sensitivity"], (int, float))
+        and by_step[str(step)]["ood_sensitivity"] >= OOD_SENSITIVITY_MINIMUM
+        for step in OOD_CALIBRATION_REQUIRED_STEPS
+    )
+    gate = {
+        "required_steps_present": required_steps_present,
+        "correction_step_id_acceptance": correction_id_acceptance_passed,
+        "matched_step_ood_auroc": matched_auroc_passed,
+        "matched_step_ood_sensitivity": matched_sensitivity_passed,
+    }
+    in_distribution = labels < 0.5
+    out_of_distribution = labels >= 0.5
+    predicted_ood = probabilities > threshold
+    global_sensitivity = (
+        None
+        if not np.any(out_of_distribution)
+        else float(np.mean(predicted_ood[out_of_distribution]))
+    )
+    global_specificity = float(np.mean(~predicted_ood[in_distribution]))
+    return {
+        "threshold": threshold,
+        "by_step": by_step,
+        "gate": gate,
+        "passed": all(gate.values()),
+        "global_balanced_accuracy": (
+            None if global_sensitivity is None else 0.5 * (global_sensitivity + global_specificity)
+        ),
+        "policy": {
+            "threshold": "maximum correction-step calibration-ID OOD probability q95",
+            "required_steps": list(OOD_CALIBRATION_REQUIRED_STEPS),
+            "correction_steps": list(OOD_CORRECTION_STEPS),
+            "minimum_id_acceptance": OOD_ID_ACCEPTANCE_MINIMUM,
+            "minimum_matched_step_ood_auroc": OOD_AUROC_MINIMUM,
+            "minimum_matched_step_ood_sensitivity": OOD_SENSITIVITY_MINIMUM,
+        },
     }
 
 
@@ -138,73 +252,110 @@ def calibrate_ensemble(
     interval_width = np.mean(2.0 * 1.6448536269514722 * np.sqrt(calibrated_variance), axis=1)
     ood = prediction["ood_probability"]
     calibration_steps = np.asarray(prediction["step_number"], dtype=int)
-    matched_steps = sorted(
-        int(step)
-        for step in np.unique(calibration_steps)
-        if np.any(labels[calibration_steps == step] >= 0.5)
-        and np.any(labels[calibration_steps == step] < 0.5)
+    ood_calibration = _ood_calibration_summary(labels, ood, calibration_steps)
+    member_ood = prediction["member_ood_probability"]
+    if member_ood.ndim != 2 or member_ood.shape[1] != len(labels):
+        raise LTSNContractError("ensemble member OOD probabilities are malformed")
+    aggregation_probabilities = {
+        "max_member": member_ood.max(axis=0),
+        "mean_member": member_ood.mean(axis=0),
+        **{f"member_{index}": values for index, values in enumerate(member_ood)},
+    }
+    if member_ood.shape[0] == 3:
+        aggregation_probabilities["second_highest_2_of_3"] = np.sort(member_ood, axis=0)[-2]
+    aggregation_diagnostics = {
+        name: _ood_calibration_summary(labels, values, calibration_steps)
+        for name, values in aggregation_probabilities.items()
+    }
+    best_threshold = float(ood_calibration["threshold"])
+    matched_balanced = {
+        step: float(metrics["balanced_accuracy"])
+        for step, metrics in ood_calibration["by_step"].items()
+        if isinstance(metrics.get("balanced_accuracy"), (int, float))
+    }
+    calibration_eligible = bool(ensemble["qualification_eligible"] and ood_calibration["passed"])
+    status = (
+        "frozen"
+        if calibration_eligible
+        else "engineering_smoke_only"
+        if not ensemble["qualification_eligible"]
+        else "failed"
     )
-    matched_balanced: dict[str, float] = {}
-    if np.any(labels >= 0.5):
-        candidates = np.unique(ood)
-        best_threshold = float(candidates[0])
-        best_objective = -math.inf
-        best_balanced = -math.inf
-        for threshold in candidates:
-            predicted = ood >= threshold
-            sensitivity = np.mean(predicted[labels >= 0.5])
-            specificity = np.mean(~predicted[in_distribution])
-            balanced = 0.5 * (sensitivity + specificity)
-            step_scores = []
-            for step in matched_steps:
-                step_mask = calibration_steps == step
-                step_positive = step_mask & (labels >= 0.5)
-                step_negative = step_mask & (labels < 0.5)
-                step_scores.append(
-                    0.5 * (np.mean(predicted[step_positive]) + np.mean(~predicted[step_negative]))
-                )
-            # The minimum matched-step score prevents a threshold from exploiting
-            # a step/OOD distribution mismatch.  Global balanced accuracy is the
-            # deterministic tie-breaker for older engineering-smoke manifests.
-            objective = min(step_scores) if step_scores else float(balanced)
-            if (objective, balanced) > (best_objective, best_balanced):
-                best_objective = float(objective)
-                best_balanced = float(balanced)
-                best_threshold = float(threshold)
-        selected = ood >= best_threshold
-        for step in matched_steps:
-            step_mask = calibration_steps == step
-            step_positive = step_mask & (labels >= 0.5)
-            step_negative = step_mask & (labels < 0.5)
-            matched_balanced[str(step)] = float(
-                0.5 * (np.mean(selected[step_positive]) + np.mean(~selected[step_negative]))
-            )
-    else:
-        best_threshold = float(np.quantile(ood[in_distribution], 0.95))
-        best_balanced = None
     payload = {
-        "schema_version": 2,
-        "status": "engineering_smoke_only" if not ensemble["qualification_eligible"] else "frozen",
-        "qualification_eligible": bool(ensemble["qualification_eligible"]),
+        "schema_version": 3,
+        "status": status,
+        "qualification_eligible": calibration_eligible,
         "fingerprint_json_sha256": contract.artifact_sha256,
         "ensemble_manifest_sha256": sha256_file(ensemble_manifest),
         "calibration_manifest_sha256": sha256_file(manifest_path),
         "sample_count": len(prediction["sample_id"]),
         "variance_scale": variance_scale.tolist(),
         "ood_probability_threshold": best_threshold,
-        "ood_calibration_balanced_accuracy": best_balanced,
+        "ood_calibration_balanced_accuracy": ood_calibration["global_balanced_accuracy"],
         "ood_calibration_matched_step_balanced_accuracy": matched_balanced,
         "ood_calibration_worst_step_balanced_accuracy": (
             min(matched_balanced.values()) if matched_balanced else None
         ),
+        "ood_calibration_by_step": ood_calibration["by_step"],
+        "ood_calibration_gate": ood_calibration["gate"],
+        "ood_calibration_gate_passed": ood_calibration["passed"],
+        "ood_aggregation_diagnostics": aggregation_diagnostics,
         "max_aleatoric_variance": float(np.quantile(calibrated_aleatoric[in_distribution], 0.95)),
         "max_epistemic_variance": float(np.quantile(calibrated_epistemic[in_distribution], 0.95)),
         "max_interval_width": float(np.quantile(interval_width[in_distribution], 0.95)),
+        "ood_policy": ood_calibration["policy"],
         "policy": (
-            "95th percentile ID no-op thresholds; OOD threshold maximizes worst "
-            "matched-step balanced accuracy on calibration only"
+            "95th percentile ID no-op thresholds; OOD threshold is the maximum "
+            "correction-step calibration-ID q95 and requires matched-step AUROC, "
+            "OOD sensitivity, and ID acceptance gates"
         ),
     }
+    write_json_atomic(output_path, payload)
+    payload["calibration_sha256"] = sha256_file(output_path)
+    return payload
+
+
+def create_development_ood_ablation(
+    *,
+    calibration_path: Path,
+    output_path: Path,
+) -> dict[str, Any]:
+    """Create an explicit development-only calibration with the OOD check disabled."""
+
+    calibration_path = calibration_path.resolve()
+    output_path = output_path.resolve()
+    if calibration_path == output_path:
+        raise LTSNContractError("OOD ablation must not overwrite its source calibration")
+    source = json.loads(calibration_path.read_text(encoding="utf-8"))
+    required = {
+        "fingerprint_json_sha256",
+        "ensemble_manifest_sha256",
+        "variance_scale",
+        "ood_probability_threshold",
+        "max_aleatoric_variance",
+        "max_epistemic_variance",
+        "max_interval_width",
+    }
+    missing = sorted(required - set(source))
+    if missing:
+        raise LTSNContractError(f"source calibration is missing fields: {missing}")
+    if source.get("ood_ablation_only") is True:
+        raise LTSNContractError("source calibration is already an OOD ablation artifact")
+
+    payload = dict(source)
+    payload.update(
+        {
+            "schema_version": max(3, int(source.get("schema_version", 0))),
+            "status": "development_ood_ablation_only",
+            "authorization_scope": "development_only",
+            "qualification_eligible": False,
+            "ood_ablation_only": True,
+            "source_calibration_sha256": sha256_file(calibration_path),
+            "source_calibration_status": source.get("status"),
+            "source_ood_probability_threshold": source["ood_probability_threshold"],
+            "ood_probability_threshold": 1.0,
+        }
+    )
     write_json_atomic(output_path, payload)
     payload["calibration_sha256"] = sha256_file(output_path)
     return payload
@@ -339,6 +490,13 @@ def qualify_ensemble(
     calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
     if calibration.get("ensemble_manifest_sha256") != sha256_file(ensemble_manifest):
         raise LTSNContractError("calibration belongs to a different ensemble")
+    if (
+        calibration.get("schema_version") != 3
+        or calibration.get("status") != "frozen"
+        or calibration.get("qualification_eligible") is not True
+        or calibration.get("ood_calibration_gate_passed") is not True
+    ):
+        raise LTSNContractError("qualification requires a passed schema-v3 OOD calibration")
     variance_scale = np.asarray(calibration["variance_scale"], dtype=float)
     if variance_scale.shape != (18,) or not np.isfinite(variance_scale).all():
         raise LTSNContractError("calibration variance_scale must contain 18 finite values")
@@ -354,7 +512,7 @@ def qualify_ensemble(
             name: value
             if name == "active_coordinate_mask"
             else value[:, mask]
-            if name in {"member_coordinate_mean", "member_logvar"}
+            if name in {"member_coordinate_mean", "member_logvar", "member_ood_probability"}
             else value[mask]
             if isinstance(value, np.ndarray)
             else [item for item, keep in zip(value, mask, strict=True) if keep]
@@ -379,6 +537,10 @@ def qualify_ensemble(
             raise LTSNContractError("qualification requires a development guidance report")
         if direction_payload.get("authorization_scope") != "development_only":
             raise LTSNContractError("qualification requires authorization_scope=development_only")
+        if direction_payload.get("ood_ablation_only") is True:
+            raise LTSNContractError(
+                "development OOD ablation evidence cannot enter independent qualification"
+            )
         if (
             direction_payload.get("schema_version") != 2
             or direction_payload.get("gate") != GUIDANCE_PROMOTION_GATE_NAME
@@ -504,6 +666,12 @@ def evaluate_guidance_pairs(
         )
     if any(row.get("fingerprint_json_sha256") != fingerprint_sha256 for row in rows):
         raise LTSNContractError("guidance pair table uses a different exact scorer")
+    ablation_values = {(row.get("ood_ablation_only") or "false").lower() for row in rows}
+    if not ablation_values <= {"true", "false"} or len(ablation_values) != 1:
+        raise LTSNContractError("guidance pair table has inconsistent OOD ablation status")
+    ood_ablation_only = ablation_values == {"true"}
+    if mode == "confirmation" and ood_ablation_only:
+        raise LTSNContractError("OOD ablation pairs cannot be used for confirmation")
     prompt_ids = np.asarray([row["prompt_id"] for row in rows])
     exact_before = np.asarray([float(row["exact_focus_band_loss_before"]) for row in rows])
     exact_after = np.asarray([float(row["exact_focus_band_loss_after"]) for row in rows])
@@ -579,6 +747,7 @@ def evaluate_guidance_pairs(
         "gate": GUIDANCE_PROMOTION_GATE_NAME,
         "mode": mode,
         "authorization_scope": expected_scope,
+        "ood_ablation_only": ood_ablation_only,
         "fingerprint_json_sha256": fingerprint_sha256,
         "pair_table_sha256": sha256_file(pair_table),
         "pairs": len(rows),
