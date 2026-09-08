@@ -30,9 +30,7 @@ def _load_ensemble(
     contract = load_fingerprint_contract(fingerprint_path)
     payload = json.loads(ensemble_manifest.read_text(encoding="utf-8"))
     target_contract = payload.get("training_target_contract")
-    target_contract_sha256 = payload.get("metadata", {}).get(
-        "training_target_contract_sha256"
-    )
+    target_contract_sha256 = payload.get("metadata", {}).get("training_target_contract_sha256")
     if target_contract_sha256 is not None and (
         not isinstance(target_contract, dict)
         or canonical_json_sha256(target_contract) != target_contract_sha256
@@ -139,23 +137,53 @@ def calibrate_ensemble(
     ).mean(axis=1)
     interval_width = np.mean(2.0 * 1.6448536269514722 * np.sqrt(calibrated_variance), axis=1)
     ood = prediction["ood_probability"]
+    calibration_steps = np.asarray(prediction["step_number"], dtype=int)
+    matched_steps = sorted(
+        int(step)
+        for step in np.unique(calibration_steps)
+        if np.any(labels[calibration_steps == step] >= 0.5)
+        and np.any(labels[calibration_steps == step] < 0.5)
+    )
+    matched_balanced: dict[str, float] = {}
     if np.any(labels >= 0.5):
         candidates = np.unique(ood)
         best_threshold = float(candidates[0])
+        best_objective = -math.inf
         best_balanced = -math.inf
         for threshold in candidates:
             predicted = ood >= threshold
             sensitivity = np.mean(predicted[labels >= 0.5])
             specificity = np.mean(~predicted[in_distribution])
             balanced = 0.5 * (sensitivity + specificity)
-            if balanced > best_balanced:
+            step_scores = []
+            for step in matched_steps:
+                step_mask = calibration_steps == step
+                step_positive = step_mask & (labels >= 0.5)
+                step_negative = step_mask & (labels < 0.5)
+                step_scores.append(
+                    0.5 * (np.mean(predicted[step_positive]) + np.mean(~predicted[step_negative]))
+                )
+            # The minimum matched-step score prevents a threshold from exploiting
+            # a step/OOD distribution mismatch.  Global balanced accuracy is the
+            # deterministic tie-breaker for older engineering-smoke manifests.
+            objective = min(step_scores) if step_scores else float(balanced)
+            if (objective, balanced) > (best_objective, best_balanced):
+                best_objective = float(objective)
                 best_balanced = float(balanced)
                 best_threshold = float(threshold)
+        selected = ood >= best_threshold
+        for step in matched_steps:
+            step_mask = calibration_steps == step
+            step_positive = step_mask & (labels >= 0.5)
+            step_negative = step_mask & (labels < 0.5)
+            matched_balanced[str(step)] = float(
+                0.5 * (np.mean(selected[step_positive]) + np.mean(~selected[step_negative]))
+            )
     else:
         best_threshold = float(np.quantile(ood[in_distribution], 0.95))
         best_balanced = None
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "engineering_smoke_only" if not ensemble["qualification_eligible"] else "frozen",
         "qualification_eligible": bool(ensemble["qualification_eligible"]),
         "fingerprint_json_sha256": contract.artifact_sha256,
@@ -165,14 +193,17 @@ def calibrate_ensemble(
         "variance_scale": variance_scale.tolist(),
         "ood_probability_threshold": best_threshold,
         "ood_calibration_balanced_accuracy": best_balanced,
-        "max_aleatoric_variance": float(
-            np.quantile(calibrated_aleatoric[in_distribution], 0.95)
+        "ood_calibration_matched_step_balanced_accuracy": matched_balanced,
+        "ood_calibration_worst_step_balanced_accuracy": (
+            min(matched_balanced.values()) if matched_balanced else None
         ),
-        "max_epistemic_variance": float(
-            np.quantile(calibrated_epistemic[in_distribution], 0.95)
-        ),
+        "max_aleatoric_variance": float(np.quantile(calibrated_aleatoric[in_distribution], 0.95)),
+        "max_epistemic_variance": float(np.quantile(calibrated_epistemic[in_distribution], 0.95)),
         "max_interval_width": float(np.quantile(interval_width[in_distribution], 0.95)),
-        "policy": "95th percentile ID no-op thresholds; OOD threshold selected on calibration only",
+        "policy": (
+            "95th percentile ID no-op thresholds; OOD threshold maximizes worst "
+            "matched-step balanced accuracy on calibration only"
+        ),
     }
     write_json_atomic(output_path, payload)
     payload["calibration_sha256"] = sha256_file(output_path)
@@ -273,6 +304,21 @@ def _static_gates(metrics: Mapping[str, Any]) -> dict[str, bool]:
     }
 
 
+def _matched_step_ood_summary(metrics_by_step: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    values = {
+        str(step): float(metrics["ood_auroc"])
+        for step, metrics in metrics_by_step.items()
+        if isinstance(metrics.get("ood_auroc"), (int, float))
+        and math.isfinite(float(metrics["ood_auroc"]))
+    }
+    return {
+        "by_step": values,
+        "macro_auroc": None if not values else float(np.mean(list(values.values()))),
+        "worst_step_auroc": None if not values else min(values.values()),
+        "required_steps_present": {4, 5, 6, 8}.issubset({int(step) for step in values}),
+    }
+
+
 def qualify_ensemble(
     *,
     fingerprint_path: Path,
@@ -315,7 +361,14 @@ def qualify_ensemble(
             for name, value in prediction.items()
         }
         by_step[str(int(step))] = _metrics(subset, variance_scale)
+    matched_ood = _matched_step_ood_summary(by_step)
+    overall["ood_step_matched"] = matched_ood
     gates = _static_gates(overall)
+    gates["ood_noop_reliability"] = bool(
+        matched_ood["required_steps_present"]
+        and isinstance(matched_ood["worst_step_auroc"], (int, float))
+        and matched_ood["worst_step_auroc"] >= 0.80
+    )
     gates["all_step_strata_reported"] = {4, 5, 6}.issubset(
         {int(value) for value in by_step}
     ) and any(record.is_final for record in records if record.split == "qualification")
@@ -325,9 +378,7 @@ def qualify_ensemble(
         if direction_payload.get("mode") != "development":
             raise LTSNContractError("qualification requires a development guidance report")
         if direction_payload.get("authorization_scope") != "development_only":
-            raise LTSNContractError(
-                "qualification requires authorization_scope=development_only"
-            )
+            raise LTSNContractError("qualification requires authorization_scope=development_only")
         if (
             direction_payload.get("schema_version") != 2
             or direction_payload.get("gate") != GUIDANCE_PROMOTION_GATE_NAME
@@ -349,7 +400,7 @@ def qualify_ensemble(
     eligible = bool(ensemble["qualification_eligible"] and calibration["qualification_eligible"])
     passed = eligible and all(gates.values())
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "passed" if passed else ("engineering_smoke_only" if not eligible else "failed"),
         "qualification_passed": passed,
         "qualification_eligible": eligible,
@@ -419,14 +470,16 @@ def evaluate_guidance_pairs(
     qualification_report: Path | None = None,
     bootstrap_resamples: int = 2000,
     seed: int = 20260716,
+    minimum_optimized_pairs: int = 1,
+    minimum_optimized_prompts: int = 1,
 ) -> dict[str, Any]:
     """Verify surrogate changes using decoded exact scores and non-inferiority flags."""
 
     if mode not in {"development", "confirmation"}:
         raise ValueError("mode must be development or confirmation")
-    expected_scope = (
-        "development_only" if mode == "development" else "qualified_confirmation"
-    )
+    if minimum_optimized_pairs < 1 or minimum_optimized_prompts < 1:
+        raise ValueError("minimum optimization coverage must be positive")
+    expected_scope = "development_only" if mode == "development" else "qualified_confirmation"
     qualification_sha256 = ""
     qualification_passed = False
     if mode == "confirmation":
@@ -462,6 +515,7 @@ def evaluate_guidance_pairs(
     exact_improvement = exact_before - exact_after
     proxy_improvement = proxy_before - proxy_after
     optimized = proxy_improvement > 0
+    optimized_prompt_count = len(np.unique(prompt_ids[optimized]))
     optimized_exact = exact_improvement[optimized]
     improved = int(np.count_nonzero(optimized_exact > 0))
     tied = int(np.count_nonzero(optimized_exact == 0))
@@ -469,12 +523,8 @@ def evaluate_guidance_pairs(
     direction_agreement = (
         0.0 if not len(optimized_exact) else float(improved / len(optimized_exact))
     )
-    optimized_exact_median = (
-        0.0 if not len(optimized_exact) else float(np.median(optimized_exact))
-    )
-    optimized_exact_mean = (
-        0.0 if not len(optimized_exact) else float(np.mean(optimized_exact))
-    )
+    optimized_exact_median = 0.0 if not len(optimized_exact) else float(np.median(optimized_exact))
+    optimized_exact_mean = 0.0 if not len(optimized_exact) else float(np.mean(optimized_exact))
     optimized_correlation = (
         None
         if len(optimized_exact) < 2
@@ -492,9 +542,7 @@ def evaluate_guidance_pairs(
     diversity_preserved, diversity_evidence_available = _optional_noninferiority_flag(
         rows, "diversity_preserved"
     )
-    latent_changed_values = {
-        (row.get("latent_changed") or "").strip().lower() for row in rows
-    }
+    latent_changed_values = {(row.get("latent_changed") or "").strip().lower() for row in rows}
     if latent_changed_values == {""}:
         latent_identity_evidence_available = False
     elif latent_changed_values <= {"true", "false"}:
@@ -509,12 +557,13 @@ def evaluate_guidance_pairs(
     if not prompt_evidence_available:
         raise LTSNContractError("prompt non-inferiority evidence is required")
     technical_quality_eligible = all(
-        row.get("guided_technical_quality_eligible", "").lower() == "true"
-        for row in rows
+        row.get("guided_technical_quality_eligible", "").lower() == "true" for row in rows
     )
     proxy_exact_passed = (
         direction_agreement >= 0.65
         and optimized_exact_median > 0
+        and int(np.count_nonzero(optimized)) >= minimum_optimized_pairs
+        and optimized_prompt_count >= minimum_optimized_prompts
         and prompt_noninferior is True
         and technical_quality_eligible
     )
@@ -522,9 +571,7 @@ def evaluate_guidance_pairs(
         if not diversity_evidence_available:
             raise LTSNContractError("confirmation requires diversity evidence")
         proxy_exact_passed = (
-            proxy_exact_passed
-            and diversity_preserved is True
-            and qualification_passed
+            proxy_exact_passed and diversity_preserved is True and qualification_passed
         )
     guidance_promotion_eligible = mode == "confirmation" and proxy_exact_passed
     payload = {
@@ -539,6 +586,13 @@ def evaluate_guidance_pairs(
         "median_exact_loss_improvement": float(np.median(exact_improvement)),
         "cluster_bootstrap_ci95": [ci_low, ci_high],
         "proxy_optimized_pairs": int(np.count_nonzero(optimized)),
+        "proxy_optimized_prompts": optimized_prompt_count,
+        "minimum_optimized_pairs": minimum_optimized_pairs,
+        "minimum_optimized_prompts": minimum_optimized_prompts,
+        "optimization_coverage_gate_passed": bool(
+            int(np.count_nonzero(optimized)) >= minimum_optimized_pairs
+            and optimized_prompt_count >= minimum_optimized_prompts
+        ),
         "proxy_exact_direction_agreement": direction_agreement,
         "optimized_exact_improved_pairs": improved,
         "optimized_exact_tied_pairs": tied,
@@ -551,9 +605,7 @@ def evaluate_guidance_pairs(
         "optimized_exact_zero_loss_before_pairs": int(
             np.count_nonzero(exact_before[optimized] == 0)
         ),
-        "optimized_exact_zero_loss_after_pairs": int(
-            np.count_nonzero(exact_after[optimized] == 0)
-        ),
+        "optimized_exact_zero_loss_after_pairs": int(np.count_nonzero(exact_after[optimized] == 0)),
         "latent_identity_evidence_available": latent_identity_evidence_available,
         "latent_changed_pairs": latent_changed_pairs,
         "latent_noop_pairs": (

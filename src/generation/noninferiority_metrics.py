@@ -6,7 +6,7 @@ import json
 import math
 import os
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -355,9 +355,7 @@ def embed_track(
     segment_samples = int(round(segment_seconds * backend.sampling_rate))
     if segment_samples > backend.maximum_audio_samples:
         maximum_seconds = backend.maximum_audio_samples / backend.sampling_rate
-        raise ValueError(
-            f"segment_seconds exceeds the CLAP feature window ({maximum_seconds:g}s)"
-        )
+        raise ValueError(f"segment_seconds exceeds the CLAP feature window ({maximum_seconds:g}s)")
     audio = _load_resampled_mono(path, backend.sampling_rate)
     segments, weights = split_audio(audio, segment_samples)
     batches: list[np.ndarray] = []
@@ -371,6 +369,42 @@ def embed_track(
     return normalize_embeddings(track[None, :])[0]
 
 
+def embed_candidates_by_audio_sha256(
+    audio_paths: Mapping[str, Path],
+    audio_sha256: Mapping[str, str],
+    backend: EmbeddingBackend,
+    *,
+    segment_seconds: float,
+    batch_size: int,
+) -> tuple[dict[str, np.ndarray], int]:
+    """Embed each distinct decoded waveform exactly once.
+
+    Candidate IDs describe experimental arms, not distinct audio.  In particular,
+    a safety no-op intentionally binds the baseline and guided IDs to the same
+    waveform.  Re-running CLAP for those IDs can introduce feature-extractor or
+    accelerator noise and manufacture a non-zero paired difference.  The frozen
+    audio digest is therefore the identity of an embedding computation.
+    """
+
+    if set(audio_paths) != set(audio_sha256):
+        raise ValueError("audio paths and SHA-256 bindings must contain the same candidates")
+    by_digest: dict[str, np.ndarray] = {}
+    result: dict[str, np.ndarray] = {}
+    for candidate_id in sorted(audio_paths):
+        digest = audio_sha256[candidate_id].strip().lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(f"candidate has an invalid audio SHA-256: {candidate_id}")
+        if digest not in by_digest:
+            by_digest[digest] = embed_track(
+                audio_paths[candidate_id],
+                backend,
+                segment_seconds=segment_seconds,
+                batch_size=batch_size,
+            )
+        result[candidate_id] = by_digest[digest]
+    return result, len(by_digest)
+
+
 def _load_quality_table(
     path: Path | None, pairs: Sequence[PromptPair]
 ) -> dict[str, tuple[str, str]]:
@@ -382,9 +416,10 @@ def _load_quality_table(
     result: dict[str, tuple[str, str]] = {}
     for pair in pairs:
         row = rows[pair.prompt_id]
-        if row.get("baseline_candidate_id") != pair.baseline_candidate_id or row.get(
-            "selected_candidate_id"
-        ) != pair.selected_candidate_id:
+        if (
+            row.get("baseline_candidate_id") != pair.baseline_candidate_id
+            or row.get("selected_candidate_id") != pair.selected_candidate_id
+        ):
             raise ValueError(f"quality candidate binding mismatch: {pair.prompt_id}")
         baseline = (row.get("quality_baseline") or "").strip()
         selected = (row.get("quality_selected") or "").strip()
@@ -537,9 +572,7 @@ def _write_development_csv_atomic(path: Path, rows: Sequence[dict[str, str]]) ->
 def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".part")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, path)
 
 
@@ -557,6 +590,10 @@ class TransformersClapBackend:
         self._device = torch.device(device)
         if self._device.type == "cuda" and not torch.cuda.is_available():
             raise RuntimeError(f"CUDA device requested but CUDA is unavailable: {device}")
+        torch.use_deterministic_algorithms(True, warn_only=True)
+        if hasattr(torch.backends, "cudnn"):
+            torch.backends.cudnn.benchmark = False
+            torch.backends.cudnn.deterministic = True
         self._processor = ClapProcessor.from_pretrained(model_id, revision=revision)
         self._model = ClapModel.from_pretrained(model_id, revision=revision).to(self._device)
         self._model.eval()
@@ -615,14 +652,16 @@ def generate_noninferiority_metrics(
         run_root, prompt_manifest_path, expected_prompt_count=expected_prompt_count
     )
     quality = _load_quality_table(quality_table_path, inputs.pairs)
-    candidate_embeddings: dict[str, np.ndarray] = {}
-    for candidate_id, path in inputs.audio_paths.items():
-        candidate_embeddings[candidate_id] = embed_track(
-            path,
-            backend,
-            segment_seconds=segment_seconds,
-            batch_size=batch_size,
-        )
+    candidate_embeddings, unique_audio_count = embed_candidates_by_audio_sha256(
+        inputs.audio_paths,
+        {
+            candidate_id: inputs.candidates[candidate_id].audio_sha256
+            for candidate_id in inputs.audio_paths
+        },
+        backend,
+        segment_seconds=segment_seconds,
+        batch_size=batch_size,
+    )
     captions = [pair.caption for pair in inputs.pairs]
     text_batches: list[np.ndarray] = []
     for start in range(0, len(captions), batch_size):
@@ -697,6 +736,8 @@ def generate_noninferiority_metrics(
             "sha256": sha256_file(output_path),
             "rows": len(rows),
             "quality_columns_complete": quality_table_path is not None,
+            "candidate_ids": len(candidate_embeddings),
+            "unique_audio_sha256": unique_audio_count,
         },
     }
     _write_json_atomic(audit_path, audit)
@@ -720,14 +761,13 @@ def generate_development_noninferiority_metrics(
 
     inputs = load_development_evidence_inputs(run_root)
     quality = _load_development_quality_table(quality_table_path, inputs.pairs)
-    candidate_embeddings: dict[str, np.ndarray] = {}
-    for candidate_id, path in inputs.audio_paths.items():
-        candidate_embeddings[candidate_id] = embed_track(
-            path,
-            backend,
-            segment_seconds=segment_seconds,
-            batch_size=batch_size,
-        )
+    candidate_embeddings, unique_audio_count = embed_candidates_by_audio_sha256(
+        inputs.audio_paths,
+        inputs.audio_sha256,
+        backend,
+        segment_seconds=segment_seconds,
+        batch_size=batch_size,
+    )
     captions = [pair.caption for pair in inputs.pairs]
     text_batches: list[np.ndarray] = []
     for start in range(0, len(captions), batch_size):
@@ -799,6 +839,8 @@ def generate_development_noninferiority_metrics(
             "rows": len(rows),
             "prompts": len({pair.prompt_id for pair in inputs.pairs}),
             "quality_columns_complete": quality_table_path is not None,
+            "candidate_ids": len(candidate_embeddings),
+            "unique_audio_sha256": unique_audio_count,
         },
     }
     _write_json_atomic(audit_path, audit)

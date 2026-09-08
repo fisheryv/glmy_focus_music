@@ -37,6 +37,12 @@ def main(argv: list[str] | None = None) -> int:
     generate.add_argument("--expected-development-prompts", type=int, default=64)
     generate.add_argument("--duration-seconds", type=float, default=180.0)
     generate.add_argument("--device", default="cuda:0")
+    generate.add_argument(
+        "--rms-clip-ratio", type=float, choices=(0.0025, 0.005, 0.01), default=0.005
+    )
+    generate.add_argument("--require-all-members-out-of-band", action="store_true")
+    generate.add_argument("--require-all-member-improvement", action="store_true")
+    generate.add_argument("--minimum-member-gradient-cosine", type=float, default=-1.0)
     generate.add_argument("--resume", action="store_true")
 
     score = subparsers.add_parser("score")
@@ -72,6 +78,10 @@ def main(argv: list[str] | None = None) -> int:
             duration_seconds=args.duration_seconds,
             device_name=args.device,
             resume=args.resume,
+            rms_clip_ratio=args.rms_clip_ratio,
+            require_all_members_out_of_band=args.require_all_members_out_of_band,
+            require_all_member_improvement=args.require_all_member_improvement,
+            minimum_member_gradient_cosine=args.minimum_member_gradient_cosine,
         )
     elif args.command == "score":
         payload = score_development_pairs(

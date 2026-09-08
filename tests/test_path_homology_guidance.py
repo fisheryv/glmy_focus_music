@@ -18,6 +18,7 @@ from generation.ltsn_contract import (
 )
 from generation.ltsn_losses import (
     block_balanced_huber,
+    paired_band_improvement_loss,
     paired_direction_loss,
     phase_pair_ranking_loss,
 )
@@ -105,9 +106,7 @@ def test_development_only_corrector_is_active_without_claiming_qualification() -
         max_interval_width=10.0,
     )
 
-    corrector = TopologyCorrector(
-        [_LinearSurrogate()], contract, [_checkpoint(contract)], config
-    )
+    corrector = TopologyCorrector([_LinearSurrogate()], contract, [_checkpoint(contract)], config)
 
     assert corrector.is_active
     with pytest.raises(LTSNContractError, match="must not claim"):
@@ -175,12 +174,8 @@ def test_v2_scaled_and_direction_losses_use_existing_outputs() -> None:
         pairs,
         coordinate_scale=scale,
     )
-    aligned = paired_direction_loss(
-        torch.tensor([0.0, 1.0]), torch.tensor([0.0, 1.0]), pairs
-    )
-    reversed_loss = paired_direction_loss(
-        torch.tensor([1.0, 0.0]), torch.tensor([0.0, 1.0]), pairs
-    )
+    aligned = paired_direction_loss(torch.tensor([0.0, 1.0]), torch.tensor([0.0, 1.0]), pairs)
+    reversed_loss = paired_direction_loss(torch.tensor([1.0, 0.0]), torch.tensor([0.0, 1.0]), pairs)
 
     assert coordinate_loss > 0
     assert phase_loss > 0
@@ -194,6 +189,26 @@ def test_block_balanced_loss_does_not_overweight_pitch_dimension_count() -> None
     loss = block_balanced_huber(prediction, target)
 
     assert loss.item() == pytest.approx(0.125)
+
+
+def test_on_policy_loss_uses_exact_band_loss_improvement() -> None:
+    pairs = torch.tensor([[0, 1]])
+    exact = torch.tensor([0.0, 1.0])
+    aligned = paired_band_improvement_loss(
+        torch.tensor([0.0, 1.0]), exact, pairs, focus_band_threshold=2.0
+    )
+    reversed_loss = paired_band_improvement_loss(
+        torch.tensor([1.0, 0.0]), exact, pairs, focus_band_threshold=2.0
+    )
+    saturated = paired_band_improvement_loss(
+        torch.tensor([3.0, 4.0]),
+        torch.tensor([3.0, 4.0]),
+        pairs,
+        focus_band_threshold=2.0,
+    )
+
+    assert aligned < reversed_loss
+    assert saturated == 0
 
 
 def test_corrector_only_changes_valid_unprotected_frames_and_respects_rms_clip() -> None:
@@ -220,6 +235,12 @@ def test_corrector_only_changes_valid_unprotected_frames_and_respects_rms_clip()
 
     update = corrected - next_latent
     assert diagnostics is not None and diagnostics.applied.item()
+    assert diagnostics.member_focus_logit.shape == (1, 1)
+    assert diagnostics.member_gradient_cosine.item() == pytest.approx(1.0)
+    assert diagnostics.predicted_improvement.item() > 0
+    assert diagnostics.proposed_rms.item() > 0
+    assert diagnostics.applied_rms.item() > 0
+    assert diagnostics.no_op_reason_code.item() == 0
     assert torch.equal(update[:, :5], torch.zeros_like(update[:, :5]))
     assert torch.equal(update[:, 15:], torch.zeros_like(update[:, 15:]))
     valid_rms = update[:, 5:15].square().mean().sqrt().item()
@@ -244,3 +265,25 @@ def test_corrector_is_noop_outside_window_or_on_ood() -> None:
 
     assert torch.equal(outside, latent)
     assert torch.equal(ood, latent)
+
+
+def test_sampler_call_records_and_drains_corrector_telemetry() -> None:
+    contract = _contract()
+    corrector = _corrector(_LinearSurrogate(), contract)
+    latent = torch.ones(1, 12, 64)
+    corrector(
+        xt_next=latent,
+        xt_before_step=latent,
+        velocity=torch.zeros_like(latent),
+        timestep=0.75,
+        next_timestep=0.64,
+        step_index=3,
+        attention_mask=torch.ones(1, 12, dtype=torch.bool),
+    )
+
+    telemetry = corrector.drain_telemetry()
+
+    assert len(telemetry) == 1
+    assert telemetry[0]["step_number"] == 4
+    assert telemetry[0]["applied"] == [True]
+    assert corrector.drain_telemetry() == []

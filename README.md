@@ -85,6 +85,32 @@ V3 不改变 LTSN 网络结构；augmentation 会额外为 calibration/qualifica
 若已有完整且哈希有效的旧版 collection/labels，可将 `SOURCE_LTSN_MANIFEST` 和
 `SOURCE_LTSN_SPLIT_MANIFEST` 指向旧 labels 后从 `augment-training` 开始，不必重新采集。
 
+V3 的 development/qualification 未通过时，V4 直接复用原始 labels 和冻结的 V3
+ensemble 生成 on-policy exact pairs，不重新 collection：
+
+```bash
+export RUN_ROOT=$PWD/runs/ltsn_turbo
+bash scripts/run_ltsn_pipeline.sh augment-on-policy
+
+export LTSN_MANIFEST=$RUN_ROOT/training_augmentation_v4/ltsn_manifest_v4.csv
+export LTSN_SPLIT_MANIFEST=$RUN_ROOT/training_augmentation_v4/split_manifest_v4.json
+export LTSN_CONFIG=$PWD/configs/ltsn_training_v4.toml
+export LTSN_MODEL_DIR=$RUN_ROOT/models_v4
+export LTSN_CALIBRATION_PATH=$RUN_ROOT/calibration_v4.json
+export DEVELOPMENT_DIR=$RUN_ROOT/development_pairs_v4
+export LTSN_GUIDANCE_DEVELOPMENT_PATH=$RUN_ROOT/guidance_development_v4.json
+export LTSN_QUALIFICATION_PATH=$RUN_ROOT/qualification_v4.json
+
+TRAIN_DEVICES=cuda:0,cuda:1,cuda:2 bash scripts/run_ltsn_pipeline.sh train
+bash scripts/run_ltsn_pipeline.sh calibrate
+```
+
+`augment-on-policy` 只选择 proxy out-of-band 的 train/development anchor，沿冻结 V3
+ensemble 的真实梯度生成 0.25%/0.5%/1.0% 三档候选，解码后以 exact band-loss
+improvement 训练和早停。OOD 在 train 的 step 4/5/6 及 calibration/qualification 的
+step 4/5/6/8 分层生成；qualification 使用最差 matched-step AUROC，而非混合 overall
+AUROC。V4 调参后必须使用全新 prompt families/seeds 建立 fresh qualification。
+
 ## 发布内容与排除项
 
 Git 发布包含源代码、冻结配置/哈希、18-D scorer、ACE 上游版本、测试、论文与复现文档；

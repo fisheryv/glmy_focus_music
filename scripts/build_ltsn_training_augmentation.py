@@ -18,7 +18,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Build exact-labelled train local/OOD augmentation plus held-out "
-            "calibration/qualification OOD for LTSN V3."
+            "calibration/qualification OOD for LTSN V3/V4."
         )
     )
     parser.add_argument("--root", type=Path, default=Path.cwd())
@@ -32,6 +32,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trajectories-per-prompt", type=int, default=1)
     parser.add_argument("--perturbations-per-anchor", type=int, default=2)
     parser.add_argument("--rms-ratio", type=float, default=0.005)
+    parser.add_argument("--local-mode", choices=("random", "on_policy"), default="random")
+    parser.add_argument("--on-policy-ensemble-manifest", type=Path)
+    parser.add_argument(
+        "--on-policy-rms-ratios",
+        type=float,
+        nargs="+",
+        default=(0.0025, 0.005, 0.01),
+    )
     parser.add_argument("--ood-per-prompt", type=int, default=1)
     parser.add_argument("--evaluation-ood-per-prompt", type=int, default=1)
     parser.add_argument("--seed", type=int, default=2026071600)
@@ -69,6 +77,9 @@ def main(argv: list[str] | None = None) -> int:
         cleanup_exact_batches=not args.keep_exact_batches,
         device_name=args.device,
         resume=args.resume,
+        local_mode=args.local_mode,
+        on_policy_ensemble_manifest=args.on_policy_ensemble_manifest,
+        on_policy_rms_ratios=tuple(args.on_policy_rms_ratios),
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0

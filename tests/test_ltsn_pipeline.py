@@ -11,7 +11,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from generation import ltsn_training
-from generation.ltsn_evaluation import _metrics
+from generation.ltsn_evaluation import _matched_step_ood_summary, _metrics
 from generation.ltsn_pipeline import (
     TrajectoryRecorder,
     build_exact_label_tables,
@@ -32,6 +32,7 @@ from generation.ltsn_training import (
 from generation.ltsn_training_augmentation import (
     _augmentation_plan,
     _evaluation_ood_plan,
+    _on_policy_plan,
     _write_augmentation_trajectory_manifest,
 )
 from generation.ltsn_losses import focus_band_classification_loss
@@ -206,37 +207,57 @@ def test_augmentation_plan_and_exact_manifest_are_deterministic(tmp_path: Path) 
     assert rows[-1]["local_anchor_sample_id"] == ""
 
 
+def test_on_policy_plan_uses_all_frozen_rms_ratios_and_preserves_split() -> None:
+    anchor = _snapshot("anchor", "trajectory", 5)
+    descriptions = {
+        "anchor": {
+            "exact_out_of_band": True,
+            "proxy_out_of_band": True,
+            "gradient_usable": True,
+        }
+    }
+
+    planned = _on_policy_plan([anchor], descriptions, (0.0025, 0.005, 0.01))
+
+    assert [item["rms_ratio"] for item in planned] == [0.0025, 0.005, 0.01]
+    assert {item["kind"] for item in planned} == {"on_policy_direction"}
+    assert {item["split"] for item in planned} == {"train"}
+    assert len({item["sample_id"] for item in planned}) == 3
+
+
 def test_evaluation_ood_is_prompt_held_out_and_uses_unseen_transforms() -> None:
     records = []
     for split in ("calibration", "qualification"):
         for prompt_index in range(2):
-            sample = _snapshot(
-                f"{split}_{prompt_index}",
-                f"{split}_trajectory_{prompt_index}",
-                5,
-            )
-            sample = LTSNSnapshot(
-                sample_id=sample.sample_id,
-                prompt_id=f"{split}_prompt_{prompt_index}",
-                trajectory_id=sample.trajectory_id,
-                split=split,
-                step_number=sample.step_number,
-                timestep=sample.timestep,
-                latent_path=sample.latent_path,
-                latent_sha256=sample.latent_sha256,
-                coordinates=sample.coordinates,
-                focus_logit=sample.focus_logit,
-                ood_label=sample.ood_label,
-                is_final=sample.is_final,
-                exact_label_table_sha256=sample.exact_label_table_sha256,
-                local_anchor_sample_id=sample.local_anchor_sample_id,
-            )
-            records.append(sample)
+            for step in (4, 5, 6, 8):
+                sample = _snapshot(
+                    f"{split}_{prompt_index}_step{step}",
+                    f"{split}_trajectory_{prompt_index}",
+                    step,
+                )
+                sample = LTSNSnapshot(
+                    sample_id=sample.sample_id,
+                    prompt_id=f"{split}_prompt_{prompt_index}",
+                    trajectory_id=sample.trajectory_id,
+                    split=split,
+                    step_number=sample.step_number,
+                    timestep=sample.timestep,
+                    latent_path=sample.latent_path,
+                    latent_sha256=sample.latent_sha256,
+                    coordinates=sample.coordinates,
+                    focus_logit=sample.focus_logit,
+                    ood_label=sample.ood_label,
+                    is_final=sample.is_final,
+                    exact_label_table_sha256=sample.exact_label_table_sha256,
+                    local_anchor_sample_id=sample.local_anchor_sample_id,
+                )
+                records.append(sample)
 
     planned = _evaluation_ood_plan(records, ood_per_prompt=1, seed=7)
 
-    assert len(planned) == 4
+    assert len(planned) == 16
     assert {item["split"] for item in planned} == {"calibration", "qualification"}
+    assert {item["step_number"] for item in planned} == {4, 5, 6, 8}
     assert {item["kind"] for item in planned} == {
         "ood_time_reverse",
         "ood_channel_roll",
@@ -268,12 +289,29 @@ def test_qualification_fidelity_metrics_exclude_ood_rows() -> None:
     assert metrics["ood_auroc"] == 1.0
 
 
+def test_ood_gate_requires_every_step_and_uses_worst_matched_step() -> None:
+    summary = _matched_step_ood_summary(
+        {
+            "4": {"ood_auroc": 0.91},
+            "5": {"ood_auroc": 0.83},
+            "6": {"ood_auroc": 0.88},
+            "8": {"ood_auroc": 0.86},
+        }
+    )
+
+    assert summary["required_steps_present"] is True
+    assert summary["worst_step_auroc"] == pytest.approx(0.83)
+    assert summary["macro_auroc"] == pytest.approx(0.87)
+
+
 def test_three_seed_training_maps_one_explicit_gpu_per_seed() -> None:
     seeds = (20260716, 20260717, 20260718)
 
-    assert _resolve_training_devices(
-        seeds, None, ("cuda:0", "cuda:1", "cuda:2")
-    ) == ("cuda:0", "cuda:1", "cuda:2")
+    assert _resolve_training_devices(seeds, None, ("cuda:0", "cuda:1", "cuda:2")) == (
+        "cuda:0",
+        "cuda:1",
+        "cuda:2",
+    )
     with pytest.raises(LTSNContractError, match="requires 3 devices"):
         _resolve_training_devices(seeds, None, ("cuda:0", "cuda:1"))
     with pytest.raises(LTSNContractError, match="must be unique"):
@@ -331,9 +369,7 @@ def test_formal_training_rejects_three_step_manifest(
 
 
 def _record_split(recorder: TrajectoryRecorder, split: str, index: int) -> None:
-    recorder.begin(
-        prompt_id=f"prompt_{split}", trajectory_id=f"trajectory_{split}", split=split
-    )
+    recorder.begin(prompt_id=f"prompt_{split}", trajectory_id=f"trajectory_{split}", split=split)
     generator = torch.Generator().manual_seed(index)
     latent = torch.randn(1, 48, 64, generator=generator)
     mask = torch.ones(1, 48, dtype=torch.bool)
@@ -370,28 +406,29 @@ def test_synthetic_collect_writes_four_snapshots_per_trajectory(tmp_path: Path) 
     )
     output = tmp_path / "collection"
 
-    assert collect_main(
-        [
-            "--root",
-            str(ROOT),
-            "--ace-config",
-            str(ROOT / "configs" / "ace_rerank_180s.toml"),
-            "--prompt-manifest",
-            str(prompts),
-            "--output-dir",
-            str(output),
-            "--backend",
-            "synthetic",
-            "--ace-model-sha256",
-            "a" * 64,
-            "--vae-sha256",
-            "b" * 64,
-            "--engineering-smoke",
-        ]
-    ) == 0
-    with (output / "trajectory_manifest.csv").open(
-        "r", encoding="utf-8-sig", newline=""
-    ) as handle:
+    assert (
+        collect_main(
+            [
+                "--root",
+                str(ROOT),
+                "--ace-config",
+                str(ROOT / "configs" / "ace_rerank_180s.toml"),
+                "--prompt-manifest",
+                str(prompts),
+                "--output-dir",
+                str(output),
+                "--backend",
+                "synthetic",
+                "--ace-model-sha256",
+                "a" * 64,
+                "--vae-sha256",
+                "b" * 64,
+                "--engineering-smoke",
+            ]
+        )
+        == 0
+    )
+    with (output / "trajectory_manifest.csv").open("r", encoding="utf-8-sig", newline="") as handle:
         rows = list(csv.DictReader(handle))
     assert len(rows) == 4
     validate_snapshot_coverage(rows)
@@ -436,46 +473,55 @@ def test_four_shard_collection_resumes_and_merges_deterministically(
         "--resume",
     ]
     for shard_index in range(4):
-        assert collect_main(
+        assert (
+            collect_main(
+                [
+                    *common,
+                    "--output-dir",
+                    str(trajectories / "shards" / f"shard_{shard_index:02d}"),
+                    "--shard-index",
+                    str(shard_index),
+                    "--shard-count",
+                    "4",
+                ]
+            )
+            == 0
+        )
+    first_manifest = trajectories / "shards" / "shard_00" / "trajectory_manifest.csv"
+    first_digest = first_manifest.read_bytes()
+    assert (
+        collect_main(
             [
                 *common,
                 "--output-dir",
-                str(trajectories / "shards" / f"shard_{shard_index:02d}"),
+                str(trajectories / "shards" / "shard_00"),
                 "--shard-index",
-                str(shard_index),
+                "0",
                 "--shard-count",
                 "4",
             ]
-        ) == 0
-    first_manifest = trajectories / "shards" / "shard_00" / "trajectory_manifest.csv"
-    first_digest = first_manifest.read_bytes()
-    assert collect_main(
-        [
-            *common,
-            "--output-dir",
-            str(trajectories / "shards" / "shard_00"),
-            "--shard-index",
-            "0",
-            "--shard-count",
-            "4",
-        ]
-    ) == 0
+        )
+        == 0
+    )
     assert first_manifest.read_bytes() == first_digest
 
-    assert merge_main(
-        [
-            "--shards-root",
-            str(trajectories / "shards"),
-            "--shard-count",
-            "4",
-            "--prompt-manifest",
-            str(prompts),
-            "--output-dir",
-            str(trajectories),
-            "--seeds-per-prompt",
-            "4",
-        ]
-    ) == 0
+    assert (
+        merge_main(
+            [
+                "--shards-root",
+                str(trajectories / "shards"),
+                "--shard-count",
+                "4",
+                "--prompt-manifest",
+                str(prompts),
+                "--output-dir",
+                str(trajectories),
+                "--seeds-per-prompt",
+                "4",
+            ]
+        )
+        == 0
+    )
     with (trajectories / "trajectory_manifest.csv").open(
         "r", encoding="utf-8-sig", newline=""
     ) as handle:

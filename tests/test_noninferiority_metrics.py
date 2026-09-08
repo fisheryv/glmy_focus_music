@@ -17,6 +17,7 @@ from generation.noninferiority_metrics import (
     TransformersClapBackend,
     build_development_metric_rows,
     build_metric_rows,
+    embed_candidates_by_audio_sha256,
     generate_noninferiority_metrics,
     load_development_evidence_inputs,
     nearest_neighbor_diversity,
@@ -34,9 +35,7 @@ def _write_rows(path: Path, rows: list[dict[str, object]]) -> None:
 
 def test_nearest_neighbor_diversity_is_leave_one_out_cosine_distance() -> None:
     root_half = np.sqrt(0.5)
-    embeddings = np.asarray(
-        [[1.0, 0.0], [root_half, root_half], [-1.0, 0.0]], dtype=float
-    )
+    embeddings = np.asarray([[1.0, 0.0], [root_half, root_half], [-1.0, 0.0]], dtype=float)
 
     result = nearest_neighbor_diversity(embeddings)
 
@@ -50,6 +49,34 @@ def test_split_audio_zero_pads_final_window_and_retains_weights() -> None:
     assert segments[0].tolist() == [0.0, 1.0, 2.0]
     assert segments[1].tolist() == [3.0, 4.0, 0.0]
     assert weights.tolist() == [3.0, 2.0]
+
+
+def test_candidate_embeddings_are_reused_by_frozen_audio_sha256(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    first = tmp_path / "baseline.wav"
+    second = tmp_path / "guided.wav"
+    first.write_bytes(b"identical")
+    second.write_bytes(b"identical")
+    digest = sha256_file(first)
+    calls: list[Path] = []
+
+    def fake_embed(path: Path, *_args: object, **_kwargs: object) -> np.ndarray:
+        calls.append(path)
+        return np.asarray([1.0, 0.0])
+
+    monkeypatch.setattr("generation.noninferiority_metrics.embed_track", fake_embed)
+    embeddings, unique = embed_candidates_by_audio_sha256(
+        {"baseline": first, "guided": second},
+        {"baseline": digest, "guided": digest},
+        _FakeBackend(),
+        segment_seconds=1.0,
+        batch_size=1,
+    )
+
+    assert unique == 1
+    assert len(calls) == 1
+    np.testing.assert_array_equal(embeddings["baseline"], embeddings["guided"])
 
 
 def test_build_metric_rows_calculates_requested_columns() -> None:
@@ -153,9 +180,7 @@ def test_load_development_evidence_inputs_requires_complete_hash_bound_cohort(
 
     assert len(inputs.pairs) == 256
     assert len(inputs.audio_paths) == 512
-    assert {pair.prompt_id for pair in inputs.pairs} == {
-        f"p{index:02d}" for index in range(64)
-    }
+    assert {pair.prompt_id for pair in inputs.pairs} == {f"p{index:02d}" for index in range(64)}
 
 
 class _FakeBackend:

@@ -82,9 +82,7 @@ def block_balanced_huber(
         raise ValueError("prediction and target coordinate shapes differ")
     scale, mask = _coordinate_contract(prediction, coordinate_scale, active_mask)
     residual = (prediction.float() - target.float()) / scale.unsqueeze(0)
-    elementwise = F.huber_loss(
-        residual, torch.zeros_like(residual), delta=delta, reduction="none"
-    )
+    elementwise = F.huber_loss(residual, torch.zeros_like(residual), delta=delta, reduction="none")
     return _block_reduce(elementwise, mask)
 
 
@@ -175,9 +173,41 @@ def paired_direction_loss(
     if not valid.any():
         return predicted_score.sum() * 0.0
     predicted_difference = predicted_score[perturbed[valid]] - predicted_score[anchor[valid]]
-    return F.softplus(
-        -exact_difference[valid].sign() * predicted_difference / temperature
-    ).mean()
+    return F.softplus(-exact_difference[valid].sign() * predicted_difference / temperature).mean()
+
+
+def paired_band_improvement_loss(
+    predicted_score: Tensor,
+    exact_score: Tensor,
+    pair_indices: Tensor | None,
+    *,
+    focus_band_threshold: float,
+    exact_margin: float = 1e-5,
+    direction_weight: float = 0.5,
+) -> Tensor:
+    """Match exact improvement magnitude and sign for on-policy local pairs.
+
+    Samples already inside the frozen Focus band have zero exact loss and cannot
+    be credited as improvements.  Training against band-loss deltas therefore
+    removes the misleading direction labels produced by raw logit differences.
+    """
+
+    if pair_indices is None or pair_indices.numel() == 0:
+        return predicted_score.sum() * 0.0
+    anchor, perturbed = pair_indices[:, 0].long(), pair_indices[:, 1].long()
+    exact_loss = F.relu(float(focus_band_threshold) - exact_score.float()).square()
+    predicted_loss = F.relu(float(focus_band_threshold) - predicted_score.float()).square()
+    exact_improvement = exact_loss[anchor] - exact_loss[perturbed]
+    predicted_improvement = predicted_loss[anchor] - predicted_loss[perturbed]
+    valid = exact_improvement.abs() >= exact_margin
+    if not valid.any():
+        return predicted_score.sum() * 0.0
+    target = exact_improvement[valid]
+    predicted = predicted_improvement[valid]
+    magnitude = F.smooth_l1_loss(predicted, target, reduction="none")
+    direction = F.softplus(-target.sign() * predicted)
+    weights = (target.abs() / target.abs().median().clamp_min(exact_margin)).clamp(0.5, 4.0)
+    return ((magnitude + direction_weight * direction) * weights).mean()
 
 
 def focus_band_classification_loss(
@@ -193,12 +223,10 @@ def focus_band_classification_loss(
         return predicted_focus_logit.sum() * 0.0
     if not math.isfinite(focus_band_threshold):
         raise ValueError("focus_band_threshold must be finite")
-    predicted_margin = predicted_focus_logit.float()[in_distribution] - float(
-        focus_band_threshold
+    predicted_margin = predicted_focus_logit.float()[in_distribution] - float(focus_band_threshold)
+    target = (exact_focus_logit.float()[in_distribution] >= float(focus_band_threshold)).to(
+        predicted_margin.dtype
     )
-    target = (
-        exact_focus_logit.float()[in_distribution] >= float(focus_band_threshold)
-    ).to(predicted_margin.dtype)
     return F.binary_cross_entropy_with_logits(predicted_margin, target)
 
 
@@ -227,9 +255,7 @@ def phase_pair_ranking_loss(
                 predicted_coordinates[left[valid], coordinate]
                 - predicted_coordinates[right[valid], coordinate]
             ) / scale[coordinate]
-            losses.append(
-                F.softplus(-exact_difference[valid].sign() * predicted_difference).mean()
-            )
+            losses.append(F.softplus(-exact_difference[valid].sign() * predicted_difference).mean())
     return predicted_coordinates.sum() * 0.0 if not losses else torch.stack(losses).mean()
 
 
@@ -247,6 +273,7 @@ def ltsn_loss(
     active_mask: Tensor | None = None,
     ood_positive_weight: Tensor | None = None,
     focus_band_threshold: float | None = None,
+    use_band_improvement_local_loss: bool = False,
     weights: LTSNLossWeights | None = None,
 ) -> LTSNLossResult:
     """Compute the complete development-start LTSN objective and components."""
@@ -291,8 +318,17 @@ def ltsn_loss(
         pair_indices,
         coordinate_scale=coordinate_scale,
     )
-    local_direction = paired_direction_loss(
-        output.focus_logit.float(), exact_focus_logit.float(), local_pair_indices
+    local_direction = (
+        paired_band_improvement_loss(
+            output.focus_logit.float(),
+            exact_focus_logit.float(),
+            local_pair_indices,
+            focus_band_threshold=float(focus_band_threshold),
+        )
+        if use_band_improvement_local_loss and focus_band_threshold is not None
+        else paired_direction_loss(
+            output.focus_logit.float(), exact_focus_logit.float(), local_pair_indices
+        )
     )
     delta = trajectory_delta_loss(
         output.coordinate_mean,

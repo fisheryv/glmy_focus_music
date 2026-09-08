@@ -1,0 +1,46 @@
+[model]
+latent_dim = 64
+condition_dim = 128
+stem_channels = 128
+local_channels = 192
+global_channels = 256
+transformer_heads = 8
+transformer_layers = 2
+dropout = 0.1
+logvar_min = -8.0
+logvar_max = 4.0
+inactive_coordinate_indices = [0, 1, 2]
+
+[training]
+learning_rate = 0.0003
+weight_decay = 0.01
+warmup_fraction = 0.05
+minimum_learning_rate = 0.000001
+effective_batch_size = 64
+micro_batch_size = 8
+max_epochs = 45
+minimum_epochs = 8
+early_stopping_patience = 8
+gradient_clip_norm = 1.0
+num_workers = 4
+seeds = [20260716, 20260717, 20260718]
+use_bf16 = true
+prompt_grouped_batches = true
+qualification_aligned_early_stopping = true
+coordinate_scale_floor = 0.001
+require_ood_both_classes = true
+ood_positive_weight_cap = 20.0
+use_band_improvement_local_loss = true
+
+[loss]
+coordinate = 1.0
+nll = 0.25
+score = 0.75
+focus_band = 0.3
+ranking = 0.3
+trajectory_delta = 0.2
+phase_ranking = 0.25
+# V4 applies this weight to exact on-policy band-loss improvement, not random
+# perturbation logit direction.
+local_direction = 0.5
+ood = 0.1

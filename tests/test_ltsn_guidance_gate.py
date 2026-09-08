@@ -96,9 +96,7 @@ def test_confirmation_is_the_guidance_promotion_gate(tmp_path: Path) -> None:
 
 
 @pytest.mark.parametrize("quality", ["false", "not_evaluated"])
-def test_blind_quality_is_diagnostic_not_a_gate(
-    tmp_path: Path, quality: str
-) -> None:
+def test_blind_quality_is_diagnostic_not_a_gate(tmp_path: Path, quality: str) -> None:
     fingerprint_sha256 = load_fingerprint_contract(FINGERPRINT).artifact_sha256
     qualification = tmp_path / "qualification.json"
     qualification.write_text(
@@ -163,6 +161,31 @@ def test_development_pairs_are_scope_limited_and_never_promotable(tmp_path: Path
 
     assert report["authorization_scope"] == "development_only"
     assert report["guidance_promotion_eligible"] is False
+
+
+def test_guidance_gate_requires_minimum_optimization_coverage(tmp_path: Path) -> None:
+    fingerprint_sha256 = load_fingerprint_contract(FINGERPRINT).artifact_sha256
+    pairs = tmp_path / "pairs.csv"
+    _write_pairs(
+        pairs,
+        fingerprint_sha256,
+        diversity=True,
+        scope="development_only",
+    )
+
+    report = evaluate_guidance_pairs(
+        pair_table=pairs,
+        output_path=tmp_path / "development.json",
+        fingerprint_sha256=fingerprint_sha256,
+        mode="development",
+        bootstrap_resamples=100,
+        minimum_optimized_pairs=3,
+        minimum_optimized_prompts=3,
+    )
+
+    assert report["proxy_optimized_pairs"] == 2
+    assert report["optimization_coverage_gate_passed"] is False
+    assert report["proxy_exact_direction_gate_passed"] is False
 
 
 @pytest.mark.parametrize(

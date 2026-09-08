@@ -140,19 +140,29 @@ def _validate_runtime_bindings(
     return metadata
 
 
-def _corrector_config(calibration: Mapping[str, Any]) -> TopologyCorrectorConfig:
+def _corrector_config(
+    calibration: Mapping[str, Any],
+    *,
+    rms_clip_ratio: float = 0.005,
+    require_all_members_out_of_band: bool = False,
+    require_all_member_improvement: bool = False,
+    minimum_member_gradient_cosine: float = -1.0,
+) -> TopologyCorrectorConfig:
     return TopologyCorrectorConfig(
         enabled=True,
         qualification_passed=False,
         authorization_scope=AUTHORIZATION_SCOPE,
         guidance_scale=1.0,
-        rms_clip_ratio=0.005,
+        rms_clip_ratio=rms_clip_ratio,
         step_weights={4: 0.5, 5: 1.0, 6: 0.5},
         ood_probability_threshold=float(calibration["ood_probability_threshold"]),
         max_aleatoric_variance=float(calibration["max_aleatoric_variance"]),
         max_epistemic_variance=float(calibration["max_epistemic_variance"]),
         max_interval_width=float(calibration["max_interval_width"]),
         variance_scale=tuple(float(value) for value in calibration["variance_scale"]),
+        require_all_members_out_of_band=require_all_members_out_of_band,
+        require_all_member_improvement=require_all_member_improvement,
+        minimum_member_gradient_cosine=minimum_member_gradient_cosine,
     )
 
 
@@ -309,6 +319,7 @@ def _generate_arm(
         raise LTSNContractError(
             f"unreceipted development artifact exists for {candidate_id}; use a new output dir"
         )
+    corrector.drain_telemetry()
     adapter.set_topology_corrector(None if arm == "baseline" else corrector)
     result = adapter.generate(
         GenerationRequest(
@@ -324,17 +335,15 @@ def _generate_arm(
     )
     if result.seed != int(row["seed"]):
         raise LTSNContractError("ACE returned a different seed for a development arm")
+    correction_telemetry = corrector.drain_telemetry() if arm == "guided" else []
     latent = _latent_array(result.final_latent)
     _save_npy_atomic(latent_path, latent)
     latent_sha256 = sha256_file(latent_path)
     reuse_reference_audio = (
-        reference_arm is not None
-        and reference_arm["latent_sha256"] == latent_sha256
+        reference_arm is not None and reference_arm["latent_sha256"] == latent_sha256
     )
     if reuse_reference_audio:
-        _materialize_identical_audio(
-            output_dir / str(reference_arm["audio_path"]), audio_path
-        )
+        _materialize_identical_audio(output_dir / str(reference_arm["audio_path"]), audio_path)
     else:
         adapter.decode_latent_to_audio(latent, audio_path)
     generated_audio = result.audio_path.resolve()
@@ -342,7 +351,7 @@ def _generate_arm(
         generated_audio.unlink()
     focus_logit, focus_loss = _proxy_focus_loss(latent, models, contract, device)
     receipt = {
-        "schema_version": 2,
+        "schema_version": 3,
         "pair_id": row["pair_id"],
         "prompt_id": row["prompt_id"],
         "seed": row["seed"],
@@ -365,14 +374,13 @@ def _generate_arm(
             reference_arm["candidate_id"] if reuse_reference_audio else ""
         ),
         "plan_sha256": plan_sha256,
+        "topology_correction_telemetry": correction_telemetry,
     }
     write_json_atomic(receipt_path, receipt)
     return receipt
 
 
-def _validate_pair_decode_identity(
-    baseline: Mapping[str, Any], guided: Mapping[str, Any]
-) -> bool:
+def _validate_pair_decode_identity(baseline: Mapping[str, Any], guided: Mapping[str, Any]) -> bool:
     """Require deterministic shared decoding whenever guidance is a latent no-op."""
 
     latent_changed = baseline["latent_sha256"] != guided["latent_sha256"]
@@ -408,10 +416,7 @@ def _validate_partial_generation_manifest(
         for arm in ("baseline", "guided"):
             for kind in ("audio", "latent"):
                 artifact = output_dir / row[f"{arm}_{kind}_path"]
-                if (
-                    not artifact.is_file()
-                    or sha256_file(artifact) != row[f"{arm}_{kind}_sha256"]
-                ):
+                if not artifact.is_file() or sha256_file(artifact) != row[f"{arm}_{kind}_sha256"]:
                     raise LTSNContractError(
                         f"resumed generation artifact hash mismatch: {planned['pair_id']}"
                     )
@@ -444,15 +449,17 @@ def generate_development_pairs(
     duration_seconds: float = 180.0,
     device_name: str = "cuda:0",
     resume: bool = False,
+    rms_clip_ratio: float = 0.005,
+    require_all_members_out_of_band: bool = False,
+    require_all_member_improvement: bool = False,
+    minimum_member_gradient_cosine: float = -1.0,
 ) -> dict[str, Any]:
     """Generate same-prompt/seed baseline and development-only guided arms."""
 
     root = root.resolve()
     output_dir = output_dir.resolve()
     ace_config = ace_config if ace_config.is_absolute() else root / ace_config
-    prompt_manifest = (
-        prompt_manifest if prompt_manifest.is_absolute() else root / prompt_manifest
-    )
+    prompt_manifest = prompt_manifest if prompt_manifest.is_absolute() else root / prompt_manifest
     fingerprint_path = (
         fingerprint_path if fingerprint_path.is_absolute() else root / fingerprint_path
     )
@@ -492,7 +499,13 @@ def generate_development_pairs(
         ace_model_sha256=ace_model_sha256,
         vae_sha256=vae_sha256,
     )
-    corrector_config = _corrector_config(calibration)
+    corrector_config = _corrector_config(
+        calibration,
+        rms_clip_ratio=rms_clip_ratio,
+        require_all_members_out_of_band=require_all_members_out_of_band,
+        require_all_member_improvement=require_all_member_improvement,
+        minimum_member_gradient_cosine=minimum_member_gradient_cosine,
+    )
     corrector = TopologyCorrector(
         models,
         contract,
@@ -522,6 +535,9 @@ def generate_development_pairs(
             "step_weights": {
                 str(step): weight for step, weight in corrector_config.step_weights.items()
             },
+            "require_all_members_out_of_band": (corrector_config.require_all_members_out_of_band),
+            "require_all_member_improvement": (corrector_config.require_all_member_improvement),
+            "minimum_member_gradient_cosine": (corrector_config.minimum_member_gradient_cosine),
         },
         "planned_pairs": plan_rows,
     }
@@ -580,9 +596,7 @@ def generate_development_pairs(
             baseline,
             guided,
             output_dir=output_dir,
-            receipt_path=(
-                output_dir / "receipts" / f"{guided['candidate_id']}.json"
-            ),
+            receipt_path=(output_dir / "receipts" / f"{guided['candidate_id']}.json"),
         )
         arms = {"baseline": baseline, "guided": guided}
         completed.append(
@@ -603,9 +617,7 @@ def generate_development_pairs(
                 "guided_latent_sha256": arms["guided"]["latent_sha256"],
                 "latent_changed": str(latent_changed).lower(),
                 "decoder_contract": PAIR_DECODER_CONTRACT,
-                "proxy_focus_band_loss_before": arms["baseline"][
-                    "proxy_focus_band_loss"
-                ],
+                "proxy_focus_band_loss_before": arms["baseline"]["proxy_focus_band_loss"],
                 "proxy_focus_band_loss_after": arms["guided"]["proxy_focus_band_loss"],
                 "authorization_scope": AUTHORIZATION_SCOPE,
                 "plan_sha256": plan_sha256,
@@ -708,9 +720,7 @@ def score_development_pairs(
             )
     processed = preprocess_candidates(root, output_dir, records, workers=workers)
     features = extract_candidate_features(root, output_dir, processed, workers=workers)
-    descriptors = compute_frozen_18d_descriptors(
-        root, output_dir, records, features, scorer
-    )
+    descriptors = compute_frozen_18d_descriptors(root, output_dir, records, features, scorer)
     descriptor_path = output_dir / "development_exact_descriptors.csv"
     write_descriptor_csv(descriptor_path, descriptors)
     descriptor_sha256 = sha256_file(descriptor_path)
@@ -822,9 +832,7 @@ def finalize_development_pairs(
         or set(prompt_counts.values()) != {4}
         or len(seeds) != 256
     ):
-        raise LTSNContractError(
-            "formal development evidence requires 64 prompts x 4 paired seeds"
-        )
+        raise LTSNContractError("formal development evidence requires 64 prompts x 4 paired seeds")
     for name in (
         "generation_manifest_sha256",
         "generation_plan_sha256",
@@ -871,9 +879,7 @@ def finalize_development_pairs(
         try:
             baseline_text = [evidence[pair_id].get(baseline_column, "") for pair_id in ordered_ids]
             guided_text = [evidence[pair_id].get(guided_column, "") for pair_id in ordered_ids]
-            evidence_available = all(
-                str(value).strip() for value in (*baseline_text, *guided_text)
-            )
+            evidence_available = all(str(value).strip() for value in (*baseline_text, *guided_text))
             if not evidence_available:
                 if evidence_required:
                     raise ValueError
@@ -962,17 +968,11 @@ def finalize_development_pairs(
         "guidance_promotion_eligible": False,
         "pairs": len(final_rows),
         "prompts": len(np.unique(prompt_ids)),
-        "fingerprint_json_sha256": next(iter(raw.values()))[
-            "fingerprint_json_sha256"
-        ],
+        "fingerprint_json_sha256": next(iter(raw.values()))["fingerprint_json_sha256"],
         "raw_pair_table_sha256": sha256_file(raw_pair_table),
-        "generation_manifest_sha256": next(iter(raw.values()))[
-            "generation_manifest_sha256"
-        ],
+        "generation_manifest_sha256": next(iter(raw.values()))["generation_manifest_sha256"],
         "generation_plan_sha256": next(iter(raw.values()))["generation_plan_sha256"],
-        "exact_descriptor_table_sha256": next(iter(raw.values()))[
-            "exact_descriptor_table_sha256"
-        ],
+        "exact_descriptor_table_sha256": next(iter(raw.values()))["exact_descriptor_table_sha256"],
         "evidence_table_sha256": sha256_file(evidence_table),
         "protocol_sha256": sha256_file(protocol_path),
         "criteria": criteria,

@@ -121,9 +121,7 @@ def collect_main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--engineering-smoke", action="store_true")
     args = parser.parse_args(argv)
-    if args.discard_generator_final_audio and (
-        args.backend != "ace" or not args.decode_snapshots
-    ):
+    if args.discard_generator_final_audio and (args.backend != "ace" or not args.decode_snapshots):
         parser.error(
             "--discard-generator-final-audio requires --backend ace and --decode-snapshots"
         )
@@ -148,8 +146,7 @@ def collect_main(argv: list[str] | None = None) -> int:
         else _prompt_shard(all_prompts, args.shard_index, args.shard_count)
     )
     planned_trajectories = {
-        _trajectory_id(row): (str(row["prompt_id"]), str(row["split"]))
-        for row in prompts
+        _trajectory_id(row): (str(row["prompt_id"]), str(row["split"])) for row in prompts
     }
     planned_trajectory_ids = set(planned_trajectories)
     if len(planned_trajectories) != len(prompts):
@@ -192,9 +189,7 @@ def collect_main(argv: list[str] | None = None) -> int:
     if plan_path.exists():
         existing_plan = json.loads(plan_path.read_text(encoding="utf-8"))
         if existing_plan != plan_payload:
-            raise ValueError(
-                f"collection plan changed; use a new shard directory: {plan_path}"
-            )
+            raise ValueError(f"collection plan changed; use a new shard directory: {plan_path}")
     else:
         if manifest.exists():
             raise ValueError(
@@ -239,9 +234,7 @@ def collect_main(argv: list[str] | None = None) -> int:
         trajectory_id = _trajectory_id(row)
         if trajectory_id in completed_trajectory_ids:
             continue
-        recorder.begin(
-            prompt_id=row["prompt_id"], trajectory_id=trajectory_id, split=row["split"]
-        )
+        recorder.begin(prompt_id=row["prompt_id"], trajectory_id=trajectory_id, split=row["split"])
         before = len(recorder.records)
         generated_audio = None
         try:
@@ -351,8 +344,7 @@ def merge_main(argv: list[str] | None = None) -> int:
         parser.error("--shard-count must be positive")
     prompts = _prompt_rows(args.prompt_manifest, args.seed_start, args.seeds_per_prompt)
     expected_plan = {
-        _trajectory_id(row): (str(row["prompt_id"]), str(row["split"]))
-        for row in prompts
+        _trajectory_id(row): (str(row["prompt_id"]), str(row["split"])) for row in prompts
     }
     if len(expected_plan) != len(prompts):
         raise ValueError("collection plan contains duplicate trajectory IDs")
@@ -493,9 +485,7 @@ def labels_main(argv: list[str] | None = None) -> int:
         engineering_smoke=args.engineering_smoke,
     )
     if not args.engineering_smoke:
-        with args.trajectory_manifest.open(
-            "r", encoding="utf-8-sig", newline=""
-        ) as handle:
+        with args.trajectory_manifest.open("r", encoding="utf-8-sig", newline="") as handle:
             validate_snapshot_coverage(list(csv.DictReader(handle)))
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -623,6 +613,8 @@ def guidance_main(argv: list[str] | None = None) -> int:
     parser.add_argument("--qualification-report", type=Path)
     parser.add_argument("--bootstrap-resamples", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=20260716)
+    parser.add_argument("--minimum-optimized-pairs", type=int, default=64)
+    parser.add_argument("--minimum-optimized-prompts", type=int, default=16)
     args = parser.parse_args(argv)
     contract = load_fingerprint_contract(args.fingerprint)
     payload = evaluate_guidance_pairs(
@@ -633,6 +625,8 @@ def guidance_main(argv: list[str] | None = None) -> int:
         qualification_report=args.qualification_report,
         bootstrap_resamples=args.bootstrap_resamples,
         seed=args.seed,
+        minimum_optimized_pairs=args.minimum_optimized_pairs,
+        minimum_optimized_prompts=args.minimum_optimized_prompts,
     )
     _print(payload)
     return 0 if payload["status"] == "passed" else 1

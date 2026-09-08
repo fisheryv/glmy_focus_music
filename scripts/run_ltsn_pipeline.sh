@@ -12,10 +12,15 @@ CONFIG="${LTSN_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v3.toml}"
 GUIDANCE_PROTOCOL="${GUIDANCE_PROTOCOL:-${PROJECT_ROOT}/configs/ltsn_guidance_noninferiority_v2.json}"
 DEVELOPMENT_DIR="${DEVELOPMENT_DIR:-${RUN_ROOT}/development_pairs}"
 TRAINING_AUGMENTATION_DIR="${TRAINING_AUGMENTATION_DIR:-${RUN_ROOT}/training_augmentation}"
+ON_POLICY_AUGMENTATION_DIR="${ON_POLICY_AUGMENTATION_DIR:-${RUN_ROOT}/training_augmentation_v4}"
 SOURCE_LTSN_MANIFEST="${SOURCE_LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
 SOURCE_LTSN_SPLIT_MANIFEST="${SOURCE_LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
 LTSN_MANIFEST="${LTSN_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/ltsn_manifest_v3.csv}"
 LTSN_SPLIT_MANIFEST="${LTSN_SPLIT_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/split_manifest_v3.json}"
+MODEL_DIR="${LTSN_MODEL_DIR:-${RUN_ROOT}/models}"
+CALIBRATION_PATH="${LTSN_CALIBRATION_PATH:-${RUN_ROOT}/calibration.json}"
+GUIDANCE_DEVELOPMENT_PATH="${LTSN_GUIDANCE_DEVELOPMENT_PATH:-${RUN_ROOT}/guidance_development.json}"
+QUALIFICATION_PATH="${LTSN_QUALIFICATION_PATH:-${RUN_ROOT}/qualification.json}"
 
 [[ -x "${PYTHON_BIN}" ]] || { echo "Python environment is missing: ${PYTHON_BIN}" >&2; exit 2; }
 
@@ -150,6 +155,37 @@ augment_training() {
     --resume
 }
 
+augment_on_policy() {
+  : "${ACE_MODEL_SHA256:?Set ACE_MODEL_SHA256 to the 64-hex model tree digest}"
+  : "${VAE_SHA256:?Set VAE_SHA256 to the 64-hex VAE tree digest}"
+  local ensemble="${ON_POLICY_ENSEMBLE_MANIFEST:-${RUN_ROOT}/models/ensemble_manifest.json}"
+  [[ -f "${ensemble}" ]] || {
+    echo "A frozen V3 ensemble is required for on-policy augmentation: ${ensemble}" >&2
+    exit 3
+  }
+  ACESTEP_DEVICE="${AUGMENT_DEVICE:-cuda:0}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_training_augmentation.py" \
+    --root "${PROJECT_ROOT}" \
+    --source-manifest "${SOURCE_LTSN_MANIFEST}" \
+    --source-split-manifest "${SOURCE_LTSN_SPLIT_MANIFEST}" \
+    --ace-config "${PROJECT_ROOT}/configs/ace_rerank_180s.toml" \
+    --fingerprint "${FINGERPRINT}" \
+    --output-dir "${ON_POLICY_AUGMENTATION_DIR}" \
+    --ace-model-sha256 "${ACE_MODEL_SHA256}" \
+    --vae-sha256 "${VAE_SHA256}" \
+    --local-mode on_policy \
+    --on-policy-ensemble-manifest "${ensemble}" \
+    --on-policy-rms-ratios 0.0025 0.005 0.01 \
+    --trajectories-per-prompt "${AUGMENT_TRAJECTORIES_PER_PROMPT:-1}" \
+    --ood-per-prompt "${AUGMENT_OOD_PER_PROMPT:-1}" \
+    --evaluation-ood-per-prompt "${AUGMENT_EVALUATION_OOD_PER_PROMPT:-1}" \
+    --workers "${AUGMENT_EXACT_WORKERS:-8}" \
+    --exact-batch-size "${AUGMENT_EXACT_BATCH_SIZE:-256}" \
+    --materialize-mode "${MATERIALIZE_MODE:-auto}" \
+    --device "${AUGMENT_DEVICE:-cuda:0}" \
+    --resume
+}
+
 train() {
   [[ -f "${SURROGATE_TRAINING_GATE}" ]] || { echo "Passed ltsn_surrogate_training_v1 gate is required: ${SURROGATE_TRAINING_GATE}" >&2; exit 3; }
   local -a train_device_args
@@ -165,7 +201,7 @@ train() {
     --manifest "${LTSN_MANIFEST}" \
     --split-manifest "${LTSN_SPLIT_MANIFEST}" \
     --config "${CONFIG}" \
-    --output-dir "${RUN_ROOT}/models" \
+    --output-dir "${MODEL_DIR}" \
     --surrogate-training-gate "${SURROGATE_TRAINING_GATE}" \
     "${train_device_args[@]}"
 }
@@ -174,22 +210,32 @@ calibrate() {
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_ltsn_qualification.py" calibrate \
     --fingerprint "${FINGERPRINT}" \
     --manifest "${LTSN_MANIFEST}" \
-    --ensemble-manifest "${RUN_ROOT}/models/ensemble_manifest.json" \
-    --output "${RUN_ROOT}/calibration.json" \
+    --ensemble-manifest "${MODEL_DIR}/ensemble_manifest.json" \
+    --output "${CALIBRATION_PATH}" \
     --device "${EVAL_DEVICE:-cuda:0}"
 }
 
 development_generate() {
   : "${ACE_MODEL_SHA256:?Set ACE_MODEL_SHA256 to the 64-hex model tree digest}"
   : "${VAE_SHA256:?Set VAE_SHA256 to the 64-hex VAE tree digest}"
+  local -a corrector_args=(--rms-clip-ratio "${DEVELOPMENT_RMS_CLIP_RATIO:-0.005}")
+  if [[ "${DEVELOPMENT_REQUIRE_ALL_MEMBERS_OOB:-0}" == "1" ]]; then
+    corrector_args+=(--require-all-members-out-of-band)
+  fi
+  if [[ "${DEVELOPMENT_REQUIRE_ALL_MEMBER_IMPROVEMENT:-0}" == "1" ]]; then
+    corrector_args+=(--require-all-member-improvement)
+  fi
+  if [[ -n "${DEVELOPMENT_MINIMUM_GRADIENT_COSINE:-}" ]]; then
+    corrector_args+=(--minimum-member-gradient-cosine "${DEVELOPMENT_MINIMUM_GRADIENT_COSINE}")
+  fi
   ACESTEP_DEVICE="${DEVELOPMENT_DEVICE:-cuda:0}" \
     "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_development_pairs.py" generate \
     --root "${PROJECT_ROOT}" \
     --ace-config "${PROJECT_ROOT}/configs/ace_rerank_180s.toml" \
     --prompt-manifest "${PROMPT_MANIFEST}" \
     --fingerprint "${FINGERPRINT}" \
-    --ensemble-manifest "${RUN_ROOT}/models/ensemble_manifest.json" \
-    --calibration "${RUN_ROOT}/calibration.json" \
+    --ensemble-manifest "${MODEL_DIR}/ensemble_manifest.json" \
+    --calibration "${CALIBRATION_PATH}" \
     --output-dir "${DEVELOPMENT_DIR}" \
     --ace-model-sha256 "${ACE_MODEL_SHA256}" \
     --vae-sha256 "${VAE_SHA256}" \
@@ -198,6 +244,7 @@ development_generate() {
     --expected-development-prompts "${EXPECTED_DEVELOPMENT_PROMPTS:-64}" \
     --duration-seconds "${DEVELOPMENT_DURATION_SECONDS:-180}" \
     --device "${DEVELOPMENT_DEVICE:-cuda:0}" \
+    "${corrector_args[@]}" \
     --resume
 }
 
@@ -238,17 +285,17 @@ development_finalize() {
 }
 
 qualify() {
-  [[ -f "${RUN_ROOT}/guidance_development.json" ]] || {
+  [[ -f "${GUIDANCE_DEVELOPMENT_PATH}" ]] || {
     echo "Run guidance-development with a decoded exact pair table before qualification" >&2
     exit 3
   }
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_ltsn_qualification.py" qualify \
     --fingerprint "${FINGERPRINT}" \
     --manifest "${LTSN_MANIFEST}" \
-    --ensemble-manifest "${RUN_ROOT}/models/ensemble_manifest.json" \
-    --calibration "${RUN_ROOT}/calibration.json" \
-    --guidance-development-report "${RUN_ROOT}/guidance_development.json" \
-    --output "${RUN_ROOT}/qualification.json" \
+    --ensemble-manifest "${MODEL_DIR}/ensemble_manifest.json" \
+    --calibration "${CALIBRATION_PATH}" \
+    --guidance-development-report "${GUIDANCE_DEVELOPMENT_PATH}" \
+    --output "${QUALIFICATION_PATH}" \
     --device "${EVAL_DEVICE:-cuda:0}"
 }
 
@@ -261,21 +308,21 @@ guidance_development() {
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_path_homology_guidance.py" \
     --fingerprint "${FINGERPRINT}" \
     --pair-table "${pair_table}" \
-    --output "${RUN_ROOT}/guidance_development.json" \
+    --output "${GUIDANCE_DEVELOPMENT_PATH}" \
     --mode development
 }
 
 guidance_confirmation() {
   : "${PAIR_TABLE:?Set PAIR_TABLE to the fresh 32-prompt x 8-seed confirmation pair CSV}"
-  [[ -f "${RUN_ROOT}/qualification.json" ]] || {
-    echo "Passed independent qualification report is required: ${RUN_ROOT}/qualification.json" >&2
+  [[ -f "${QUALIFICATION_PATH}" ]] || {
+    echo "Passed independent qualification report is required: ${QUALIFICATION_PATH}" >&2
     exit 3
   }
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_path_homology_guidance.py" \
     --fingerprint "${FINGERPRINT}" \
     --pair-table "${PAIR_TABLE}" \
     --output "${RUN_ROOT}/guidance_confirmation.json" \
-    --qualification-report "${RUN_ROOT}/qualification.json" \
+    --qualification-report "${QUALIFICATION_PATH}" \
     --mode confirmation
 }
 
@@ -283,6 +330,7 @@ case "${STAGE}" in
   collect) collect ;;
   labels) labels ;;
   augment-training) augment_training ;;
+  augment-on-policy) augment_on_policy ;;
   train) train ;;
   calibrate) calibrate ;;
   development-generate) development_generate ;;
@@ -292,5 +340,5 @@ case "${STAGE}" in
   guidance-development) guidance_development ;;
   qualify) qualify ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|train|calibrate|development-generate|development-score|development-evidence|development-finalize|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|train|calibrate|development-generate|development-score|development-evidence|development-finalize|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
 esac

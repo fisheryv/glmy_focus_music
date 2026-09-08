@@ -69,6 +69,7 @@ class LTSNTrainingConfig:
     coordinate_scale_floor: float = 1e-3
     require_ood_both_classes: bool = False
     ood_positive_weight_cap: float = 20.0
+    use_band_improvement_local_loss: bool = False
 
     def validate(self, *, engineering_smoke: bool) -> None:
         if self.micro_batch_size < 1 or self.effective_batch_size < self.micro_batch_size:
@@ -81,9 +82,7 @@ class LTSNTrainingConfig:
             raise LTSNContractError("training seeds must be non-empty and unique")
         if self.coordinate_scale_floor <= 0 or not math.isfinite(self.coordinate_scale_floor):
             raise LTSNContractError("coordinate_scale_floor must be finite and positive")
-        if self.ood_positive_weight_cap < 1 or not math.isfinite(
-            self.ood_positive_weight_cap
-        ):
+        if self.ood_positive_weight_cap < 1 or not math.isfinite(self.ood_positive_weight_cap):
             raise LTSNContractError("ood_positive_weight_cap must be finite and at least one")
         if not engineering_smoke:
             frozen = {
@@ -123,9 +122,7 @@ def load_training_config(path: Path) -> tuple[LTSNConfig, LTSNTrainingConfig, LT
     if "seeds" in training_raw:
         training_raw["seeds"] = tuple(int(value) for value in training_raw["seeds"])
     training = LTSNTrainingConfig(**training_raw)
-    losses = LTSNLossWeights(
-        **_dataclass_values(LTSNLossWeights, payload.get("loss", {}))
-    )
+    losses = LTSNLossWeights(**_dataclass_values(LTSNLossWeights, payload.get("loss", {})))
     return model, training, losses
 
 
@@ -285,9 +282,7 @@ def _local_pair_indices(
             continue
         anchor_index = index_by_sample.get(anchor_id)
         if anchor_index is None:
-            raise LTSNContractError(
-                f"local perturbation batch is missing its anchor: {anchor_id}"
-            )
+            raise LTSNContractError(f"local perturbation batch is missing its anchor: {anchor_id}")
         if valid_mask is not None and not bool(valid_mask[anchor_index].item()):
             continue
         pairs.append((anchor_index, perturbed_index))
@@ -321,9 +316,7 @@ def _training_target_contract(
     positives = int(np.count_nonzero(ood >= 0.5))
     negatives = int(len(ood) - positives)
     if training.require_ood_both_classes and (positives == 0 or negatives == 0):
-        raise LTSNContractError(
-            "V2 training requires both ID and OOD samples in the train split"
-        )
+        raise LTSNContractError("V2 training requires both ID and OOD samples in the train split")
     positive_weight = (
         1.0
         if positives == 0
@@ -393,10 +386,9 @@ def _loss(
     weights: LTSNLossWeights,
     device: torch.device,
     target_contract: Mapping[str, Any],
+    use_band_improvement_local_loss: bool = False,
 ) -> dict[str, Tensor]:
-    pair_indices = _pair_indices(
-        batch["prompt_id"], device, batch["ood_label"] < 0.5
-    )
+    pair_indices = _pair_indices(batch["prompt_id"], device, batch["ood_label"] < 0.5)
     result = ltsn_loss(
         output,
         batch["coordinates"],
@@ -419,6 +411,7 @@ def _loss(
             target_contract["ood_positive_weight"], device=device, dtype=torch.float32
         ),
         focus_band_threshold=target_contract.get("focus_band_threshold"),
+        use_band_improvement_local_loss=use_band_improvement_local_loss,
         weights=weights,
     )
     trajectory_pairs = _trajectory_pairs(
@@ -502,7 +495,7 @@ def predict_dataset(
             ("step_number", batch["step_number"]),
         ):
             collected[name].append(tensor.detach().float().cpu().numpy())
-        for name in ("sample_id", "prompt_id", "trajectory_id"):
+        for name in ("sample_id", "prompt_id", "trajectory_id", "local_anchor_sample_id"):
             collected[name].extend(raw[name])
     return {
         name: (
@@ -527,6 +520,7 @@ def _development_objective(
     *,
     active_mask: Sequence[bool] | None = None,
     qualification_aligned: bool = False,
+    focus_band_threshold: float | None = None,
 ) -> dict[str, float]:
     in_distribution = np.asarray(prediction["ood_label"], dtype=float) < 0.5
     if not np.any(in_distribution):
@@ -535,13 +529,9 @@ def _development_objective(
     exact_focus = prediction["focus_logit"][in_distribution]
     predicted_coordinates = prediction["coordinate_mean"][in_distribution]
     exact_coordinates = prediction["coordinates"][in_distribution]
-    score_error = float(
-        np.mean(np.abs(predicted_focus - exact_focus))
-    )
+    score_error = float(np.mean(np.abs(predicted_focus - exact_focus)))
     coordinate_rhos = [
-        spearman_correlation(
-            predicted_coordinates[:, index], exact_coordinates[:, index]
-        )
+        spearman_correlation(predicted_coordinates[:, index], exact_coordinates[:, index])
         for index in range(18)
     ]
     mask = np.ones(18, dtype=bool) if active_mask is None else np.asarray(active_mask, dtype=bool)
@@ -560,9 +550,40 @@ def _development_objective(
     coordinate_median = float(np.median(np.asarray(coordinate_rhos)[mask]))
     acoustic_rho = coordinate_rhos[16]
     chroma_rho = coordinate_rhos[17]
-    quartile = _quartile_ranking_accuracy(
-        exact_focus, predicted_focus
-    )
+    quartile = _quartile_ranking_accuracy(exact_focus, predicted_focus)
+    local_pair_count = 0
+    local_direction_agreement = 0.0
+    local_improvement_mae = 0.0
+    if focus_band_threshold is not None:
+        sample_ids = list(prediction.get("sample_id", ()))
+        local_anchor_ids = list(prediction.get("local_anchor_sample_id", ()))
+        index_by_sample = {sample_id: index for index, sample_id in enumerate(sample_ids)}
+        pairs = [
+            (index_by_sample[anchor_id], perturbed_index)
+            for perturbed_index, anchor_id in enumerate(local_anchor_ids)
+            if anchor_id in index_by_sample
+            and prediction["ood_label"][index_by_sample[anchor_id]] < 0.5
+            and prediction["ood_label"][perturbed_index] < 0.5
+        ]
+        if pairs:
+            anchor = np.asarray([pair[0] for pair in pairs], dtype=int)
+            perturbed = np.asarray([pair[1] for pair in pairs], dtype=int)
+            threshold = float(focus_band_threshold)
+            exact_loss = np.maximum(0.0, threshold - prediction["focus_logit"]) ** 2
+            predicted_loss = np.maximum(0.0, threshold - prediction["predicted_focus_logit"]) ** 2
+            exact_improvement = exact_loss[anchor] - exact_loss[perturbed]
+            predicted_improvement = predicted_loss[anchor] - predicted_loss[perturbed]
+            informative = np.abs(exact_improvement) >= 1e-5
+            if np.any(informative):
+                exact_improvement = exact_improvement[informative]
+                predicted_improvement = predicted_improvement[informative]
+                local_pair_count = int(len(exact_improvement))
+                local_direction_agreement = float(
+                    np.mean(np.sign(exact_improvement) == np.sign(predicted_improvement))
+                )
+                local_improvement_mae = float(
+                    np.mean(np.abs(exact_improvement - predicted_improvement))
+                )
     if qualification_aligned:
         thresholds = (
             (focus_rho, 0.70),
@@ -575,6 +596,8 @@ def _development_objective(
         )
         objective = sum(max(0.0, threshold - value) for value, threshold in thresholds)
         objective += 0.05 * score_error
+        if local_pair_count:
+            objective += max(0.0, 0.65 - local_direction_agreement)
     else:
         objective = score_error + (1.0 - coordinate_median) + (1.0 - block_rho)
     return {
@@ -588,6 +611,9 @@ def _development_objective(
         "acoustic_loop_coordinate_spearman": acoustic_rho,
         "chroma_loop_coordinate_spearman": chroma_rho,
         "quartile_ranking_accuracy": quartile,
+        "local_improvement_pairs": local_pair_count,
+        "local_direction_agreement": local_direction_agreement,
+        "local_improvement_mae": local_improvement_mae,
     }
 
 
@@ -741,7 +767,14 @@ def _train_seed(
             batch = _to_device(raw, device)
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
                 output = _forward(model, batch)
-            losses = _loss(output, batch, loss_weights, device, target_contract)
+            losses = _loss(
+                output,
+                batch,
+                loss_weights,
+                device,
+                target_contract,
+                use_band_improvement_local_loss=training.use_band_improvement_local_loss,
+            )
             loss = losses["total"].float() / accumulation
             if not torch.isfinite(loss):
                 raise RuntimeError("non-finite LTSN training loss")
@@ -759,6 +792,7 @@ def _train_seed(
             predict_dataset(model, development_loader, device),
             active_mask=target_contract["active_coordinate_mask"],
             qualification_aligned=training.qualification_aligned_early_stopping,
+            focus_band_threshold=target_contract.get("focus_band_threshold"),
         )
         history.append(
             {
@@ -862,16 +896,10 @@ def train_ensemble(
             "non-smoke training requires a qualification-eligible label manifest"
         )
     expected_training_gate_sha256 = "" if gate is None else gate.artifact_sha256
-    manifest_gate_values = {
-        row.get("surrogate_training_gate_sha256", "") for row in raw_rows
-    }
+    manifest_gate_values = {row.get("surrogate_training_gate_sha256", "") for row in raw_rows}
     if manifest_gate_values != {expected_training_gate_sha256}:
-        raise LTSNContractError(
-            "label manifest uses a different surrogate training gate"
-        )
-    guidance_values = {
-        row.get("guidance_promotion_eligible", "false").lower() for row in raw_rows
-    }
+        raise LTSNContractError("label manifest uses a different surrogate training gate")
+    guidance_values = {row.get("guidance_promotion_eligible", "false").lower() for row in raw_rows}
     if guidance_values != {"false"}:
         raise LTSNContractError(
             "surrogate training manifest must not claim guidance promotion eligibility"
@@ -992,9 +1020,10 @@ def load_checkpoint_model(
     target_contract = payload.get("training_target_contract")
     expected_target_sha256 = metadata.get("training_target_contract_sha256")
     if expected_target_sha256 is not None:
-        if not isinstance(target_contract, dict) or canonical_json_sha256(
-            target_contract
-        ) != expected_target_sha256:
+        if (
+            not isinstance(target_contract, dict)
+            or canonical_json_sha256(target_contract) != expected_target_sha256
+        ):
             raise LTSNContractError("checkpoint training target contract is hash-mismatched")
     config = LTSNConfig(**payload["model_config"])
     model = PathHomologySurrogate(contract, config)
