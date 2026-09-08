@@ -143,14 +143,24 @@ class _OnPolicyDirectionProvider:
             flattened = member_gradients.flatten(2)
             for left in range(len(outputs)):
                 for right in range(left + 1, len(outputs)):
-                    left_value = flattened[left, 0]
-                    right_value = flattened[right, 0]
-                    denominator = left_value.norm() * right_value.norm()
-                    cosines.append(
-                        -1.0
-                        if denominator.item() <= 1e-12
-                        else float((left_value @ right_value / denominator).item())
+                    # Do not use ``left_value @ right_value`` here.  On some
+                    # CUDA/cuBLAS combinations Sdot rejects long strided
+                    # gradient vectors with CUBLAS_STATUS_NOT_SUPPORTED.  Pure
+                    # elementwise reductions are layout-independent and this
+                    # value is diagnostic only.
+                    left_value = flattened[left, 0].float()
+                    right_value = flattened[right, 0].float()
+                    dot = (left_value * right_value).sum(dtype=torch.float32)
+                    denominator = torch.sqrt(
+                        left_value.square().sum(dtype=torch.float32)
+                        * right_value.square().sum(dtype=torch.float32)
                     )
+                    valid = bool(
+                        torch.isfinite(dot).item()
+                        and torch.isfinite(denominator).item()
+                        and denominator.item() > 1e-12
+                    )
+                    cosines.append(-1.0 if not valid else float((dot / denominator).item()))
             minimum_cosine = min(cosines)
         description = {
             "exact_focus_logit": float(anchor.focus_logit),
