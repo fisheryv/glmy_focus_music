@@ -222,9 +222,8 @@ development_evidence() {
     --batch-size "${CLAP_BATCH_SIZE:-8}"
     --segment-seconds "${CLAP_SEGMENT_SECONDS:-10}"
   )
-  if [[ -n "${DEVELOPMENT_QUALITY_TABLE:-}" ]]; then
-    evidence_args+=(--quality-table "${DEVELOPMENT_QUALITY_TABLE}")
-  fi
+  # Blind quality is intentionally outside the V2 promotion gate. Keep the
+  # standard pipeline independent of any stale DEVELOPMENT_QUALITY_TABLE value.
   "${PYTHON_BIN}" "${evidence_args[@]}"
 }
 

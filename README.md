@@ -79,8 +79,9 @@ PAIR_TABLE=<confirmation-pairs.csv> bash scripts/run_ltsn_pipeline.sh guidance-c
 （默认 `cuda:0`）顺序训练，保持单卡兼容。完整门禁、存储峰值、断点续跑和最终
 32 prompt × 8 seed 配对评估见 [Linux/NVIDIA 指引](docs/ltsn-linux-training-and-evaluation.md)。
 V3 不改变 LTSN 网络结构；augmentation 会额外为 calibration/qualification prompt
-构造与训练变换不同的 OOD 样本，使 OOD AUROC 成为可计算的独立门禁。盲评质量若通过
-`DEVELOPMENT_QUALITY_TABLE` 提供会被记录，但不参与 `latent_guidance_promotion_v2`。
+构造与训练变换不同的 OOD 样本，使 OOD AUROC 成为可计算的独立门禁。标准
+`development-evidence` 不读取盲评文件；盲评质量只能通过证据脚本的可选
+`--quality-table` 参数单独生成诊断报告，不参与 `latent_guidance_promotion_v2`。
 若已有完整且哈希有效的旧版 collection/labels，可将 `SOURCE_LTSN_MANIFEST` 和
 `SOURCE_LTSN_SPLIT_MANIFEST` 指向旧 labels 后从 `augment-training` 开始，不必重新采集。
 
