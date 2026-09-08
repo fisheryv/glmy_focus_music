@@ -6,6 +6,7 @@ import csv
 import json
 import math
 import os
+import shutil
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
@@ -191,7 +192,60 @@ def _proxy_focus_loss(
     return focus_logit, loss
 
 
-def _resume_arm(receipt_path: Path, output_dir: Path, plan_sha256: str) -> dict[str, Any]:
+def _materialize_identical_audio(source: Path, target: Path) -> None:
+    """Atomically reuse one decoded WAV for a latent-identical paired arm."""
+
+    if not source.is_file():
+        raise LTSNContractError(f"canonical baseline audio is missing: {source}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    temporary = target.with_name(f".{target.name}.canonical.part")
+    if temporary.exists():
+        temporary.unlink()
+    try:
+        try:
+            os.link(source, temporary)
+        except OSError:
+            shutil.copyfile(source, temporary)
+        os.replace(temporary, target)
+    finally:
+        if temporary.exists():
+            temporary.unlink()
+
+
+def _canonicalize_noop_pair_audio(
+    baseline: Mapping[str, Any],
+    guided: dict[str, Any],
+    *,
+    output_dir: Path,
+    receipt_path: Path | None = None,
+) -> bool:
+    """Reuse baseline audio when the guided arm has an identical final latent."""
+
+    latent_changed = baseline["latent_sha256"] != guided["latent_sha256"]
+    if latent_changed:
+        return True
+    baseline_audio = output_dir / str(baseline["audio_path"])
+    guided_audio = output_dir / str(guided["audio_path"])
+    baseline_sha256 = sha256_file(baseline_audio)
+    if baseline_sha256 != baseline["audio_sha256"]:
+        raise LTSNContractError("canonical baseline audio is hash-mismatched")
+    if not guided_audio.is_file() or sha256_file(guided_audio) != baseline_sha256:
+        _materialize_identical_audio(baseline_audio, guided_audio)
+    guided["audio_sha256"] = baseline_sha256
+    guided["audio_derivation"] = "baseline_reuse_for_identical_latent"
+    guided["canonical_audio_source_candidate_id"] = baseline["candidate_id"]
+    if receipt_path is not None:
+        write_json_atomic(receipt_path, guided)
+    _validate_pair_decode_identity(baseline, guided)
+    return False
+
+
+def _resume_arm(
+    receipt_path: Path,
+    output_dir: Path,
+    plan_sha256: str,
+    reference_arm: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     if receipt.get("plan_sha256") != plan_sha256:
         raise LTSNContractError("development arm receipt belongs to a different plan")
@@ -199,10 +253,19 @@ def _resume_arm(receipt_path: Path, output_dir: Path, plan_sha256: str) -> dict[
         raise LTSNContractError("development arm receipt has an invalid scope")
     if receipt.get("decoder_contract") != PAIR_DECODER_CONTRACT:
         raise LTSNContractError("development arm used a different decoder contract")
-    for kind in ("audio", "latent"):
-        path = output_dir / receipt[f"{kind}_path"]
-        if not path.is_file() or sha256_file(path) != receipt[f"{kind}_sha256"]:
-            raise LTSNContractError(f"development arm {kind} is missing or hash-mismatched")
+    latent_path = output_dir / receipt["latent_path"]
+    if not latent_path.is_file() or sha256_file(latent_path) != receipt["latent_sha256"]:
+        raise LTSNContractError("development arm latent is missing or hash-mismatched")
+    if reference_arm is not None:
+        _canonicalize_noop_pair_audio(
+            reference_arm,
+            receipt,
+            output_dir=output_dir,
+            receipt_path=receipt_path,
+        )
+    audio_path = output_dir / receipt["audio_path"]
+    if not audio_path.is_file() or sha256_file(audio_path) != receipt["audio_sha256"]:
+        raise LTSNContractError("development arm audio is missing or hash-mismatched")
     return receipt
 
 
@@ -219,11 +282,17 @@ def _generate_arm(
     corrector: TopologyCorrector,
     duration_seconds: float,
     inference_steps: int,
+    reference_arm: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     candidate_id = f"{row['pair_id']}__{arm}"
     receipt_path = output_dir / "receipts" / f"{candidate_id}.json"
     if receipt_path.is_file():
-        receipt = _resume_arm(receipt_path, output_dir, plan_sha256)
+        receipt = _resume_arm(
+            receipt_path,
+            output_dir,
+            plan_sha256,
+            reference_arm=reference_arm,
+        )
         expected = {
             "pair_id": row["pair_id"],
             "prompt_id": row["prompt_id"],
@@ -257,7 +326,17 @@ def _generate_arm(
         raise LTSNContractError("ACE returned a different seed for a development arm")
     latent = _latent_array(result.final_latent)
     _save_npy_atomic(latent_path, latent)
-    adapter.decode_latent_to_audio(latent, audio_path)
+    latent_sha256 = sha256_file(latent_path)
+    reuse_reference_audio = (
+        reference_arm is not None
+        and reference_arm["latent_sha256"] == latent_sha256
+    )
+    if reuse_reference_audio:
+        _materialize_identical_audio(
+            output_dir / str(reference_arm["audio_path"]), audio_path
+        )
+    else:
+        adapter.decode_latent_to_audio(latent, audio_path)
     generated_audio = result.audio_path.resolve()
     if generated_audio != audio_path.resolve() and generated_audio.is_file():
         generated_audio.unlink()
@@ -272,11 +351,19 @@ def _generate_arm(
         "audio_path": _relative(audio_path, output_dir),
         "audio_sha256": sha256_file(audio_path),
         "latent_path": _relative(latent_path, output_dir),
-        "latent_sha256": sha256_file(latent_path),
+        "latent_sha256": latent_sha256,
         "proxy_focus_logit": focus_logit,
         "proxy_focus_band_loss": focus_loss,
         "authorization_scope": AUTHORIZATION_SCOPE,
         "decoder_contract": PAIR_DECODER_CONTRACT,
+        "audio_derivation": (
+            "baseline_reuse_for_identical_latent"
+            if reuse_reference_audio
+            else "ace_vae_decode_latent_to_audio"
+        ),
+        "canonical_audio_source_candidate_id": (
+            reference_arm["candidate_id"] if reuse_reference_audio else ""
+        ),
         "plan_sha256": plan_sha256,
     }
     write_json_atomic(receipt_path, receipt)
@@ -462,25 +549,42 @@ def generate_development_pairs(
     adapter = AceStepAdapter(root / config.ace.checkout, config.ace)
     completed: list[dict[str, Any]] = []
     for row in plan_rows:
-        arms = {
-            arm: _generate_arm(
-                adapter=adapter,
-                row=row,
-                arm=arm,
-                output_dir=output_dir,
-                plan_sha256=plan_sha256,
-                models=models,
-                contract=contract,
-                device=device,
-                corrector=corrector,
-                duration_seconds=duration_seconds,
-                inference_steps=config.ace.inference_steps,
-            )
-            for arm in ("baseline", "guided")
-        }
-        latent_changed = _validate_pair_decode_identity(
-            arms["baseline"], arms["guided"]
+        baseline = _generate_arm(
+            adapter=adapter,
+            row=row,
+            arm="baseline",
+            output_dir=output_dir,
+            plan_sha256=plan_sha256,
+            models=models,
+            contract=contract,
+            device=device,
+            corrector=corrector,
+            duration_seconds=duration_seconds,
+            inference_steps=config.ace.inference_steps,
         )
+        guided = _generate_arm(
+            adapter=adapter,
+            row=row,
+            arm="guided",
+            output_dir=output_dir,
+            plan_sha256=plan_sha256,
+            models=models,
+            contract=contract,
+            device=device,
+            corrector=corrector,
+            duration_seconds=duration_seconds,
+            inference_steps=config.ace.inference_steps,
+            reference_arm=baseline,
+        )
+        latent_changed = _canonicalize_noop_pair_audio(
+            baseline,
+            guided,
+            output_dir=output_dir,
+            receipt_path=(
+                output_dir / "receipts" / f"{guided['candidate_id']}.json"
+            ),
+        )
+        arms = {"baseline": baseline, "guided": guided}
         completed.append(
             {
                 "pair_id": row["pair_id"],

@@ -8,9 +8,10 @@ import pytest
 
 pytest.importorskip("torch")
 
-from generation.ltsn_contract import LTSNContractError
+from generation.ltsn_contract import LTSNContractError, sha256_file
 from generation.ltsn_development_pairs import (
     AUTHORIZATION_SCOPE,
+    _canonicalize_noop_pair_audio,
     _validate_pair_decode_identity,
     build_development_plan,
     finalize_development_pairs,
@@ -287,3 +288,36 @@ def test_identical_latents_require_identical_shared_decode() -> None:
         baseline,
         {"latent_sha256": "d" * 64, "audio_sha256": "c" * 64},
     ) is True
+
+
+def test_noop_pair_reuses_baseline_audio_and_repairs_receipt(tmp_path: Path) -> None:
+    baseline_audio = tmp_path / "baseline.wav"
+    guided_audio = tmp_path / "guided.wav"
+    baseline_audio.write_bytes(b"canonical-audio")
+    guided_audio.write_bytes(b"nondeterministic-second-decode")
+    baseline = {
+        "candidate_id": "pair__baseline",
+        "latent_sha256": "a" * 64,
+        "audio_path": "baseline.wav",
+        "audio_sha256": sha256_file(baseline_audio),
+    }
+    guided = {
+        "candidate_id": "pair__guided",
+        "latent_sha256": "a" * 64,
+        "audio_path": "guided.wav",
+        "audio_sha256": sha256_file(guided_audio),
+    }
+    receipt = tmp_path / "guided.json"
+
+    latent_changed = _canonicalize_noop_pair_audio(
+        baseline,
+        guided,
+        output_dir=tmp_path,
+        receipt_path=receipt,
+    )
+
+    assert latent_changed is False
+    assert guided_audio.read_bytes() == baseline_audio.read_bytes()
+    assert guided["audio_sha256"] == baseline["audio_sha256"]
+    assert guided["audio_derivation"] == "baseline_reuse_for_identical_latent"
+    assert json.loads(receipt.read_text())["audio_sha256"] == baseline["audio_sha256"]
