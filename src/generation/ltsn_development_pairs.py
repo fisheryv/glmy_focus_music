@@ -172,7 +172,13 @@ def _validate_runtime_bindings(
             or calibration.get("ood_calibration_gate_passed") is not True
         ):
             raise LTSNContractError(
-                "development correction requires a passed schema-v3 OOD calibration"
+                "development correction requires a passed schema-v3 OOD calibration: "
+                f"schema_version={calibration.get('schema_version')!r}, "
+                f"status={calibration.get('status')!r}, "
+                "qualification_eligible="
+                f"{calibration.get('qualification_eligible')!r}, "
+                "ood_calibration_gate_passed="
+                f"{calibration.get('ood_calibration_gate_passed')!r}"
             )
     calibration_bindings = {
         "fingerprint_json_sha256": fingerprint_sha256,

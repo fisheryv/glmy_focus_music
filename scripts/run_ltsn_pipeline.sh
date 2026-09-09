@@ -14,6 +14,12 @@ DEVELOPMENT_DIR="${DEVELOPMENT_DIR:-${RUN_ROOT}/development_pairs}"
 TRAINING_AUGMENTATION_DIR="${TRAINING_AUGMENTATION_DIR:-${RUN_ROOT}/training_augmentation}"
 ON_POLICY_AUGMENTATION_DIR="${ON_POLICY_AUGMENTATION_DIR:-${RUN_ROOT}/training_augmentation_v4}"
 V5_AUGMENTATION_DIR="${V5_AUGMENTATION_DIR:-${RUN_ROOT}/training_augmentation_v5}"
+V5_MODEL_DIR="${V5_MODEL_DIR:-${RUN_ROOT}/models_v5}"
+V5_CALIBRATION_PATH="${V5_CALIBRATION_PATH:-${RUN_ROOT}/calibration_v5.json}"
+V5_OOD_ABLATION_CALIBRATION_PATH="${V5_OOD_ABLATION_CALIBRATION_PATH:-${RUN_ROOT}/calibration_v5_ood_ablation.json}"
+V5_DEVELOPMENT_DIR="${V5_DEVELOPMENT_DIR:-${RUN_ROOT}/development_pairs_v5}"
+V5_GUIDANCE_DEVELOPMENT_PATH="${V5_GUIDANCE_DEVELOPMENT_PATH:-${RUN_ROOT}/guidance_development_v5.json}"
+V5_QUALIFICATION_PATH="${V5_QUALIFICATION_PATH:-${RUN_ROOT}/qualification_v5.json}"
 SOURCE_LTSN_MANIFEST="${SOURCE_LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
 SOURCE_LTSN_SPLIT_MANIFEST="${SOURCE_LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
 LTSN_MANIFEST="${LTSN_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/ltsn_manifest_v3.csv}"
@@ -225,7 +231,7 @@ train_v5() {
   LTSN_MANIFEST="${V5_AUGMENTATION_DIR}/ltsn_manifest_v5.csv" \
   LTSN_SPLIT_MANIFEST="${V5_AUGMENTATION_DIR}/split_manifest_v5.json" \
   CONFIG="${V5_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v5.toml}" \
-  MODEL_DIR="${V5_MODEL_DIR:-${RUN_ROOT}/models_v5}" \
+  MODEL_DIR="${V5_MODEL_DIR}" \
     train
 }
 
@@ -271,6 +277,13 @@ calibrate() {
     --device "${EVAL_DEVICE:-cuda:0}"
 }
 
+calibrate_v5() {
+  LTSN_MANIFEST="${V5_AUGMENTATION_DIR}/ltsn_manifest_v5.csv" \
+  MODEL_DIR="${V5_MODEL_DIR}" \
+  CALIBRATION_PATH="${V5_CALIBRATION_PATH}" \
+    calibrate
+}
+
 calibrate_ood_ablation() {
   [[ -f "${CALIBRATION_PATH}" ]] || {
     echo "Run calibrate before creating the development-only OOD ablation" >&2
@@ -279,6 +292,12 @@ calibrate_ood_ablation() {
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_calibration_ablation.py" \
     --calibration "${CALIBRATION_PATH}" \
     --output "${OOD_ABLATION_CALIBRATION_PATH}"
+}
+
+calibrate_v5_ood_ablation() {
+  CALIBRATION_PATH="${V5_CALIBRATION_PATH}" \
+  OOD_ABLATION_CALIBRATION_PATH="${V5_OOD_ABLATION_CALIBRATION_PATH}" \
+    calibrate_ood_ablation
 }
 
 development_generate() {
@@ -330,6 +349,24 @@ development_generate() {
     --resume
 }
 
+development_generate_v5() {
+  LTSN_MANIFEST="${V5_AUGMENTATION_DIR}/ltsn_manifest_v5.csv" \
+  MODEL_DIR="${V5_MODEL_DIR}" \
+  CALIBRATION_PATH="${V5_CALIBRATION_PATH}" \
+  DEVELOPMENT_DIR="${V5_DEVELOPMENT_DIR}" \
+    development_generate
+}
+
+development_generate_v5_ood_ablation() {
+  LTSN_MANIFEST="${V5_AUGMENTATION_DIR}/ltsn_manifest_v5.csv" \
+  MODEL_DIR="${V5_MODEL_DIR}" \
+  CALIBRATION_PATH="${V5_CALIBRATION_PATH}" \
+  OOD_ABLATION_CALIBRATION_PATH="${V5_OOD_ABLATION_CALIBRATION_PATH}" \
+  DEVELOPMENT_DIR="${V5_DEVELOPMENT_DIR}" \
+  DEVELOPMENT_OOD_ABLATION=1 \
+    development_generate
+}
+
 development_step4_diagnostic() {
   DEVELOPMENT_DIR="${STEP4_DIAGNOSTIC_DIR:-${RUN_ROOT}/development_step4_diagnostic}" \
   DEVELOPMENT_OOD_ABLATION=1 \
@@ -365,6 +402,10 @@ development_score() {
     --workers "${DEVELOPMENT_EXACT_WORKERS:-8}"
 }
 
+development_score_v5() {
+  DEVELOPMENT_DIR="${V5_DEVELOPMENT_DIR}" development_score
+}
+
 development_evidence() {
   : "${CLAP_REVISION:?Set CLAP_REVISION to the frozen 40-hex Hugging Face commit SHA}"
   local -a evidence_args=(
@@ -382,6 +423,10 @@ development_evidence() {
   "${PYTHON_BIN}" "${evidence_args[@]}"
 }
 
+development_evidence_v5() {
+  DEVELOPMENT_DIR="${V5_DEVELOPMENT_DIR}" development_evidence
+}
+
 development_finalize() {
   local evidence="${NONINFERIORITY_EVIDENCE:-${DEVELOPMENT_DIR}/development_noninferiority_metrics.csv}"
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_development_pairs.py" finalize \
@@ -390,6 +435,10 @@ development_finalize() {
     --protocol "${GUIDANCE_PROTOCOL}" \
     --output-dir "${DEVELOPMENT_DIR}" \
     --bootstrap-resamples "${DEVELOPMENT_BOOTSTRAP_RESAMPLES:-2000}"
+}
+
+development_finalize_v5() {
+  DEVELOPMENT_DIR="${V5_DEVELOPMENT_DIR}" development_finalize
 }
 
 qualify() {
@@ -407,6 +456,15 @@ qualify() {
     --device "${EVAL_DEVICE:-cuda:0}"
 }
 
+qualify_v5() {
+  LTSN_MANIFEST="${V5_AUGMENTATION_DIR}/ltsn_manifest_v5.csv" \
+  MODEL_DIR="${V5_MODEL_DIR}" \
+  CALIBRATION_PATH="${V5_CALIBRATION_PATH}" \
+  GUIDANCE_DEVELOPMENT_PATH="${V5_GUIDANCE_DEVELOPMENT_PATH}" \
+  QUALIFICATION_PATH="${V5_QUALIFICATION_PATH}" \
+    qualify
+}
+
 guidance_development() {
   local pair_table="${PAIR_TABLE:-${DEVELOPMENT_DIR}/development_pairs.csv}"
   [[ -f "${pair_table}" ]] || {
@@ -418,6 +476,12 @@ guidance_development() {
     --pair-table "${pair_table}" \
     --output "${GUIDANCE_DEVELOPMENT_PATH}" \
     --mode development
+}
+
+guidance_development_v5() {
+  DEVELOPMENT_DIR="${V5_DEVELOPMENT_DIR}" \
+  GUIDANCE_DEVELOPMENT_PATH="${V5_GUIDANCE_DEVELOPMENT_PATH}" \
+    guidance_development
 }
 
 guidance_confirmation() {
@@ -444,16 +508,25 @@ case "${STAGE}" in
   train-v5) train_v5 ;;
   train-v5-screen) train_v5_screen ;;
   calibrate) calibrate ;;
+  calibrate-v5) calibrate_v5 ;;
   calibrate-ood-ablation) calibrate_ood_ablation ;;
+  calibrate-v5-ood-ablation) calibrate_v5_ood_ablation ;;
   development-generate) development_generate ;;
+  development-generate-v5) development_generate_v5 ;;
+  development-generate-v5-ood-ablation) development_generate_v5_ood_ablation ;;
   development-step4-diagnostic) development_step4_diagnostic ;;
   development-step4-score) development_step4_score ;;
   development-step4-report) development_step4_report ;;
   development-score) development_score ;;
+  development-score-v5) development_score_v5 ;;
   development-evidence) development_evidence ;;
+  development-evidence-v5) development_evidence_v5 ;;
   development-finalize) development_finalize ;;
+  development-finalize-v5) development_finalize_v5 ;;
   guidance-development) guidance_development ;;
+  guidance-development-v5) guidance_development_v5 ;;
   qualify) qualify ;;
+  qualify-v5) qualify_v5 ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|calibrate|calibrate-ood-ablation|development-generate|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-evidence|development-finalize|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
 esac
