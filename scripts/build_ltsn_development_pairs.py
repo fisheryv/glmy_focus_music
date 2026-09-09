@@ -44,6 +44,10 @@ def main(argv: list[str] | None = None) -> int:
     generate.add_argument("--require-all-member-improvement", action="store_true")
     generate.add_argument("--minimum-member-gradient-cosine", type=float, default=-1.0)
     generate.add_argument("--allow-ood-ablation", action="store_true")
+    generate.add_argument(
+        "--correction-steps", type=int, nargs="+", choices=(4, 5, 6), default=(4, 5, 6)
+    )
+    generate.add_argument("--diagnostic-prompt-limit", type=int)
     generate.add_argument("--resume", action="store_true")
 
     score = subparsers.add_parser("score")
@@ -84,6 +88,8 @@ def main(argv: list[str] | None = None) -> int:
             require_all_member_improvement=args.require_all_member_improvement,
             minimum_member_gradient_cosine=args.minimum_member_gradient_cosine,
             allow_ood_ablation=args.allow_ood_ablation,
+            correction_steps=args.correction_steps,
+            diagnostic_prompt_limit=args.diagnostic_prompt_limit,
         )
     elif args.command == "score":
         payload = score_development_pairs(

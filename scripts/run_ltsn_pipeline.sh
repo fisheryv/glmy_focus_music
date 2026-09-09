@@ -231,6 +231,13 @@ development_generate() {
   : "${VAE_SHA256:?Set VAE_SHA256 to the 64-hex VAE tree digest}"
   local development_calibration="${CALIBRATION_PATH}"
   local -a corrector_args=(--rms-clip-ratio "${DEVELOPMENT_RMS_CLIP_RATIO:-0.005}")
+  local -a correction_steps
+  IFS=',' read -r -a correction_steps <<< "${DEVELOPMENT_CORRECTION_STEPS:-4,5,6}"
+  (( ${#correction_steps[@]} > 0 )) || { echo "DEVELOPMENT_CORRECTION_STEPS is empty" >&2; exit 2; }
+  corrector_args+=(--correction-steps "${correction_steps[@]}")
+  if [[ -n "${DEVELOPMENT_DIAGNOSTIC_PROMPT_LIMIT:-}" ]]; then
+    corrector_args+=(--diagnostic-prompt-limit "${DEVELOPMENT_DIAGNOSTIC_PROMPT_LIMIT}")
+  fi
   if [[ "${DEVELOPMENT_OOD_ABLATION:-0}" == "1" ]]; then
     development_calibration="${OOD_ABLATION_CALIBRATION_PATH}"
     [[ -f "${development_calibration}" ]] || {
@@ -266,6 +273,32 @@ development_generate() {
     --device "${DEVELOPMENT_DEVICE:-cuda:0}" \
     "${corrector_args[@]}" \
     --resume
+}
+
+development_step4_diagnostic() {
+  DEVELOPMENT_DIR="${STEP4_DIAGNOSTIC_DIR:-${RUN_ROOT}/development_step4_diagnostic}" \
+  DEVELOPMENT_OOD_ABLATION=1 \
+  DEVELOPMENT_CORRECTION_STEPS=4 \
+  DEVELOPMENT_DIAGNOSTIC_PROMPT_LIMIT=16 \
+  DEVELOPMENT_RMS_CLIP_RATIO=0.005 \
+  DEVELOPMENT_REQUIRE_ALL_MEMBERS_OOB=0 \
+  DEVELOPMENT_REQUIRE_ALL_MEMBER_IMPROVEMENT=0 \
+  DEVELOPMENT_MINIMUM_GRADIENT_COSINE=-1 \
+    development_generate
+}
+
+development_step4_score() {
+  DEVELOPMENT_DIR="${STEP4_DIAGNOSTIC_DIR:-${RUN_ROOT}/development_step4_diagnostic}" \
+    development_score
+}
+
+development_step4_report() {
+  local diagnostic_dir="${STEP4_DIAGNOSTIC_DIR:-${RUN_ROOT}/development_step4_diagnostic}"
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_ltsn_step_ablation.py" \
+    --pair-table "${diagnostic_dir}/development_pairs_raw.csv" \
+    --generation-plan "${diagnostic_dir}/development_generation_plan.json" \
+    --output "${diagnostic_dir}/step4_gradient_diagnostic.json" \
+    --bootstrap-resamples "${DEVELOPMENT_BOOTSTRAP_RESAMPLES:-2000}"
 }
 
 development_score() {
@@ -355,11 +388,14 @@ case "${STAGE}" in
   calibrate) calibrate ;;
   calibrate-ood-ablation) calibrate_ood_ablation ;;
   development-generate) development_generate ;;
+  development-step4-diagnostic) development_step4_diagnostic ;;
+  development-step4-score) development_step4_score ;;
+  development-step4-report) development_step4_report ;;
   development-score) development_score ;;
   development-evidence) development_evidence ;;
   development-finalize) development_finalize ;;
   guidance-development) guidance_development ;;
   qualify) qualify ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|train|calibrate|calibrate-ood-ablation|development-generate|development-score|development-evidence|development-finalize|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|train|calibrate|calibrate-ood-ablation|development-generate|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-evidence|development-finalize|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
 esac

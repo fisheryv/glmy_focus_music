@@ -82,6 +82,40 @@ def test_development_plan_rejects_count_or_manual_seed_drift(tmp_path: Path) -> 
         )
 
 
+def test_step4_diagnostic_plan_is_family_balanced_and_keeps_global_seeds(
+    tmp_path: Path,
+) -> None:
+    manifest = tmp_path / "prompts.csv"
+    rows: list[dict[str, object]] = []
+    for family in range(4):
+        for variant in range(16):
+            rows.append(
+                {
+                    "prompt_id": f"p{family:02d}__v{variant + 1:02d}",
+                    "caption": "development",
+                    "split": "development",
+                    "seed": "",
+                }
+            )
+    _write_csv(manifest, rows)
+
+    plan = build_development_plan(
+        manifest,
+        seed_start=100,
+        seeds_per_prompt=4,
+        expected_development_prompts=64,
+        diagnostic_prompt_limit=16,
+    )
+
+    selected = list(dict.fromkeys(row["prompt_id"] for row in plan))
+    assert len(plan) == 64
+    assert selected == [
+        f"p{family:02d}__v{variant:02d}" for family in range(4) for variant in (1, 5, 9, 13)
+    ]
+    assert plan[0]["seed"] == 100
+    assert plan[-1]["seed"] == 100 + 60 * 4 + 3
+
+
 def _raw_rows() -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for prompt_index in range(64):

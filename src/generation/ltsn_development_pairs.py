@@ -50,6 +50,7 @@ def build_development_plan(
     seed_start: int,
     seeds_per_prompt: int,
     expected_development_prompts: int,
+    diagnostic_prompt_limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Expand only development prompts while preserving full-manifest seed indices."""
 
@@ -61,18 +62,45 @@ def build_development_plan(
     prompt_ids = [row.get("prompt_id", "").strip() for row in source]
     if any(not value for value in prompt_ids) or len(set(prompt_ids)) != len(prompt_ids):
         raise LTSNContractError("prompt manifest has empty or duplicate prompt IDs")
-    output: list[dict[str, Any]] = []
-    development_count = 0
+    development: list[tuple[int, dict[str, str]]] = []
     for prompt_index, row in enumerate(source):
         if row.get("split", "").strip() != "development":
             continue
-        development_count += 1
         if not row.get("caption", "").strip():
             raise LTSNContractError("development prompt has an empty caption")
         if row.get("seed", "").strip():
             raise LTSNContractError(
                 "formal development pairs require globally indexed generated seeds"
             )
+        development.append((prompt_index, row))
+    development_count = len(development)
+    if development_count != expected_development_prompts:
+        raise LTSNContractError(
+            "development prompt count changed: "
+            f"expected {expected_development_prompts}, found {development_count}"
+        )
+    if diagnostic_prompt_limit is not None:
+        if not 1 <= diagnostic_prompt_limit <= development_count:
+            raise LTSNContractError("diagnostic prompt limit is outside the development pool")
+        grouped: dict[str, list[tuple[int, dict[str, str]]]] = {}
+        for item in development:
+            family = item[1]["prompt_id"].rsplit("__v", 1)[0]
+            grouped.setdefault(family, []).append(item)
+        if diagnostic_prompt_limit % len(grouped):
+            raise LTSNContractError(
+                "diagnostic prompt limit must be divisible by development prompt families"
+            )
+        per_family = diagnostic_prompt_limit // len(grouped)
+        selected: list[tuple[int, dict[str, str]]] = []
+        for family in sorted(grouped):
+            items = grouped[family]
+            if per_family > len(items):
+                raise LTSNContractError(f"diagnostic prompt family is too small: {family}")
+            selected.extend(items[index * len(items) // per_family] for index in range(per_family))
+        development = sorted(selected, key=lambda item: item[0])
+
+    output: list[dict[str, Any]] = []
+    for prompt_index, row in development:
         for seed_index in range(seeds_per_prompt):
             seed = seed_start + prompt_index * seeds_per_prompt + seed_index
             output.append(
@@ -87,11 +115,6 @@ def build_development_plan(
                     "timesignature": row.get("timesignature", "").strip(),
                 }
             )
-    if development_count != expected_development_prompts:
-        raise LTSNContractError(
-            "development prompt count changed: "
-            f"expected {expected_development_prompts}, found {development_count}"
-        )
     pair_ids = [row["pair_id"] for row in output]
     seeds = [row["seed"] for row in output]
     if len(set(pair_ids)) != len(pair_ids) or len(set(seeds)) != len(seeds):
@@ -168,14 +191,19 @@ def _corrector_config(
     require_all_members_out_of_band: bool = False,
     require_all_member_improvement: bool = False,
     minimum_member_gradient_cosine: float = -1.0,
+    correction_steps: Sequence[int] = (4, 5, 6),
 ) -> TopologyCorrectorConfig:
+    canonical_weights = {4: 0.5, 5: 1.0, 6: 0.5}
+    steps = tuple(int(step) for step in correction_steps)
+    if not steps or len(set(steps)) != len(steps) or not set(steps) <= set(canonical_weights):
+        raise LTSNContractError("correction steps must be unique values drawn from 4, 5, and 6")
     return TopologyCorrectorConfig(
         enabled=True,
         qualification_passed=False,
         authorization_scope=AUTHORIZATION_SCOPE,
         guidance_scale=1.0,
         rms_clip_ratio=rms_clip_ratio,
-        step_weights={4: 0.5, 5: 1.0, 6: 0.5},
+        step_weights={step: canonical_weights[step] for step in steps},
         ood_probability_threshold=float(calibration["ood_probability_threshold"]),
         max_aleatoric_variance=float(calibration["max_aleatoric_variance"]),
         max_epistemic_variance=float(calibration["max_epistemic_variance"]),
@@ -475,6 +503,8 @@ def generate_development_pairs(
     require_all_member_improvement: bool = False,
     minimum_member_gradient_cosine: float = -1.0,
     allow_ood_ablation: bool = False,
+    correction_steps: Sequence[int] = (4, 5, 6),
+    diagnostic_prompt_limit: int | None = None,
 ) -> dict[str, Any]:
     """Generate same-prompt/seed baseline and development-only guided arms."""
 
@@ -491,6 +521,7 @@ def generate_development_pairs(
     calibration_path = (
         calibration_path if calibration_path.is_absolute() else root / calibration_path
     )
+    diagnostic_only = diagnostic_prompt_limit is not None
     if (
         seeds_per_prompt != 4
         or expected_development_prompts != 64
@@ -498,6 +529,19 @@ def generate_development_pairs(
     ):
         raise LTSNContractError(
             "formal development-only generation requires 64 prompts x 4 seeds at 180s"
+        )
+    if diagnostic_only and (
+        diagnostic_prompt_limit != 16
+        or not allow_ood_ablation
+        or tuple(correction_steps) != (4,)
+        or not math.isclose(rms_clip_ratio, 0.005, rel_tol=0.0, abs_tol=1e-12)
+        or require_all_members_out_of_band
+        or require_all_member_improvement
+        or not math.isclose(minimum_member_gradient_cosine, -1.0)
+    ):
+        raise LTSNContractError(
+            "step-4 diagnostic requires 16 prompts x 4 seeds, OOD ablation, RMS 0.005, "
+            "and no ensemble consensus filters"
         )
     config = load_experiment_config(root, ace_config)
     if config.ace.inference_steps != 8:
@@ -507,6 +551,7 @@ def generate_development_pairs(
         seed_start=seed_start,
         seeds_per_prompt=seeds_per_prompt,
         expected_development_prompts=expected_development_prompts,
+        diagnostic_prompt_limit=diagnostic_prompt_limit,
     )
     device = torch.device(device_name)
     contract, ensemble, models = _load_ensemble(ensemble_manifest, fingerprint_path, device)
@@ -528,6 +573,7 @@ def generate_development_pairs(
         require_all_members_out_of_band=require_all_members_out_of_band,
         require_all_member_improvement=require_all_member_improvement,
         minimum_member_gradient_cosine=minimum_member_gradient_cosine,
+        correction_steps=correction_steps,
     )
     corrector = TopologyCorrector(
         models,
@@ -537,7 +583,7 @@ def generate_development_pairs(
     )
     plan_path = output_dir / "development_generation_plan.json"
     plan = {
-        "schema_version": 2,
+        "schema_version": 3 if diagnostic_only else 2,
         "authorization_scope": AUTHORIZATION_SCOPE,
         "prompt_manifest_sha256": sha256_file(prompt_manifest),
         "ace_config_sha256": sha256_file(ace_config),
@@ -565,6 +611,16 @@ def generate_development_pairs(
         },
         "planned_pairs": plan_rows,
     }
+    if diagnostic_only:
+        plan.update(
+            {
+                "experiment_mode": "step4_gradient_diagnostic",
+                "diagnostic_only": True,
+                "guidance_promotion_eligible": False,
+                "diagnostic_prompt_limit": diagnostic_prompt_limit,
+                "selected_development_prompts": len({row["prompt_id"] for row in plan_rows}),
+            }
+        )
     if plan_path.is_file():
         if not resume:
             raise FileExistsError(
@@ -645,6 +701,7 @@ def generate_development_pairs(
                 "proxy_focus_band_loss_after": arms["guided"]["proxy_focus_band_loss"],
                 "authorization_scope": AUTHORIZATION_SCOPE,
                 "ood_ablation_only": str(bool(plan.get("ood_ablation_only", False))).lower(),
+                "diagnostic_only": str(bool(plan.get("diagnostic_only", False))).lower(),
                 "plan_sha256": plan_sha256,
             }
         )
@@ -652,7 +709,8 @@ def generate_development_pairs(
     return {
         "authorization_scope": AUTHORIZATION_SCOPE,
         "pairs": len(completed),
-        "prompts": expected_development_prompts,
+        "prompts": len({row["prompt_id"] for row in plan_rows}),
+        "diagnostic_only": diagnostic_only,
         "generation_manifest": str(manifest_path),
         "generation_manifest_sha256": sha256_file(manifest_path),
         "plan_sha256": plan_sha256,
@@ -671,8 +729,16 @@ def _validate_generation_rows(
         planned = expected[pair_id]
         if row.get("authorization_scope") != AUTHORIZATION_SCOPE:
             raise LTSNContractError("generation manifest contains a non-development scope")
-        if row.get("ood_ablation_only") != str(bool(plan.get("ood_ablation_only", False))).lower():
+        if (
+            row.get("ood_ablation_only", "false")
+            != str(bool(plan.get("ood_ablation_only", False))).lower()
+        ):
             raise LTSNContractError("generation row has a mismatched OOD ablation status")
+        if (
+            row.get("diagnostic_only", "false")
+            != str(bool(plan.get("diagnostic_only", False))).lower()
+        ):
+            raise LTSNContractError("generation row has a mismatched diagnostic status")
         if row.get("prompt_id") != planned["prompt_id"] or int(row["seed"]) != planned["seed"]:
             raise LTSNContractError(f"generation pair binding mismatch: {pair_id}")
         if row.get("plan_sha256") != plan_sha256:
@@ -792,7 +858,8 @@ def score_development_pairs(
                 "baseline_technical_quality_eligible": str(baseline_eligible).lower(),
                 "guided_technical_quality_eligible": str(guided_eligible).lower(),
                 "authorization_scope": AUTHORIZATION_SCOPE,
-                "ood_ablation_only": row["ood_ablation_only"],
+                "ood_ablation_only": row.get("ood_ablation_only", "false"),
+                "diagnostic_only": row.get("diagnostic_only", "false"),
             }
         )
     raw_path = output_dir / RAW_PAIR_TABLE
@@ -840,6 +907,8 @@ def finalize_development_pairs(
     evidence_rows = _read_csv(evidence_table)
     if not raw_rows or not evidence_rows:
         raise LTSNContractError("raw pairs and numeric non-inferiority evidence are required")
+    if any(row.get("diagnostic_only", "false").lower() == "true" for row in raw_rows):
+        raise LTSNContractError("diagnostic-only pairs cannot enter formal finalization")
     raw = {row.get("pair_id", ""): row for row in raw_rows}
     evidence = {row.get("pair_id", ""): row for row in evidence_rows}
     if len(raw) != len(raw_rows) or len(evidence) != len(evidence_rows):
