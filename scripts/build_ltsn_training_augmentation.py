@@ -18,7 +18,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Build exact-labelled train local/OOD augmentation plus held-out "
-            "calibration/qualification OOD for LTSN V3/V4."
+            "calibration/qualification OOD for LTSN V3/V4/V5."
         )
     )
     parser.add_argument("--root", type=Path, default=Path.cwd())
@@ -32,7 +32,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--trajectories-per-prompt", type=int, default=1)
     parser.add_argument("--perturbations-per-anchor", type=int, default=2)
     parser.add_argument("--rms-ratio", type=float, default=0.005)
-    parser.add_argument("--local-mode", choices=("random", "on_policy"), default="random")
+    parser.add_argument(
+        "--local-mode",
+        choices=("random", "on_policy", "symmetric_on_policy"),
+        default="random",
+    )
     parser.add_argument("--on-policy-ensemble-manifest", type=Path)
     parser.add_argument(
         "--on-policy-rms-ratios",
@@ -41,6 +45,8 @@ def main(argv: list[str] | None = None) -> int:
         default=(0.0025, 0.005, 0.01),
     )
     parser.add_argument("--ood-per-prompt", type=int, default=1)
+    parser.add_argument("--v5-train-anchor-count", type=int, default=512)
+    parser.add_argument("--v5-development-anchor-count", type=int, default=128)
     parser.add_argument("--evaluation-ood-per-prompt", type=int, default=1)
     parser.add_argument("--seed", type=int, default=2026071600)
     parser.add_argument("--duration-seconds", type=float, default=180.0)
@@ -80,6 +86,8 @@ def main(argv: list[str] | None = None) -> int:
         local_mode=args.local_mode,
         on_policy_ensemble_manifest=args.on_policy_ensemble_manifest,
         on_policy_rms_ratios=tuple(args.on_policy_rms_ratios),
+        v5_train_anchor_count=args.v5_train_anchor_count,
+        v5_development_anchor_count=args.v5_development_anchor_count,
     )
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     return 0

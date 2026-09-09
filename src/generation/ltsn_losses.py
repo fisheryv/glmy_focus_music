@@ -24,6 +24,7 @@ class LTSNLossWeights:
     trajectory_delta: float = 0.2
     phase_ranking: float = 0.0
     local_direction: float = 0.0
+    central_direction: float = 0.0
     ood: float = 0.1
 
     def validate(self) -> None:
@@ -210,6 +211,42 @@ def paired_band_improvement_loss(
     return ((magnitude + direction_weight * direction) * weights).mean()
 
 
+def central_band_derivative_loss(
+    predicted_score: Tensor,
+    exact_score: Tensor,
+    pair_indices: Tensor | None,
+    rms_ratios: Tensor | None,
+    *,
+    focus_band_threshold: float,
+    exact_margin: float = 1e-4,
+    direction_weight: float = 0.5,
+) -> Tensor:
+    """Match exact central finite differences for ordered ``(-d,+d)`` pairs."""
+
+    if pair_indices is None or pair_indices.numel() == 0:
+        return predicted_score.sum() * 0.0
+    if rms_ratios is None or rms_ratios.numel() != pair_indices.shape[0]:
+        raise ValueError("central direction RMS must contain one value per pair")
+    minus, plus = pair_indices[:, 0].long(), pair_indices[:, 1].long()
+    rms = rms_ratios.to(device=predicted_score.device, dtype=torch.float32).reshape(-1)
+    if not torch.isfinite(rms).all() or (rms <= 0).any():
+        raise ValueError("central direction RMS values must be finite and positive")
+    exact_loss = F.relu(float(focus_band_threshold) - exact_score.float()).square()
+    predicted_loss = F.relu(float(focus_band_threshold) - predicted_score.float()).square()
+    exact_derivative = (exact_loss[minus] - exact_loss[plus]) / (2.0 * rms)
+    predicted_derivative = (predicted_loss[minus] - predicted_loss[plus]) / (2.0 * rms)
+    valid = exact_derivative.abs() >= exact_margin
+    if not valid.any():
+        return predicted_score.sum() * 0.0
+    target = exact_derivative[valid]
+    predicted = predicted_derivative[valid]
+    magnitude = F.smooth_l1_loss(predicted, target, reduction="none")
+    direction = F.softplus(-target.sign() * predicted)
+    scale = target.abs().median().clamp_min(exact_margin)
+    weights = (target.abs() / scale).clamp(0.5, 4.0)
+    return ((magnitude + direction_weight * direction) * weights).mean()
+
+
 def focus_band_classification_loss(
     predicted_focus_logit: Tensor,
     exact_focus_logit: Tensor,
@@ -267,6 +304,8 @@ def ltsn_loss(
     *,
     pair_indices: Tensor | None = None,
     local_pair_indices: Tensor | None = None,
+    central_pair_indices: Tensor | None = None,
+    central_pair_rms: Tensor | None = None,
     next_output: LTSNOutput | None = None,
     next_coordinate_target: Tensor | None = None,
     coordinate_scale: Tensor | None = None,
@@ -330,6 +369,17 @@ def ltsn_loss(
             output.focus_logit.float(), exact_focus_logit.float(), local_pair_indices
         )
     )
+    central_direction = (
+        central_band_derivative_loss(
+            output.focus_logit.float(),
+            exact_focus_logit.float(),
+            central_pair_indices,
+            central_pair_rms,
+            focus_band_threshold=float(focus_band_threshold),
+        )
+        if focus_band_threshold is not None
+        else output.focus_logit.sum() * 0.0
+    )
     delta = trajectory_delta_loss(
         output.coordinate_mean,
         None if next_output is None else next_output.coordinate_mean,
@@ -352,6 +402,7 @@ def ltsn_loss(
         + selected.trajectory_delta * delta
         + selected.phase_ranking * phase_ranking
         + selected.local_direction * local_direction
+        + selected.central_direction * central_direction
         + selected.ood * ood
     )
     return LTSNLossResult(
@@ -364,5 +415,6 @@ def ltsn_loss(
         trajectory_delta=delta,
         phase_ranking=phase_ranking,
         local_direction=local_direction,
+        central_direction=central_direction,
         ood=ood,
     )

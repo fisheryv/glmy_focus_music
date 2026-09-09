@@ -13,6 +13,7 @@ GUIDANCE_PROTOCOL="${GUIDANCE_PROTOCOL:-${PROJECT_ROOT}/configs/ltsn_guidance_no
 DEVELOPMENT_DIR="${DEVELOPMENT_DIR:-${RUN_ROOT}/development_pairs}"
 TRAINING_AUGMENTATION_DIR="${TRAINING_AUGMENTATION_DIR:-${RUN_ROOT}/training_augmentation}"
 ON_POLICY_AUGMENTATION_DIR="${ON_POLICY_AUGMENTATION_DIR:-${RUN_ROOT}/training_augmentation_v4}"
+V5_AUGMENTATION_DIR="${V5_AUGMENTATION_DIR:-${RUN_ROOT}/training_augmentation_v5}"
 SOURCE_LTSN_MANIFEST="${SOURCE_LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
 SOURCE_LTSN_SPLIT_MANIFEST="${SOURCE_LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
 LTSN_MANIFEST="${LTSN_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/ltsn_manifest_v3.csv}"
@@ -187,6 +188,55 @@ augment_on_policy() {
     --resume
 }
 
+augment_v5() {
+  : "${ACE_MODEL_SHA256:?Set ACE_MODEL_SHA256 to the 64-hex model tree digest}"
+  : "${VAE_SHA256:?Set VAE_SHA256 to the 64-hex VAE tree digest}"
+  local ensemble="${V5_DIRECTION_ENSEMBLE_MANIFEST:-${RUN_ROOT}/models/ensemble_manifest.json}"
+  [[ -f "${ensemble}" ]] || {
+    echo "A frozen V4 ensemble is required for V5 direction generation: ${ensemble}" >&2
+    exit 3
+  }
+  ACESTEP_DEVICE="${AUGMENT_DEVICE:-cuda:0}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_training_augmentation.py" \
+    --root "${PROJECT_ROOT}" \
+    --source-manifest "${SOURCE_LTSN_MANIFEST}" \
+    --source-split-manifest "${SOURCE_LTSN_SPLIT_MANIFEST}" \
+    --ace-config "${PROJECT_ROOT}/configs/ace_rerank_180s.toml" \
+    --fingerprint "${FINGERPRINT}" \
+    --output-dir "${V5_AUGMENTATION_DIR}" \
+    --ace-model-sha256 "${ACE_MODEL_SHA256}" \
+    --vae-sha256 "${VAE_SHA256}" \
+    --local-mode symmetric_on_policy \
+    --on-policy-ensemble-manifest "${ensemble}" \
+    --on-policy-rms-ratios 0.0025 0.005 \
+    --trajectories-per-prompt "${V5_TRAJECTORIES_PER_PROMPT:-4}" \
+    --v5-train-anchor-count "${V5_TRAIN_ANCHORS:-512}" \
+    --v5-development-anchor-count "${V5_DEVELOPMENT_ANCHORS:-128}" \
+    --ood-per-prompt "${AUGMENT_OOD_PER_PROMPT:-1}" \
+    --evaluation-ood-per-prompt "${AUGMENT_EVALUATION_OOD_PER_PROMPT:-1}" \
+    --workers "${AUGMENT_EXACT_WORKERS:-8}" \
+    --exact-batch-size "${AUGMENT_EXACT_BATCH_SIZE:-256}" \
+    --materialize-mode "${MATERIALIZE_MODE:-auto}" \
+    --device "${AUGMENT_DEVICE:-cuda:0}" \
+    --resume
+}
+
+train_v5() {
+  LTSN_MANIFEST="${V5_AUGMENTATION_DIR}/ltsn_manifest_v5.csv" \
+  LTSN_SPLIT_MANIFEST="${V5_AUGMENTATION_DIR}/split_manifest_v5.json" \
+  CONFIG="${V5_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v5.toml}" \
+  MODEL_DIR="${V5_MODEL_DIR:-${RUN_ROOT}/models_v5}" \
+    train
+}
+
+train_v5_screen() {
+  V5_CONFIG="${PROJECT_ROOT}/configs/ltsn_training_v5_screen.toml" \
+  V5_MODEL_DIR="${V5_SCREEN_MODEL_DIR:-${RUN_ROOT}/models_v5_screen}" \
+  TRAIN_ENGINEERING_SMOKE=1 \
+  TRAIN_DEVICES= \
+    train_v5
+}
+
 train() {
   [[ -f "${SURROGATE_TRAINING_GATE}" ]] || { echo "Passed ltsn_surrogate_training_v1 gate is required: ${SURROGATE_TRAINING_GATE}" >&2; exit 3; }
   local -a train_device_args
@@ -197,6 +247,10 @@ train() {
   else
     train_device_args=(--device "${TRAIN_DEVICE:-cuda:0}")
   fi
+  local -a engineering_args=()
+  if [[ "${TRAIN_ENGINEERING_SMOKE:-0}" == "1" ]]; then
+    engineering_args=(--engineering-smoke)
+  fi
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/train_path_homology_surrogate.py" \
     --fingerprint "${FINGERPRINT}" \
     --manifest "${LTSN_MANIFEST}" \
@@ -204,6 +258,7 @@ train() {
     --config "${CONFIG}" \
     --output-dir "${MODEL_DIR}" \
     --surrogate-training-gate "${SURROGATE_TRAINING_GATE}" \
+    "${engineering_args[@]}" \
     "${train_device_args[@]}"
 }
 
@@ -384,7 +439,10 @@ case "${STAGE}" in
   labels) labels ;;
   augment-training) augment_training ;;
   augment-on-policy) augment_on_policy ;;
+  augment-v5) augment_v5 ;;
   train) train ;;
+  train-v5) train_v5 ;;
+  train-v5-screen) train_v5_screen ;;
   calibrate) calibrate ;;
   calibrate-ood-ablation) calibrate_ood_ablation ;;
   development-generate) development_generate ;;
@@ -397,5 +455,5 @@ case "${STAGE}" in
   guidance-development) guidance_development ;;
   qualify) qualify ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|train|calibrate|calibrate-ood-ablation|development-generate|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-evidence|development-finalize|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|calibrate|calibrate-ood-ablation|development-generate|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-evidence|development-finalize|guidance-development|qualify|guidance-confirmation}" >&2; exit 2 ;;
 esac

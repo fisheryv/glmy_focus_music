@@ -37,11 +37,14 @@ from generation.ltsn_training import (
 )
 from generation.ltsn_training_augmentation import (
     _augmentation_plan,
+    _central_direction_evidence,
     _evaluation_ood_plan,
     _on_policy_plan,
+    _v5_step_quotas,
+    _v5_symmetric_plan,
     _write_augmentation_trajectory_manifest,
 )
-from generation.ltsn_losses import focus_band_classification_loss
+from generation.ltsn_losses import central_band_derivative_loss, focus_band_classification_loss
 from generation.path_homology_surrogate import LTSNConfig
 from generation.path_homology_exact_scorer import ExactPathHomologyScorer
 
@@ -57,6 +60,9 @@ def _snapshot(
     anchor: str = "",
     coordinates: tuple[float, ...] = (0.0,) * 18,
     ood_label: float = 0.0,
+    direction_group: str = "",
+    direction_sign: float = 0.0,
+    direction_rms: float = 0.0,
 ) -> LTSNSnapshot:
     return LTSNSnapshot(
         sample_id=sample_id,
@@ -73,6 +79,9 @@ def _snapshot(
         is_final=step == 8,
         exact_label_table_sha256="b" * 64,
         local_anchor_sample_id=anchor,
+        local_direction_group_id=direction_group,
+        local_direction_sign=direction_sign,
+        local_direction_rms_ratio=direction_rms,
     )
 
 
@@ -229,6 +238,97 @@ def test_on_policy_plan_uses_all_frozen_rms_ratios_and_preserves_split() -> None
     assert {item["kind"] for item in planned} == {"on_policy_direction"}
     assert {item["split"] for item in planned} == {"train"}
     assert len({item["sample_id"] for item in planned}) == 3
+
+
+def test_v5_plan_has_frozen_quotas_and_symmetric_rms_pairs() -> None:
+    assert _v5_step_quotas(512) == {4: 256, 5: 128, 6: 128}
+    assert _v5_step_quotas(128) == {4: 64, 5: 32, 6: 32}
+    anchor = _snapshot("anchor", "trajectory", 4)
+    descriptions = {"anchor": {"gradient_usable": True}}
+
+    planned = _v5_symmetric_plan([anchor], descriptions, (0.0025, 0.005))
+
+    assert len(planned) == 4
+    assert {item["kind"] for item in planned} == {"on_policy_symmetric"}
+    assert {item["rms_ratio"] for item in planned} == {0.0025, 0.005}
+    groups: dict[str, list[dict[str, object]]] = {}
+    for item in planned:
+        groups.setdefault(str(item["direction_group_id"]), []).append(item)
+    assert len(groups) == 2
+    assert all({float(item["sign"]) for item in rows} == {-1.0, 1.0} for rows in groups.values())
+
+
+def test_v5_central_evidence_and_loss_use_minus_plus_order() -> None:
+    evidence = _central_direction_evidence(
+        [
+            {
+                "sample_id": "minus",
+                "anchor_sample_id": "anchor",
+                "split": "train",
+                "step_number": 4,
+                "rms_ratio": 0.005,
+                "direction_group_id": "group",
+                "sign": -1.0,
+                "exact_band_loss_after": 0.09,
+                "proxy_band_loss_improvement": -0.01,
+            },
+            {
+                "sample_id": "plus",
+                "anchor_sample_id": "anchor",
+                "split": "train",
+                "step_number": 4,
+                "rms_ratio": 0.005,
+                "direction_group_id": "group",
+                "sign": 1.0,
+                "exact_band_loss_after": 0.04,
+                "proxy_band_loss_improvement": 0.04,
+            },
+        ]
+    )
+    assert evidence[0]["exact_derivative"] == pytest.approx(5.0)
+    assert evidence[0]["proxy_derivative"] == pytest.approx(5.0)
+
+    pairs = torch.tensor([[0, 1]])
+    rms = torch.tensor([0.005])
+    exact = torch.tensor([1.7, 1.8])
+    aligned = central_band_derivative_loss(
+        torch.tensor([1.7, 1.8]), exact, pairs, rms, focus_band_threshold=2.0
+    )
+    reversed_loss = central_band_derivative_loss(
+        torch.tensor([1.8, 1.7]), exact, pairs, rms, focus_band_threshold=2.0
+    )
+    assert aligned < reversed_loss
+
+
+def test_prompt_sampler_keeps_v5_anchor_and_four_perturbations_together() -> None:
+    records = [_snapshot("anchor", "trajectory", 4)]
+    for rms_tag, rms in (("25", 0.0025), ("50", 0.005)):
+        group = f"group_{rms_tag}"
+        records.extend(
+            [
+                _snapshot(
+                    f"{group}_minus",
+                    f"{group}_minus",
+                    4,
+                    anchor="anchor",
+                    direction_group=group,
+                    direction_sign=-1.0,
+                    direction_rms=rms,
+                ),
+                _snapshot(
+                    f"{group}_plus",
+                    f"{group}_plus",
+                    4,
+                    anchor="anchor",
+                    direction_group=group,
+                    direction_sign=1.0,
+                    direction_rms=rms,
+                ),
+            ]
+        )
+    batches = list(PromptGroupedBatchSampler(records, batch_size=8, seed=7))
+    assert len(batches) == 1
+    assert set(batches[0]) == set(range(5))
 
 
 def test_evaluation_ood_is_prompt_held_out_and_uses_unseen_transforms() -> None:

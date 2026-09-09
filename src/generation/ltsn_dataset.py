@@ -37,6 +37,9 @@ class LTSNSnapshot:
     is_final: bool
     exact_label_table_sha256: str
     local_anchor_sample_id: str = ""
+    local_direction_group_id: str = ""
+    local_direction_sign: float = 0.0
+    local_direction_rms_ratio: float = 0.0
 
 
 def _parse_bool(value: str) -> bool:
@@ -76,6 +79,20 @@ def read_ltsn_manifest(path: Path, contract: FingerprintContract) -> list[LTSNSn
                 "exact_label_table_sha256", ""
             ):
                 raise LTSNContractError("exact label table is missing or hash-mismatched")
+            direction_group_id = raw.get("local_direction_group_id", "").strip()
+            direction_sign = float(raw.get("local_direction_sign") or 0.0)
+            direction_rms_ratio = float(raw.get("local_direction_rms_ratio") or 0.0)
+            if direction_group_id:
+                if direction_sign not in {-1.0, 1.0} or not (
+                    math.isfinite(direction_rms_ratio) and direction_rms_ratio > 0
+                ):
+                    raise LTSNContractError(
+                        "central direction rows require sign -1/+1 and positive finite RMS"
+                    )
+            elif direction_sign != 0.0 or direction_rms_ratio != 0.0:
+                raise LTSNContractError(
+                    "central direction metadata requires a non-empty direction group"
+                )
             rows.append(
                 LTSNSnapshot(
                     sample_id=raw["sample_id"],
@@ -92,10 +109,38 @@ def read_ltsn_manifest(path: Path, contract: FingerprintContract) -> list[LTSNSn
                     is_final=is_final,
                     exact_label_table_sha256=raw["exact_label_table_sha256"].lower(),
                     local_anchor_sample_id=raw.get("local_anchor_sample_id", "").strip(),
+                    local_direction_group_id=direction_group_id,
+                    local_direction_sign=direction_sign,
+                    local_direction_rms_ratio=direction_rms_ratio,
                 )
             )
     if not rows:
         raise LTSNContractError("LTSN manifest is empty")
+    direction_groups: dict[str, list[LTSNSnapshot]] = {}
+    for row in rows:
+        if row.local_direction_group_id:
+            direction_groups.setdefault(row.local_direction_group_id, []).append(row)
+    for group_id, members in direction_groups.items():
+        if len(members) != 2 or {member.local_direction_sign for member in members} != {
+            -1.0,
+            1.0,
+        }:
+            raise LTSNContractError(f"central direction group is not a complete pair: {group_id}")
+        if (
+            len(
+                {
+                    (
+                        member.local_anchor_sample_id,
+                        member.split,
+                        member.step_number,
+                        member.local_direction_rms_ratio,
+                    )
+                    for member in members
+                }
+            )
+            != 1
+        ):
+            raise LTSNContractError(f"central direction group metadata differs: {group_id}")
     validate_group_splits(rows)
     if len({row.exact_label_table_sha256 for row in rows}) != 1:
         raise LTSNContractError("manifest mixes exact label tables")
@@ -143,6 +188,11 @@ class LTSNSnapshotDataset(Dataset[dict[str, Tensor | str]]):
             "focus_logit": torch.tensor(record.focus_logit, dtype=torch.float32),
             "ood_label": torch.tensor(record.ood_label, dtype=torch.float32),
             "local_anchor_sample_id": record.local_anchor_sample_id,
+            "local_direction_group_id": record.local_direction_group_id,
+            "local_direction_sign": torch.tensor(record.local_direction_sign, dtype=torch.float32),
+            "local_direction_rms_ratio": torch.tensor(
+                record.local_direction_rms_ratio, dtype=torch.float32
+            ),
         }
 
 
@@ -160,11 +210,25 @@ def collate_ltsn_batch(items: Sequence[dict[str, Tensor | str]]) -> dict[str, ob
         assert isinstance(latent, Tensor)
         batch[index, : latent.shape[0]] = latent
         mask[index, : latent.shape[0]] = True
-    tensor_keys = ("timestep", "step_number", "coordinates", "focus_logit", "ood_label")
+    tensor_keys = (
+        "timestep",
+        "step_number",
+        "coordinates",
+        "focus_logit",
+        "ood_label",
+        "local_direction_sign",
+        "local_direction_rms_ratio",
+    )
     result: dict[str, object] = {"latent": batch, "attention_mask": mask}
     for key in tensor_keys:
         result[key] = torch.stack([item[key] for item in items])  # type: ignore[list-item]
-    for key in ("sample_id", "prompt_id", "trajectory_id", "local_anchor_sample_id"):
+    for key in (
+        "sample_id",
+        "prompt_id",
+        "trajectory_id",
+        "local_anchor_sample_id",
+        "local_direction_group_id",
+    ):
         result[key] = [str(item[key]) for item in items]
     return result
 

@@ -178,11 +178,15 @@ class _OnPolicyDirectionProvider:
         )
         return description
 
-    def perturb(self, anchor: LTSNSnapshot, rms_ratio: float) -> tuple[np.ndarray, dict[str, Any]]:
+    def perturb(
+        self, anchor: LTSNSnapshot, rms_ratio: float, *, sign: float = 1.0
+    ) -> tuple[np.ndarray, dict[str, Any]]:
+        if sign not in {-1.0, 1.0}:
+            raise ValueError("on-policy perturbation sign must be -1 or +1")
         description = self.describe(anchor)
         base_update = self._cache[anchor.sample_id][0]
         latent = np.load(anchor.latent_path, allow_pickle=False).astype(np.float32, copy=False)
-        result = latent + float(rms_ratio) * base_update
+        result = latent + float(sign) * float(rms_ratio) * base_update
         if not np.isfinite(result).all():
             raise LTSNContractError("on-policy augmentation produced NaN or Inf")
         torch = self.torch
@@ -201,6 +205,7 @@ class _OnPolicyDirectionProvider:
         diagnostics = {
             **description,
             "rms_ratio": float(rms_ratio),
+            "sign": float(sign),
             "proxy_focus_logit_after": after_score,
             "proxy_band_loss_improvement": (before_loss - max(0.0, threshold - after_score) ** 2),
         }
@@ -288,6 +293,192 @@ def _on_policy_plan(
                 }
             )
     return planned
+
+
+def _v5_step_quotas(total: int) -> dict[int, int]:
+    if total < 4 or total % 4:
+        raise ValueError("V5 anchor counts must be positive multiples of four")
+    return {4: total // 2, 5: total // 4, 6: total // 4}
+
+
+def _select_v5_symmetric_anchors(
+    records: list[LTSNSnapshot],
+    provider: _OnPolicyDirectionProvider,
+    *,
+    trajectories_per_prompt: int,
+    train_anchor_count: int,
+    development_anchor_count: int,
+) -> tuple[list[LTSNSnapshot], dict[str, dict[str, Any]]]:
+    """Select exact-OOB anchors with frozen 50/25/25 correction-step quotas."""
+
+    quotas = {
+        "train": _v5_step_quotas(train_anchor_count),
+        "development": _v5_step_quotas(development_anchor_count),
+    }
+    threshold = float(provider.contract.focus_band_threshold)
+    grouped: dict[tuple[str, int, str], list[LTSNSnapshot]] = defaultdict(list)
+    trajectories: dict[tuple[str, str], set[str]] = defaultdict(set)
+    for record in sorted(records, key=lambda item: (item.split, item.prompt_id, item.sample_id)):
+        if (
+            record.split not in quotas
+            or record.is_final
+            or record.step_number not in {4, 5, 6}
+            or record.local_anchor_sample_id
+            or record.focus_logit >= threshold
+        ):
+            continue
+        trajectory_key = (record.split, record.prompt_id)
+        allowed = trajectories[trajectory_key]
+        if record.trajectory_id not in allowed:
+            if len(allowed) >= trajectories_per_prompt:
+                continue
+            allowed.add(record.trajectory_id)
+        grouped[(record.split, record.step_number, record.prompt_id)].append(record)
+
+    selected: list[LTSNSnapshot] = []
+    descriptions: dict[str, dict[str, Any]] = {}
+    for split in ("train", "development"):
+        prompt_ids = sorted(
+            {prompt_id for candidate_split, _, prompt_id in grouped if candidate_split == split}
+        )
+        if not prompt_ids:
+            raise LTSNContractError(f"V5 has no exact-OOB candidate prompts in {split}")
+        for step, quota in quotas[split].items():
+            candidates = {
+                prompt_id: sorted(
+                    grouped.get((split, step, prompt_id), ()),
+                    key=lambda item: (
+                        abs(float(item.focus_logit) - threshold),
+                        item.trajectory_id,
+                        item.sample_id,
+                    ),
+                )
+                for prompt_id in prompt_ids
+            }
+            offsets = {prompt_id: 0 for prompt_id in prompt_ids}
+            accepted: list[LTSNSnapshot] = []
+            while len(accepted) < quota:
+                progressed = False
+                for prompt_id in prompt_ids:
+                    values = candidates[prompt_id]
+                    while offsets[prompt_id] < len(values):
+                        candidate = values[offsets[prompt_id]]
+                        offsets[prompt_id] += 1
+                        progressed = True
+                        description = provider.describe(candidate)
+                        descriptions[candidate.sample_id] = description
+                        if description["gradient_usable"]:
+                            accepted.append(candidate)
+                            break
+                    if len(accepted) == quota:
+                        break
+                if not progressed:
+                    raise LTSNContractError(
+                        f"V5 cannot satisfy {split} step-{step} anchor quota {quota}; "
+                        f"accepted {len(accepted)}"
+                    )
+            selected.extend(accepted)
+    if len({anchor.sample_id for anchor in selected}) != len(selected):
+        raise LTSNContractError("V5 selected a duplicate symmetric anchor")
+    provider.retain({anchor.sample_id for anchor in selected})
+    return selected, descriptions
+
+
+def _v5_symmetric_plan(
+    anchors: list[LTSNSnapshot],
+    descriptions: dict[str, dict[str, Any]],
+    rms_ratios: tuple[float, ...],
+) -> list[dict[str, Any]]:
+    planned: list[dict[str, Any]] = []
+    for anchor in anchors:
+        for rms_ratio in rms_ratios:
+            tag = int(round(rms_ratio * 10_000))
+            group_id = f"{anchor.sample_id}__v5_fd_r{tag:04d}"
+            for sign, sign_tag in ((-1.0, "minus"), (1.0, "plus")):
+                planned.append(
+                    {
+                        "sample_id": f"{group_id}__{sign_tag}",
+                        "anchor_sample_id": anchor.sample_id,
+                        "prompt_id": anchor.prompt_id,
+                        "step_number": anchor.step_number,
+                        "timestep": anchor.timestep,
+                        "kind": "on_policy_symmetric",
+                        "split": anchor.split,
+                        "seed": 0,
+                        "rms_ratio": rms_ratio,
+                        "sign": sign,
+                        "direction_group_id": group_id,
+                        "is_final": False,
+                        "anchor_diagnostics": descriptions[anchor.sample_id],
+                    }
+                )
+    return planned
+
+
+def _rank_average(values: np.ndarray) -> np.ndarray:
+    order = np.argsort(values, kind="mergesort")
+    ranks = np.empty(len(values), dtype=np.float64)
+    start = 0
+    while start < len(values):
+        end = start + 1
+        while end < len(values) and values[order[end]] == values[order[start]]:
+            end += 1
+        ranks[order[start:end]] = 0.5 * (start + end - 1)
+        start = end
+    return ranks
+
+
+def _central_direction_evidence(
+    local_evidence: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Pair V5 minus/plus exact labels into auditable central derivatives."""
+
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in local_evidence:
+        group_id = str(row.get("direction_group_id", ""))
+        if group_id:
+            grouped[group_id].append(row)
+    output: list[dict[str, Any]] = []
+    for group_id, rows in sorted(grouped.items()):
+        by_sign = {float(row["sign"]): row for row in rows}
+        if set(by_sign) != {-1.0, 1.0} or len(rows) != 2:
+            raise LTSNContractError(f"V5 direction group is not a minus/plus pair: {group_id}")
+        minus, plus = by_sign[-1.0], by_sign[1.0]
+        rms_ratio = float(minus["rms_ratio"])
+        if rms_ratio <= 0 or float(plus["rms_ratio"]) != rms_ratio:
+            raise LTSNContractError(f"V5 direction group has inconsistent RMS: {group_id}")
+        exact_derivative = (
+            float(minus["exact_band_loss_after"]) - float(plus["exact_band_loss_after"])
+        ) / (2.0 * rms_ratio)
+        minus_proxy_improvement = minus.get("proxy_band_loss_improvement")
+        plus_proxy_improvement = plus.get("proxy_band_loss_improvement")
+        proxy_derivative = None
+        if minus_proxy_improvement is not None and plus_proxy_improvement is not None:
+            # before_loss cancels: L(-d)-L(+d) = I(+d)-I(-d).
+            proxy_derivative = (float(plus_proxy_improvement) - float(minus_proxy_improvement)) / (
+                2.0 * rms_ratio
+            )
+        output.append(
+            {
+                "direction_group_id": group_id,
+                "anchor_sample_id": minus["anchor_sample_id"],
+                "split": minus["split"],
+                "step_number": minus["step_number"],
+                "rms_ratio": rms_ratio,
+                "minus_sample_id": minus["sample_id"],
+                "plus_sample_id": plus["sample_id"],
+                "exact_loss_minus": minus["exact_band_loss_after"],
+                "exact_loss_plus": plus["exact_band_loss_after"],
+                "exact_derivative": exact_derivative,
+                "proxy_derivative": proxy_derivative,
+                "direction_agrees": (
+                    None
+                    if proxy_derivative is None or abs(exact_derivative) < 1e-12
+                    else bool(np.sign(proxy_derivative) == np.sign(exact_derivative))
+                ),
+            }
+        )
+    return output
 
 
 def _select_anchors(
@@ -475,8 +666,16 @@ def _materialize_augmentation(
     elif item["kind"] == "on_policy_direction":
         if on_policy_provider is None:
             raise LTSNContractError("on-policy augmentation requires a frozen ensemble")
+        # Preserve the V4 contract: the provider's descent direction is +d;
+        # the historical plan sign field was metadata and was not applied.
         augmented, on_policy_diagnostics = on_policy_provider.perturb(
             anchor, float(item["rms_ratio"])
+        )
+    elif item["kind"] == "on_policy_symmetric":
+        if on_policy_provider is None:
+            raise LTSNContractError("symmetric on-policy augmentation requires a frozen ensemble")
+        augmented, on_policy_diagnostics = on_policy_provider.perturb(
+            anchor, float(item["rms_ratio"]), sign=float(item["sign"])
         )
     elif item["kind"] == "ood_zero":
         augmented = np.zeros_like(latent)
@@ -557,7 +756,8 @@ def _write_augmentation_trajectory_manifest(
                 "training_augmentation_kind": item["kind"],
                 "local_anchor_sample_id": (
                     item["anchor_sample_id"]
-                    if item["kind"] in {"local_direction", "on_policy_direction"}
+                    if item["kind"]
+                    in {"local_direction", "on_policy_direction", "on_policy_symmetric"}
                     else ""
                 ),
             }
@@ -591,6 +791,8 @@ def build_ltsn_training_augmentation(
     local_mode: str = "random",
     on_policy_ensemble_manifest: Path | None = None,
     on_policy_rms_ratios: tuple[float, ...] = (0.0025, 0.005, 0.01),
+    v5_train_anchor_count: int = 512,
+    v5_development_anchor_count: int = 128,
 ) -> dict[str, Any]:
     """Append train-only local/OOD and prompt-held-out evaluation OOD records."""
 
@@ -603,12 +805,17 @@ def build_ltsn_training_augmentation(
         raise ValueError("augmentation counts are invalid")
     if rms_ratio not in {0.0025, 0.005, 0.01}:
         raise ValueError("rms_ratio must be 0.0025, 0.005, or 0.01")
-    if local_mode not in {"random", "on_policy"}:
-        raise ValueError("local_mode must be random or on_policy")
+    if local_mode not in {"random", "on_policy", "symmetric_on_policy"}:
+        raise ValueError("local_mode must be random, on_policy, or symmetric_on_policy")
     if not on_policy_rms_ratios or any(
         value not in {0.0025, 0.005, 0.01} for value in on_policy_rms_ratios
     ):
         raise ValueError("on-policy RMS ratios must use 0.0025, 0.005, or 0.01")
+    if local_mode == "symmetric_on_policy":
+        if tuple(sorted(set(on_policy_rms_ratios))) != (0.0025, 0.005):
+            raise ValueError("V5 symmetric on-policy RMS ratios must be 0.0025 and 0.005")
+        _v5_step_quotas(v5_train_anchor_count)
+        _v5_step_quotas(v5_development_anchor_count)
     if duration_seconds != 180.0:
         raise ValueError("exact LTSN training augmentation is frozen to 180 seconds")
     root = root.resolve()
@@ -633,7 +840,7 @@ def build_ltsn_training_augmentation(
         raise LTSNContractError("augmentation VAE hash differs from the source manifest")
     anchors = _select_anchors(source_records, trajectories_per_prompt)
     on_policy_provider: _OnPolicyDirectionProvider | None = None
-    if local_mode == "on_policy":
+    if local_mode in {"on_policy", "symmetric_on_policy"}:
         if on_policy_ensemble_manifest is None or not on_policy_ensemble_manifest.is_file():
             raise LTSNContractError("on-policy augmentation requires --on-policy-ensemble-manifest")
         on_policy_provider = _OnPolicyDirectionProvider(
@@ -649,12 +856,26 @@ def build_ltsn_training_augmentation(
         source_families = {row.get("model_family", "") for row in source_rows}
         if source_families != {ensemble_metadata.get("model_family")}:
             raise LTSNContractError("on-policy ensemble uses a different model family")
-        on_policy_anchors, descriptions = _select_on_policy_anchors(
-            source_records, on_policy_provider, trajectories_per_prompt
-        )
-        planned = _on_policy_plan(
-            on_policy_anchors, descriptions, tuple(sorted(set(on_policy_rms_ratios)))
-        )
+        if local_mode == "symmetric_on_policy":
+            on_policy_anchors, descriptions = _select_v5_symmetric_anchors(
+                source_records,
+                on_policy_provider,
+                trajectories_per_prompt=trajectories_per_prompt,
+                train_anchor_count=v5_train_anchor_count,
+                development_anchor_count=v5_development_anchor_count,
+            )
+            planned = _v5_symmetric_plan(
+                on_policy_anchors,
+                descriptions,
+                tuple(sorted(set(on_policy_rms_ratios))),
+            )
+        else:
+            on_policy_anchors, descriptions = _select_on_policy_anchors(
+                source_records, on_policy_provider, trajectories_per_prompt
+            )
+            planned = _on_policy_plan(
+                on_policy_anchors, descriptions, tuple(sorted(set(on_policy_rms_ratios)))
+            )
         # OOD examples are independent of the local-gradient source.  Retain
         # deterministic train OOD coverage at every correction step.
         planned.extend(
@@ -683,15 +904,18 @@ def build_ltsn_training_augmentation(
             seed=seed,
         )
     )
-    artifact_version = 4 if local_mode == "on_policy" else 3
+    planned_sample_ids = [str(item["sample_id"]) for item in planned]
+    if len(set(planned_sample_ids)) != len(planned_sample_ids):
+        raise LTSNContractError("training augmentation plan contains duplicate sample IDs")
+    artifact_version = {"random": 3, "on_policy": 4, "symmetric_on_policy": 5}[local_mode]
     plan_path = output_dir / "training_augmentation_plan.json"
     plan = {
         "schema_version": artifact_version,
-        "scope": (
-            "on_policy_exact_local_and_step_matched_ood_v4"
-            if local_mode == "on_policy"
-            else "train_local_ood_and_heldout_evaluation_ood_v3"
-        ),
+        "scope": {
+            "random": "train_local_ood_and_heldout_evaluation_ood_v3",
+            "on_policy": "on_policy_exact_local_and_step_matched_ood_v4",
+            "symmetric_on_policy": "symmetric_exact_finite_difference_v5",
+        }[local_mode],
         "source_manifest_sha256": sha256_file(source_manifest_path),
         "source_split_manifest_sha256": sha256_file(source_split_manifest_path),
         "ace_config_sha256": sha256_file(ace_config_path),
@@ -703,6 +927,14 @@ def build_ltsn_training_augmentation(
         "rms_ratio": rms_ratio,
         "local_mode": local_mode,
         "on_policy_rms_ratios": list(on_policy_rms_ratios),
+        **(
+            {
+                "v5_train_anchor_count": v5_train_anchor_count,
+                "v5_development_anchor_count": v5_development_anchor_count,
+            }
+            if local_mode == "symmetric_on_policy"
+            else {}
+        ),
         "on_policy_ensemble_manifest_sha256": (
             "" if on_policy_ensemble_manifest is None else sha256_file(on_policy_ensemble_manifest)
         ),
@@ -787,7 +1019,11 @@ def build_ltsn_training_augmentation(
             [float(descriptor["chroma_loop_score"])],
         )
         coordinates_json = json.dumps(score.coordinates[0].tolist(), separators=(",", ":"))
-        if item["kind"] in {"local_direction", "on_policy_direction"}:
+        if item["kind"] in {
+            "local_direction",
+            "on_policy_direction",
+            "on_policy_symmetric",
+        }:
             anchor_focus = float(source_by_sample[item["anchor_sample_id"]]["focus_logit"])
             threshold = float(contract.focus_band_threshold)
             exact_before = max(0.0, threshold - anchor_focus) ** 2
@@ -799,6 +1035,14 @@ def build_ltsn_training_augmentation(
                     "split": item["split"],
                     "step_number": item["step_number"],
                     "rms_ratio": item["rms_ratio"],
+                    **(
+                        {
+                            "direction_group_id": item["direction_group_id"],
+                            "sign": item["sign"],
+                        }
+                        if item["kind"] == "on_policy_symmetric"
+                        else {}
+                    ),
                     "exact_band_loss_before": exact_before,
                     "exact_band_loss_after": exact_after,
                     "exact_band_loss_improvement": exact_before - exact_after,
@@ -845,13 +1089,21 @@ def build_ltsn_training_augmentation(
                 "is_final": str(bool(item.get("is_final", False))).lower(),
                 "local_anchor_sample_id": (
                     item["anchor_sample_id"]
-                    if item["kind"] in {"local_direction", "on_policy_direction"}
+                    if item["kind"]
+                    in {"local_direction", "on_policy_direction", "on_policy_symmetric"}
                     else ""
                 ),
+                "local_direction_group_id": item.get("direction_group_id", ""),
+                "local_direction_sign": item.get("sign", 0.0),
+                "local_direction_rms_ratio": item.get("rms_ratio", 0.0),
                 "training_augmentation_kind": item["kind"],
             }
         )
         augmented_rows.append(augmented)
+
+    central_evidence = (
+        _central_direction_evidence(local_evidence) if local_mode == "symmetric_on_policy" else []
+    )
 
     exact_label_path = output_dir / f"exact_snapshot_labels_v{artifact_version}.csv"
     write_csv_atomic(
@@ -861,7 +1113,14 @@ def build_ltsn_training_augmentation(
     label_sha256 = sha256_file(exact_label_path)
     manifest_path = output_dir / f"ltsn_manifest_v{artifact_version}.csv"
     manifest_columns = list(source_rows[0])
-    for column in ("local_anchor_sample_id", "training_augmentation_kind"):
+    augmentation_columns = ["local_anchor_sample_id", "training_augmentation_kind"]
+    if local_mode == "symmetric_on_policy":
+        augmentation_columns[1:1] = [
+            "local_direction_group_id",
+            "local_direction_sign",
+            "local_direction_rms_ratio",
+        ]
+    for column in augmentation_columns:
         if column not in manifest_columns:
             manifest_columns.append(column)
     for row in source_rows:
@@ -890,7 +1149,8 @@ def build_ltsn_training_augmentation(
         "source_samples": len(source_rows),
         "augmentation_samples": len(augmented_rows),
         "local_direction_samples": sum(
-            item["kind"] in {"local_direction", "on_policy_direction"} for item in planned
+            item["kind"] in {"local_direction", "on_policy_direction", "on_policy_symmetric"}
+            for item in planned
         ),
         "ood_samples": sum(item["kind"].startswith("ood_") for item in planned),
         "evaluation_ood_samples": sum(
@@ -913,6 +1173,53 @@ def build_ltsn_training_augmentation(
         "local_exact_out_of_band_anchors": sum(
             row["exact_band_loss_before"] > 0 for row in local_evidence
         ),
+        **(
+            {
+                "symmetric_direction_groups": len(central_evidence),
+                "symmetric_anchors_by_split": {
+                    split: len(
+                        {
+                            row["anchor_sample_id"]
+                            for row in central_evidence
+                            if row["split"] == split
+                        }
+                    )
+                    for split in ("train", "development")
+                },
+                "symmetric_groups_by_split": {
+                    split: sum(row["split"] == split for row in central_evidence)
+                    for split in ("train", "development")
+                },
+                "symmetric_groups_by_step": {
+                    str(step): sum(int(row["step_number"]) == step for row in central_evidence)
+                    for step in (4, 5, 6)
+                },
+                "symmetric_anchors_by_step_and_split": {
+                    split: {
+                        str(step): len(
+                            {
+                                row["anchor_sample_id"]
+                                for row in central_evidence
+                                if row["split"] == split and int(row["step_number"]) == step
+                            }
+                        )
+                        for step in (4, 5, 6)
+                    }
+                    for split in ("train", "development")
+                },
+                "exact_derivative_positive": sum(
+                    float(row["exact_derivative"]) > 1e-12 for row in central_evidence
+                ),
+                "exact_derivative_tied": sum(
+                    abs(float(row["exact_derivative"])) <= 1e-12 for row in central_evidence
+                ),
+                "exact_derivative_negative": sum(
+                    float(row["exact_derivative"]) < -1e-12 for row in central_evidence
+                ),
+            }
+            if local_mode == "symmetric_on_policy"
+            else {}
+        ),
         "plan_sha256": plan_sha256,
         "trajectory_manifest_sha256": sha256_file(trajectory_manifest_path),
         "descriptor_table_sha256": sha256_file(descriptor_path),
@@ -927,6 +1234,14 @@ def build_ltsn_training_augmentation(
                 "rms_ratio": rms_ratio,
                 "local_mode": local_mode,
                 "on_policy_rms_ratios": list(on_policy_rms_ratios),
+                **(
+                    {
+                        "v5_train_anchor_count": v5_train_anchor_count,
+                        "v5_development_anchor_count": v5_development_anchor_count,
+                    }
+                    if local_mode == "symmetric_on_policy"
+                    else {}
+                ),
                 "ood_per_prompt": ood_per_prompt,
                 "evaluation_ood_per_prompt": evaluation_ood_per_prompt,
                 "seed": seed,
@@ -939,5 +1254,36 @@ def build_ltsn_training_augmentation(
         summary["local_direction_exact_evidence_sha256"] = sha256_file(
             output_dir / "local_direction_exact_evidence.csv"
         )
+    if central_evidence:
+        central_path = output_dir / "central_direction_exact_evidence.csv"
+        write_csv_atomic(central_path, central_evidence)
+        informative = [
+            row
+            for row in central_evidence
+            if abs(float(row["exact_derivative"])) > 1e-12 and row["proxy_derivative"] is not None
+        ]
+        summary["central_direction_exact_evidence_sha256"] = sha256_file(central_path)
+        summary["proxy_exact_derivative_direction_agreement"] = (
+            0.0
+            if not informative
+            else float(np.mean([bool(row["direction_agrees"]) for row in informative]))
+        )
+        if len(informative) >= 2:
+            exact_values = np.asarray(
+                [float(row["exact_derivative"]) for row in informative], dtype=np.float64
+            )
+            proxy_values = np.asarray(
+                [float(row["proxy_derivative"]) for row in informative], dtype=np.float64
+            )
+            exact_ranks = _rank_average(exact_values)
+            proxy_ranks = _rank_average(proxy_values)
+            if np.std(exact_ranks) > 0 and np.std(proxy_ranks) > 0:
+                summary["proxy_exact_derivative_spearman"] = float(
+                    np.corrcoef(exact_ranks, proxy_ranks)[0, 1]
+                )
+            else:
+                summary["proxy_exact_derivative_spearman"] = 0.0
+        else:
+            summary["proxy_exact_derivative_spearman"] = 0.0
     write_json_atomic(output_dir / "training_augmentation_summary.json", summary)
     return summary

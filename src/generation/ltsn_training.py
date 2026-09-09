@@ -289,6 +289,46 @@ def _local_pair_indices(
     return None if not pairs else torch.tensor(pairs, dtype=torch.long, device=device)
 
 
+def _central_direction_pairs(
+    group_ids: Sequence[str],
+    signs: Tensor,
+    rms_ratios: Tensor,
+    device: torch.device,
+    valid_mask: Tensor | None = None,
+) -> tuple[Tensor | None, Tensor | None]:
+    """Return ordered ``(-d,+d)`` pairs and their shared RMS values."""
+
+    grouped: dict[str, list[int]] = defaultdict(list)
+    for index, group_id in enumerate(group_ids):
+        if not group_id:
+            continue
+        grouped[group_id].append(index)
+    pairs: list[tuple[int, int]] = []
+    pair_rms: list[float] = []
+    signs_cpu = signs.detach().float().cpu().tolist()
+    rms_cpu = rms_ratios.detach().float().cpu().tolist()
+    for group_id, indices in sorted(grouped.items()):
+        if valid_mask is not None and not all(bool(valid_mask[index].item()) for index in indices):
+            continue
+        by_sign = {float(signs_cpu[index]): index for index in indices}
+        if set(by_sign) != {-1.0, 1.0} or len(indices) != 2:
+            raise LTSNContractError(
+                f"central direction batch is missing a minus/plus member: {group_id}"
+            )
+        minus, plus = by_sign[-1.0], by_sign[1.0]
+        rms = float(rms_cpu[minus])
+        if rms <= 0 or not math.isclose(rms, float(rms_cpu[plus]), rel_tol=0, abs_tol=1e-9):
+            raise LTSNContractError(f"central direction pair has inconsistent RMS: {group_id}")
+        pairs.append((minus, plus))
+        pair_rms.append(rms)
+    if not pairs:
+        return None, None
+    return (
+        torch.tensor(pairs, dtype=torch.long, device=device),
+        torch.tensor(pair_rms, dtype=torch.float32, device=device),
+    )
+
+
 def _training_target_contract(
     records: Sequence[LTSNSnapshot],
     model_config: LTSNConfig,
@@ -389,6 +429,13 @@ def _loss(
     use_band_improvement_local_loss: bool = False,
 ) -> dict[str, Tensor]:
     pair_indices = _pair_indices(batch["prompt_id"], device, batch["ood_label"] < 0.5)
+    central_pairs, central_rms = _central_direction_pairs(
+        batch["local_direction_group_id"],
+        batch["local_direction_sign"],
+        batch["local_direction_rms_ratio"],
+        device,
+        batch["ood_label"] < 0.5,
+    )
     result = ltsn_loss(
         output,
         batch["coordinates"],
@@ -401,6 +448,8 @@ def _loss(
             device,
             batch["ood_label"] < 0.5,
         ),
+        central_pair_indices=central_pairs,
+        central_pair_rms=central_rms,
         coordinate_scale=torch.tensor(
             target_contract["coordinate_scale"], device=device, dtype=torch.float32
         ),
@@ -493,9 +542,17 @@ def predict_dataset(
             ("focus_logit", batch["focus_logit"]),
             ("ood_label", batch["ood_label"]),
             ("step_number", batch["step_number"]),
+            ("local_direction_sign", batch["local_direction_sign"]),
+            ("local_direction_rms_ratio", batch["local_direction_rms_ratio"]),
         ):
             collected[name].append(tensor.detach().float().cpu().numpy())
-        for name in ("sample_id", "prompt_id", "trajectory_id", "local_anchor_sample_id"):
+        for name in (
+            "sample_id",
+            "prompt_id",
+            "trajectory_id",
+            "local_anchor_sample_id",
+            "local_direction_group_id",
+        ):
             collected[name].extend(raw[name])
     return {
         name: (
@@ -554,6 +611,11 @@ def _development_objective(
     local_pair_count = 0
     local_direction_agreement = 0.0
     local_improvement_mae = 0.0
+    central_pair_count = 0
+    central_direction_agreement = 0.0
+    central_derivative_mae = 0.0
+    central_derivative_spearman = 0.0
+    central_by_step: dict[int, tuple[int, float]] = {}
     if focus_band_threshold is not None:
         sample_ids = list(prediction.get("sample_id", ()))
         local_anchor_ids = list(prediction.get("local_anchor_sample_id", ()))
@@ -584,6 +646,64 @@ def _development_objective(
                 local_improvement_mae = float(
                     np.mean(np.abs(exact_improvement - predicted_improvement))
                 )
+        group_ids = list(prediction.get("local_direction_group_id", ()))
+        signs = np.asarray(prediction.get("local_direction_sign", ()), dtype=float)
+        rms_values = np.asarray(prediction.get("local_direction_rms_ratio", ()), dtype=float)
+        steps = np.asarray(prediction.get("step_number", ()), dtype=int)
+        grouped: dict[str, list[int]] = defaultdict(list)
+        for index, group_id in enumerate(group_ids):
+            if group_id:
+                grouped[group_id].append(index)
+        exact_derivatives: list[float] = []
+        predicted_derivatives: list[float] = []
+        derivative_steps: list[int] = []
+        threshold = float(focus_band_threshold)
+        exact_loss = np.maximum(0.0, threshold - prediction["focus_logit"]) ** 2
+        predicted_loss = np.maximum(0.0, threshold - prediction["predicted_focus_logit"]) ** 2
+        for group_id, indices in sorted(grouped.items()):
+            if not all(prediction["ood_label"][index] < 0.5 for index in indices):
+                continue
+            by_sign = {float(signs[index]): index for index in indices}
+            if set(by_sign) != {-1.0, 1.0} or len(indices) != 2:
+                raise LTSNContractError(
+                    f"development central direction pair is incomplete: {group_id}"
+                )
+            minus, plus = by_sign[-1.0], by_sign[1.0]
+            rms = float(rms_values[minus])
+            if rms <= 0 or not math.isclose(rms, float(rms_values[plus]), rel_tol=0, abs_tol=1e-9):
+                raise LTSNContractError(
+                    f"development central direction RMS is inconsistent: {group_id}"
+                )
+            exact_derivative = float((exact_loss[minus] - exact_loss[plus]) / (2.0 * rms))
+            if abs(exact_derivative) < 1e-4:
+                continue
+            predicted_derivative = float(
+                (predicted_loss[minus] - predicted_loss[plus]) / (2.0 * rms)
+            )
+            exact_derivatives.append(exact_derivative)
+            predicted_derivatives.append(predicted_derivative)
+            derivative_steps.append(int(steps[minus]))
+        if exact_derivatives:
+            exact_array = np.asarray(exact_derivatives, dtype=float)
+            predicted_array = np.asarray(predicted_derivatives, dtype=float)
+            central_pair_count = len(exact_derivatives)
+            central_direction_agreement = float(
+                np.mean(np.sign(exact_array) == np.sign(predicted_array))
+            )
+            central_derivative_mae = float(np.mean(np.abs(exact_array - predicted_array)))
+            central_derivative_spearman = spearman_correlation(exact_array, predicted_array)
+            for step in (4, 5, 6):
+                mask_step = np.asarray(derivative_steps) == step
+                if np.any(mask_step):
+                    central_by_step[step] = (
+                        int(np.count_nonzero(mask_step)),
+                        float(
+                            np.mean(
+                                np.sign(exact_array[mask_step])
+                                == np.sign(predicted_array[mask_step])
+                            )
+                        ),
+                    )
     if qualification_aligned:
         thresholds = (
             (focus_rho, 0.70),
@@ -598,9 +718,11 @@ def _development_objective(
         objective += 0.05 * score_error
         if local_pair_count:
             objective += max(0.0, 0.65 - local_direction_agreement)
+        if central_pair_count:
+            objective += max(0.0, 0.65 - central_direction_agreement)
     else:
         objective = score_error + (1.0 - coordinate_median) + (1.0 - block_rho)
-    return {
+    result = {
         "objective": objective,
         "n_in_distribution": int(np.count_nonzero(in_distribution)),
         "score_mae": score_error,
@@ -614,7 +736,16 @@ def _development_objective(
         "local_improvement_pairs": local_pair_count,
         "local_direction_agreement": local_direction_agreement,
         "local_improvement_mae": local_improvement_mae,
+        "central_direction_pairs": central_pair_count,
+        "central_direction_agreement": central_direction_agreement,
+        "central_derivative_mae": central_derivative_mae,
+        "central_derivative_spearman": central_derivative_spearman,
     }
+    for step in (4, 5, 6):
+        count, agreement = central_by_step.get(step, (0, 0.0))
+        result[f"central_direction_step_{step}_pairs"] = count
+        result[f"central_direction_step_{step}_agreement"] = agreement
+    return result
 
 
 def _metadata(
@@ -763,6 +894,7 @@ def _train_seed(
         totals: list[float] = []
         component_totals: dict[str, list[float]] = defaultdict(list)
         local_pairs_seen = 0
+        central_pairs_seen = 0
         for batch_index, raw in enumerate(train_loader, start=1):
             batch = _to_device(raw, device)
             with torch.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=use_bf16):
@@ -783,6 +915,7 @@ def _train_seed(
             for name, value in losses.items():
                 component_totals[name].append(float(value.detach().cpu()))
             local_pairs_seen += sum(bool(value) for value in raw["local_anchor_sample_id"])
+            central_pairs_seen += len({value for value in raw["local_direction_group_id"] if value})
             if batch_index % accumulation == 0 or batch_index == len(train_loader):
                 torch.nn.utils.clip_grad_norm_(model.parameters(), training.gradient_clip_norm)
                 optimizer.step()
@@ -803,6 +936,7 @@ def _train_seed(
                     for name, values in sorted(component_totals.items())
                 },
                 "local_direction_pairs_seen": local_pairs_seen,
+                "central_direction_pairs_seen": central_pairs_seen,
                 "learning_rate": optimizer.param_groups[0]["lr"],
                 **development,
             }
@@ -909,6 +1043,12 @@ def train_ensemble(
     ):
         raise LTSNContractError(
             "local_direction loss requires exact-labelled local perturbation records"
+        )
+    if loss_weights.central_direction > 0 and not any(
+        row.get("local_direction_group_id", "").strip() for row in raw_rows
+    ):
+        raise LTSNContractError(
+            "central_direction loss requires V5 symmetric finite-difference records"
         )
     devices = _resolve_training_devices(training.seeds, device_name, device_names)
     for value in devices:
