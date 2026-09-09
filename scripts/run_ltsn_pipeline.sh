@@ -20,6 +20,10 @@ V5_OOD_ABLATION_CALIBRATION_PATH="${V5_OOD_ABLATION_CALIBRATION_PATH:-${RUN_ROOT
 V5_DEVELOPMENT_DIR="${V5_DEVELOPMENT_DIR:-${RUN_ROOT}/development_pairs_v5}"
 V5_GUIDANCE_DEVELOPMENT_PATH="${V5_GUIDANCE_DEVELOPMENT_PATH:-${RUN_ROOT}/guidance_development_v5.json}"
 V5_QUALIFICATION_PATH="${V5_QUALIFICATION_PATH:-${RUN_ROOT}/qualification_v5.json}"
+V51_TRAINING_VIEW_DIR="${V51_TRAINING_VIEW_DIR:-${RUN_ROOT}/training_augmentation_v51}"
+V51_MODEL_DIR="${V51_MODEL_DIR:-${RUN_ROOT}/models_v51}"
+V51_SCREEN_MODEL_DIR="${V51_SCREEN_MODEL_DIR:-${RUN_ROOT}/models_v51_screen}"
+V51_SCREEN_REPORT="${V51_SCREEN_REPORT:-${RUN_ROOT}/v51_screen_report.json}"
 SOURCE_LTSN_MANIFEST="${SOURCE_LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
 SOURCE_LTSN_SPLIT_MANIFEST="${SOURCE_LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
 LTSN_MANIFEST="${LTSN_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/ltsn_manifest_v3.csv}"
@@ -241,6 +245,50 @@ train_v5_screen() {
   TRAIN_ENGINEERING_SMOKE=1 \
   TRAIN_DEVICES= \
     train_v5
+}
+
+prepare_v51() {
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_v51_training_view.py" \
+    --source-manifest "${V5_AUGMENTATION_DIR}/ltsn_manifest_v5.csv" \
+    --source-split-manifest "${V5_AUGMENTATION_DIR}/split_manifest_v5.json" \
+    --central-evidence "${V5_AUGMENTATION_DIR}/central_direction_exact_evidence.csv" \
+    --output-dir "${V51_TRAINING_VIEW_DIR}" \
+    --minimum-abs-loss-separation "${V51_MINIMUM_ABS_LOSS_SEPARATION:-0.00001}"
+}
+
+train_v51_screen() {
+  LTSN_MANIFEST="${V51_TRAINING_VIEW_DIR}/ltsn_manifest_v51.csv" \
+  LTSN_SPLIT_MANIFEST="${V51_TRAINING_VIEW_DIR}/split_manifest_v51.json" \
+  CONFIG="${PROJECT_ROOT}/configs/ltsn_training_v51_screen.toml" \
+  MODEL_DIR="${V51_SCREEN_MODEL_DIR}" \
+  TRAIN_ENGINEERING_SMOKE=1 \
+  TRAIN_DEVICES= \
+    train
+}
+
+report_v51_screen() {
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_ltsn_v51_screen.py" \
+    --ensemble-manifest "${V51_SCREEN_MODEL_DIR}/ensemble_manifest.json" \
+    --training-view-summary "${V51_TRAINING_VIEW_DIR}/training_view_summary.json" \
+    --output "${V51_SCREEN_REPORT}"
+}
+
+train_v51() {
+  [[ -f "${V51_SCREEN_REPORT}" ]] || {
+    echo "Run report-v51-screen before formal V5.1 training: ${V51_SCREEN_REPORT}" >&2
+    exit 3
+  }
+  "${PYTHON_BIN}" -c \
+    'import hashlib,json,sys; p=json.load(open(sys.argv[1], encoding="utf-8")); d=hashlib.sha256(open(sys.argv[2], "rb").read()).hexdigest(); raise SystemExit(0 if p.get("formal_v51_training_recommended") is True and p.get("training_view_summary_sha256") == d else 3)' \
+    "${V51_SCREEN_REPORT}" "${V51_TRAINING_VIEW_DIR}/training_view_summary.json" || {
+      echo "V5.1 screen failed or is not bound to the current training view; inspect ${V51_SCREEN_REPORT}" >&2
+      exit 3
+    }
+  LTSN_MANIFEST="${V51_TRAINING_VIEW_DIR}/ltsn_manifest_v51.csv" \
+  LTSN_SPLIT_MANIFEST="${V51_TRAINING_VIEW_DIR}/split_manifest_v51.json" \
+  CONFIG="${PROJECT_ROOT}/configs/ltsn_training_v51.toml" \
+  MODEL_DIR="${V51_MODEL_DIR}" \
+    train
 }
 
 train() {
@@ -507,6 +555,10 @@ case "${STAGE}" in
   train) train ;;
   train-v5) train_v5 ;;
   train-v5-screen) train_v5_screen ;;
+  prepare-v51) prepare_v51 ;;
+  train-v51-screen) train_v51_screen ;;
+  report-v51-screen) report_v51_screen ;;
+  train-v51) train_v51 ;;
   calibrate) calibrate ;;
   calibrate-v5) calibrate_v5 ;;
   calibrate-ood-ablation) calibrate_ood_ablation ;;
@@ -528,5 +580,5 @@ case "${STAGE}" in
   qualify) qualify ;;
   qualify-v5) qualify_v5 ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
 esac

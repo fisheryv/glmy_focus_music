@@ -218,6 +218,7 @@ def central_band_derivative_loss(
     rms_ratios: Tensor | None,
     *,
     focus_band_threshold: float,
+    normalize_by_rms: bool = True,
     exact_margin: float = 1e-4,
     direction_weight: float = 0.5,
 ) -> Tensor:
@@ -233,8 +234,9 @@ def central_band_derivative_loss(
         raise ValueError("central direction RMS values must be finite and positive")
     exact_loss = F.relu(float(focus_band_threshold) - exact_score.float()).square()
     predicted_loss = F.relu(float(focus_band_threshold) - predicted_score.float()).square()
-    exact_derivative = (exact_loss[minus] - exact_loss[plus]) / (2.0 * rms)
-    predicted_derivative = (predicted_loss[minus] - predicted_loss[plus]) / (2.0 * rms)
+    denominator = 2.0 * rms if normalize_by_rms else torch.ones_like(rms)
+    exact_derivative = (exact_loss[minus] - exact_loss[plus]) / denominator
+    predicted_derivative = (predicted_loss[minus] - predicted_loss[plus]) / denominator
     valid = exact_derivative.abs() >= exact_margin
     if not valid.any():
         return predicted_score.sum() * 0.0
@@ -313,6 +315,8 @@ def ltsn_loss(
     ood_positive_weight: Tensor | None = None,
     focus_band_threshold: float | None = None,
     use_band_improvement_local_loss: bool = False,
+    normalize_central_direction_by_rms: bool = True,
+    central_direction_exact_margin: float = 1e-4,
     weights: LTSNLossWeights | None = None,
 ) -> LTSNLossResult:
     """Compute the complete development-start LTSN objective and components."""
@@ -376,6 +380,8 @@ def ltsn_loss(
             central_pair_indices,
             central_pair_rms,
             focus_band_threshold=float(focus_band_threshold),
+            normalize_by_rms=normalize_central_direction_by_rms,
+            exact_margin=central_direction_exact_margin,
         )
         if focus_band_threshold is not None
         else output.focus_logit.sum() * 0.0

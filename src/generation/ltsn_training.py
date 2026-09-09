@@ -70,6 +70,9 @@ class LTSNTrainingConfig:
     require_ood_both_classes: bool = False
     ood_positive_weight_cap: float = 20.0
     use_band_improvement_local_loss: bool = False
+    normalize_central_direction_by_rms: bool = True
+    central_direction_exact_margin: float = 1e-4
+    central_direction_primary_early_stopping: bool = False
 
     def validate(self, *, engineering_smoke: bool) -> None:
         if self.micro_batch_size < 1 or self.effective_batch_size < self.micro_batch_size:
@@ -84,6 +87,10 @@ class LTSNTrainingConfig:
             raise LTSNContractError("coordinate_scale_floor must be finite and positive")
         if self.ood_positive_weight_cap < 1 or not math.isfinite(self.ood_positive_weight_cap):
             raise LTSNContractError("ood_positive_weight_cap must be finite and at least one")
+        if self.central_direction_exact_margin <= 0 or not math.isfinite(
+            self.central_direction_exact_margin
+        ):
+            raise LTSNContractError("central_direction_exact_margin must be finite and positive")
         if not engineering_smoke:
             frozen = {
                 "learning_rate": (self.learning_rate, 3e-4),
@@ -378,6 +385,19 @@ def _training_target_contract(
             if focus_band_threshold is not None
             else {}
         ),
+        **(
+            {
+                "normalize_central_direction_by_rms": (training.normalize_central_direction_by_rms),
+                "central_direction_exact_margin": training.central_direction_exact_margin,
+                "central_direction_primary_early_stopping": (
+                    training.central_direction_primary_early_stopping
+                ),
+            }
+            if not training.normalize_central_direction_by_rms
+            or training.central_direction_exact_margin != 1e-4
+            or training.central_direction_primary_early_stopping
+            else {}
+        ),
     }
 
 
@@ -427,6 +447,8 @@ def _loss(
     device: torch.device,
     target_contract: Mapping[str, Any],
     use_band_improvement_local_loss: bool = False,
+    normalize_central_direction_by_rms: bool = True,
+    central_direction_exact_margin: float = 1e-4,
 ) -> dict[str, Tensor]:
     pair_indices = _pair_indices(batch["prompt_id"], device, batch["ood_label"] < 0.5)
     central_pairs, central_rms = _central_direction_pairs(
@@ -461,6 +483,8 @@ def _loss(
         ),
         focus_band_threshold=target_contract.get("focus_band_threshold"),
         use_band_improvement_local_loss=use_band_improvement_local_loss,
+        normalize_central_direction_by_rms=normalize_central_direction_by_rms,
+        central_direction_exact_margin=central_direction_exact_margin,
         weights=weights,
     )
     trajectory_pairs = _trajectory_pairs(
@@ -578,6 +602,9 @@ def _development_objective(
     active_mask: Sequence[bool] | None = None,
     qualification_aligned: bool = False,
     focus_band_threshold: float | None = None,
+    normalize_central_direction_by_rms: bool = True,
+    central_direction_exact_margin: float = 1e-4,
+    central_direction_primary: bool = False,
 ) -> dict[str, float]:
     in_distribution = np.asarray(prediction["ood_label"], dtype=float) < 0.5
     if not np.any(in_distribution):
@@ -674,11 +701,12 @@ def _development_objective(
                 raise LTSNContractError(
                     f"development central direction RMS is inconsistent: {group_id}"
                 )
-            exact_derivative = float((exact_loss[minus] - exact_loss[plus]) / (2.0 * rms))
-            if abs(exact_derivative) < 1e-4:
+            denominator = 2.0 * rms if normalize_central_direction_by_rms else 1.0
+            exact_derivative = float((exact_loss[minus] - exact_loss[plus]) / denominator)
+            if abs(exact_derivative) < central_direction_exact_margin:
                 continue
             predicted_derivative = float(
-                (predicted_loss[minus] - predicted_loss[plus]) / (2.0 * rms)
+                (predicted_loss[minus] - predicted_loss[plus]) / denominator
             )
             exact_derivatives.append(exact_derivative)
             predicted_derivatives.append(predicted_derivative)
@@ -722,6 +750,16 @@ def _development_objective(
             objective += max(0.0, 0.65 - central_direction_agreement)
     else:
         objective = score_error + (1.0 - coordinate_median) + (1.0 - block_rho)
+    if central_direction_primary:
+        if central_pair_count == 0:
+            raise LTSNContractError(
+                "central-direction-primary early stopping requires informative development pairs"
+            )
+        objective = (
+            (1.0 - central_direction_agreement)
+            + 0.25 * (1.0 - central_derivative_spearman)
+            + 0.05 * objective
+        )
     result = {
         "objective": objective,
         "n_in_distribution": int(np.count_nonzero(in_distribution)),
@@ -906,6 +944,8 @@ def _train_seed(
                 device,
                 target_contract,
                 use_band_improvement_local_loss=training.use_band_improvement_local_loss,
+                normalize_central_direction_by_rms=(training.normalize_central_direction_by_rms),
+                central_direction_exact_margin=training.central_direction_exact_margin,
             )
             loss = losses["total"].float() / accumulation
             if not torch.isfinite(loss):
@@ -926,6 +966,9 @@ def _train_seed(
             active_mask=target_contract["active_coordinate_mask"],
             qualification_aligned=training.qualification_aligned_early_stopping,
             focus_band_threshold=target_contract.get("focus_band_threshold"),
+            normalize_central_direction_by_rms=(training.normalize_central_direction_by_rms),
+            central_direction_exact_margin=training.central_direction_exact_margin,
+            central_direction_primary=training.central_direction_primary_early_stopping,
         )
         history.append(
             {
@@ -1053,6 +1096,10 @@ def train_ensemble(
     ):
         raise LTSNContractError(
             "central_direction loss requires V5 symmetric finite-difference records"
+        )
+    if training.central_direction_primary_early_stopping and loss_weights.central_direction <= 0:
+        raise LTSNContractError(
+            "central-direction-primary early stopping requires positive central_direction loss"
         )
     devices = _resolve_training_devices(training.seeds, device_name, device_names)
     for value in devices:

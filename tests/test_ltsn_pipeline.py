@@ -347,6 +347,37 @@ def test_v5_central_evidence_and_loss_use_minus_plus_order() -> None:
     assert aligned < reversed_loss
 
 
+def test_v51_central_loss_uses_raw_finite_difference_without_changing_v5_default() -> None:
+    pairs = torch.tensor([[0, 1]])
+    rms = torch.tensor([0.005])
+    exact = torch.tensor([1.7, 1.8])
+    predicted = torch.tensor([1.75, 1.85])
+
+    v5_normalized = central_band_derivative_loss(
+        predicted,
+        exact,
+        pairs,
+        rms,
+        focus_band_threshold=2.0,
+        direction_weight=0.0,
+    )
+    v51_raw = central_band_derivative_loss(
+        predicted,
+        exact,
+        pairs,
+        rms,
+        focus_band_threshold=2.0,
+        normalize_by_rms=False,
+        exact_margin=1e-5,
+        direction_weight=0.0,
+    )
+
+    # V5 learns derivatives: exact=5 and predicted=4, giving SmoothL1=0.5.
+    assert v5_normalized.item() == pytest.approx(0.5)
+    # V5.1 learns the unscaled loss separation: exact=.05 and predicted=.04.
+    assert v51_raw.item() == pytest.approx(0.00005)
+
+
 def test_prompt_sampler_keeps_v5_anchor_and_four_perturbations_together() -> None:
     records = [_snapshot("anchor", "trajectory", 4)]
     for rms_tag, rms in (("25", 0.0025), ("50", 0.005)):
