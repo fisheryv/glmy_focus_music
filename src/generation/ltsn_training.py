@@ -73,6 +73,8 @@ class LTSNTrainingConfig:
     normalize_central_direction_by_rms: bool = True
     central_direction_exact_margin: float = 1e-4
     central_direction_primary_early_stopping: bool = False
+    central_direction_classification_only: bool = False
+    central_direction_overfit_diagnostic: bool = False
 
     def validate(self, *, engineering_smoke: bool) -> None:
         if self.micro_batch_size < 1 or self.effective_batch_size < self.micro_batch_size:
@@ -91,6 +93,8 @@ class LTSNTrainingConfig:
             self.central_direction_exact_margin
         ):
             raise LTSNContractError("central_direction_exact_margin must be finite and positive")
+        if self.central_direction_overfit_diagnostic and not engineering_smoke:
+            raise LTSNContractError("central-direction overfit mode is diagnostic-only")
         if not engineering_smoke:
             frozen = {
                 "learning_rate": (self.learning_rate, 3e-4),
@@ -392,10 +396,18 @@ def _training_target_contract(
                 "central_direction_primary_early_stopping": (
                     training.central_direction_primary_early_stopping
                 ),
+                "central_direction_classification_only": (
+                    training.central_direction_classification_only
+                ),
+                "central_direction_overfit_diagnostic": (
+                    training.central_direction_overfit_diagnostic
+                ),
             }
             if not training.normalize_central_direction_by_rms
             or training.central_direction_exact_margin != 1e-4
             or training.central_direction_primary_early_stopping
+            or training.central_direction_classification_only
+            or training.central_direction_overfit_diagnostic
             else {}
         ),
     }
@@ -449,6 +461,7 @@ def _loss(
     use_band_improvement_local_loss: bool = False,
     normalize_central_direction_by_rms: bool = True,
     central_direction_exact_margin: float = 1e-4,
+    central_direction_classification_only: bool = False,
 ) -> dict[str, Tensor]:
     pair_indices = _pair_indices(batch["prompt_id"], device, batch["ood_label"] < 0.5)
     central_pairs, central_rms = _central_direction_pairs(
@@ -485,6 +498,7 @@ def _loss(
         use_band_improvement_local_loss=use_band_improvement_local_loss,
         normalize_central_direction_by_rms=normalize_central_direction_by_rms,
         central_direction_exact_margin=central_direction_exact_margin,
+        central_direction_classification_only=central_direction_classification_only,
         weights=weights,
     )
     trajectory_pairs = _trajectory_pairs(
@@ -604,6 +618,7 @@ def _development_objective(
     focus_band_threshold: float | None = None,
     normalize_central_direction_by_rms: bool = True,
     central_direction_exact_margin: float = 1e-4,
+    central_direction_classification_only: bool = False,
     central_direction_primary: bool = False,
 ) -> dict[str, float]:
     in_distribution = np.asarray(prediction["ood_label"], dtype=float) < 0.5
@@ -706,7 +721,13 @@ def _development_objective(
             if abs(exact_derivative) < central_direction_exact_margin:
                 continue
             predicted_derivative = float(
-                (predicted_loss[minus] - predicted_loss[plus]) / denominator
+                (
+                    prediction["predicted_focus_logit"][plus]
+                    - prediction["predicted_focus_logit"][minus]
+                )
+                / denominator
+                if central_direction_classification_only
+                else (predicted_loss[minus] - predicted_loss[plus]) / denominator
             )
             exact_derivatives.append(exact_derivative)
             predicted_derivatives.append(predicted_derivative)
@@ -902,6 +923,18 @@ def _train_seed(
         collate_fn=collate_ltsn_batch,
         pin_memory=device.type == "cuda",
     )
+    overfit_loader = (
+        DataLoader(
+            train_dataset,
+            batch_size=training.micro_batch_size,
+            shuffle=False,
+            num_workers=training.num_workers,
+            collate_fn=collate_ltsn_batch,
+            pin_memory=device.type == "cuda",
+        )
+        if training.central_direction_overfit_diagnostic
+        else None
+    )
     model = PathHomologySurrogate(contract, model_config).to(device)
     optimizer = AdamW(
         model.parameters(), lr=training.learning_rate, weight_decay=training.weight_decay
@@ -920,6 +953,7 @@ def _train_seed(
     )
     use_bf16 = training.use_bf16 and device.type == "cuda" and torch.cuda.is_bf16_supported()
     best_objective = math.inf
+    best_development_objective = math.inf
     best_state: dict[str, Tensor] | None = None
     best_epoch = 0
     stale = 0
@@ -946,6 +980,9 @@ def _train_seed(
                 use_band_improvement_local_loss=training.use_band_improvement_local_loss,
                 normalize_central_direction_by_rms=(training.normalize_central_direction_by_rms),
                 central_direction_exact_margin=training.central_direction_exact_margin,
+                central_direction_classification_only=(
+                    training.central_direction_classification_only
+                ),
             )
             loss = losses["total"].float() / accumulation
             if not torch.isfinite(loss):
@@ -968,8 +1005,31 @@ def _train_seed(
             focus_band_threshold=target_contract.get("focus_band_threshold"),
             normalize_central_direction_by_rms=(training.normalize_central_direction_by_rms),
             central_direction_exact_margin=training.central_direction_exact_margin,
+            central_direction_classification_only=(
+                training.central_direction_classification_only
+            ),
             central_direction_primary=training.central_direction_primary_early_stopping,
         )
+        overfit_training: dict[str, float] = {}
+        selection_objective = development["objective"]
+        if overfit_loader is not None:
+            overfit_training = _development_objective(
+                predict_dataset(model, overfit_loader, device),
+                active_mask=target_contract["active_coordinate_mask"],
+                focus_band_threshold=target_contract.get("focus_band_threshold"),
+                normalize_central_direction_by_rms=(
+                    training.normalize_central_direction_by_rms
+                ),
+                central_direction_exact_margin=training.central_direction_exact_margin,
+                central_direction_classification_only=(
+                    training.central_direction_classification_only
+                ),
+                central_direction_primary=True,
+            )
+            selection_objective = (
+                1.0 - overfit_training["central_direction_agreement"]
+                + 0.25 * (1.0 - overfit_training["central_derivative_spearman"])
+            )
         history.append(
             {
                 "epoch": epoch,
@@ -981,11 +1041,17 @@ def _train_seed(
                 "local_direction_pairs_seen": local_pairs_seen,
                 "central_direction_pairs_seen": central_pairs_seen,
                 "learning_rate": optimizer.param_groups[0]["lr"],
+                "selection_objective": selection_objective,
                 **development,
+                **{
+                    f"overfit_train_{name}": value
+                    for name, value in overfit_training.items()
+                },
             }
         )
-        if development["objective"] < best_objective - 1e-8:
-            best_objective = development["objective"]
+        if selection_objective < best_objective - 1e-8:
+            best_objective = selection_objective
+            best_development_objective = development["objective"]
             best_state = {
                 name: value.detach().cpu().clone() for name, value in model.state_dict().items()
             }
@@ -1011,7 +1077,8 @@ def _train_seed(
             "seed": seed,
             "device": str(device),
             "best_epoch": best_epoch,
-            "best_development_objective": best_objective,
+            "best_selection_objective": best_objective,
+            "best_development_objective": best_development_objective,
             "history": history,
         },
         temporary,
@@ -1023,7 +1090,8 @@ def _train_seed(
         "path": checkpoint_path.name,
         "sha256": sha256_file(checkpoint_path),
         "best_epoch": best_epoch,
-        "best_development_objective": best_objective,
+        "best_selection_objective": best_objective,
+        "best_development_objective": best_development_objective,
     }
 
 
@@ -1101,6 +1169,25 @@ def train_ensemble(
         raise LTSNContractError(
             "central-direction-primary early stopping requires positive central_direction loss"
         )
+    if training.central_direction_overfit_diagnostic:
+        other_weights = {
+            name: value
+            for name, value in asdict(loss_weights).items()
+            if name != "central_direction" and value != 0
+        }
+        if loss_weights.central_direction <= 0 or other_weights:
+            raise LTSNContractError(
+                "V5.1a overfit diagnostic requires a central-direction-only loss"
+            )
+        if (
+            training.use_bf16
+            or not training.prompt_grouped_batches
+            or not training.central_direction_classification_only
+        ):
+            raise LTSNContractError(
+                "V5.1a overfit diagnostic requires FP32, prompt-grouped batches, "
+                "and direction-classification loss"
+            )
     devices = _resolve_training_devices(training.seeds, device_name, device_names)
     for value in devices:
         _validate_training_device(value)

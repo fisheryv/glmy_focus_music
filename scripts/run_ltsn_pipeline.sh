@@ -24,6 +24,9 @@ V51_TRAINING_VIEW_DIR="${V51_TRAINING_VIEW_DIR:-${RUN_ROOT}/training_augmentatio
 V51_MODEL_DIR="${V51_MODEL_DIR:-${RUN_ROOT}/models_v51}"
 V51_SCREEN_MODEL_DIR="${V51_SCREEN_MODEL_DIR:-${RUN_ROOT}/models_v51_screen}"
 V51_SCREEN_REPORT="${V51_SCREEN_REPORT:-${RUN_ROOT}/v51_screen_report.json}"
+V51A_DIAGNOSTIC_VIEW_DIR="${V51A_DIAGNOSTIC_VIEW_DIR:-${RUN_ROOT}/training_augmentation_v51a}"
+V51A_MODEL_DIR="${V51A_MODEL_DIR:-${RUN_ROOT}/models_v51a_overfit}"
+V51A_REPORT="${V51A_REPORT:-${RUN_ROOT}/v51a_overfit_report.json}"
 SOURCE_LTSN_MANIFEST="${SOURCE_LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
 SOURCE_LTSN_SPLIT_MANIFEST="${SOURCE_LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
 LTSN_MANIFEST="${LTSN_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/ltsn_manifest_v3.csv}"
@@ -289,6 +292,34 @@ train_v51() {
   CONFIG="${PROJECT_ROOT}/configs/ltsn_training_v51.toml" \
   MODEL_DIR="${V51_MODEL_DIR}" \
     train
+}
+
+prepare_v51a() {
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_v51a_overfit_view.py" \
+    --source-manifest "${V51_TRAINING_VIEW_DIR}/ltsn_manifest_v51.csv" \
+    --source-split-manifest "${V51_TRAINING_VIEW_DIR}/split_manifest_v51.json" \
+    --central-evidence "${V51_TRAINING_VIEW_DIR}/central_direction_exact_evidence_v51.csv" \
+    --output-dir "${V51A_DIAGNOSTIC_VIEW_DIR}" \
+    --step4-anchors "${V51A_STEP4_ANCHORS:-32}" \
+    --step5-anchors "${V51A_STEP5_ANCHORS:-16}" \
+    --step6-anchors "${V51A_STEP6_ANCHORS:-16}"
+}
+
+train_v51a() {
+  LTSN_MANIFEST="${V51A_DIAGNOSTIC_VIEW_DIR}/ltsn_manifest_v51a.csv" \
+  LTSN_SPLIT_MANIFEST="${V51A_DIAGNOSTIC_VIEW_DIR}/split_manifest_v51a.json" \
+  CONFIG="${PROJECT_ROOT}/configs/ltsn_training_v51a_overfit.toml" \
+  MODEL_DIR="${V51A_MODEL_DIR}" \
+  TRAIN_ENGINEERING_SMOKE=1 \
+  TRAIN_DEVICES= \
+    train
+}
+
+report_v51a() {
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_ltsn_v51a_overfit.py" \
+    --ensemble-manifest "${V51A_MODEL_DIR}/ensemble_manifest.json" \
+    --diagnostic-view-summary "${V51A_DIAGNOSTIC_VIEW_DIR}/diagnostic_view_summary.json" \
+    --output "${V51A_REPORT}"
 }
 
 train() {
@@ -559,6 +590,9 @@ case "${STAGE}" in
   train-v51-screen) train_v51_screen ;;
   report-v51-screen) report_v51_screen ;;
   train-v51) train_v51 ;;
+  prepare-v51a) prepare_v51a ;;
+  train-v51a) train_v51a ;;
+  report-v51a) report_v51a ;;
   calibrate) calibrate ;;
   calibrate-v5) calibrate_v5 ;;
   calibrate-ood-ablation) calibrate_ood_ablation ;;
@@ -580,5 +614,5 @@ case "${STAGE}" in
   qualify) qualify ;;
   qualify-v5) qualify_v5 ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
 esac

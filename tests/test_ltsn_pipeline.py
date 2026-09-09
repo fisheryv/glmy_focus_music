@@ -45,7 +45,11 @@ from generation.ltsn_training_augmentation import (
     _v5_symmetric_plan,
     _write_augmentation_trajectory_manifest,
 )
-from generation.ltsn_losses import central_band_derivative_loss, focus_band_classification_loss
+from generation.ltsn_losses import (
+    central_band_derivative_loss,
+    central_band_direction_classification_loss,
+    focus_band_classification_loss,
+)
 from generation.path_homology_surrogate import LTSNConfig
 from generation.path_homology_exact_scorer import ExactPathHomologyScorer
 
@@ -376,6 +380,26 @@ def test_v51_central_loss_uses_raw_finite_difference_without_changing_v5_default
     assert v5_normalized.item() == pytest.approx(0.5)
     # V5.1 learns the unscaled loss separation: exact=.05 and predicted=.04.
     assert v51_raw.item() == pytest.approx(0.00005)
+
+
+def test_v51a_direction_classification_has_no_predicted_band_dead_zone() -> None:
+    pairs = torch.tensor([[0, 1]])
+    exact = torch.tensor([1.7, 1.8])
+    aligned = central_band_direction_classification_loss(
+        torch.tensor([3.0, 4.0]),
+        exact,
+        pairs,
+        focus_band_threshold=2.0,
+    )
+    reversed_loss = central_band_direction_classification_loss(
+        torch.tensor([4.0, 3.0]),
+        exact,
+        pairs,
+        focus_band_threshold=2.0,
+    )
+
+    assert aligned < reversed_loss
+    assert aligned.item() > 0.0
 
 
 def test_prompt_sampler_keeps_v5_anchor_and_four_perturbations_together() -> None:

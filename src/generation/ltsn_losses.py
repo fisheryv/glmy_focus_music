@@ -249,6 +249,32 @@ def central_band_derivative_loss(
     return ((magnitude + direction_weight * direction) * weights).mean()
 
 
+def central_band_direction_classification_loss(
+    predicted_score: Tensor,
+    exact_score: Tensor,
+    pair_indices: Tensor | None,
+    *,
+    focus_band_threshold: float,
+    exact_margin: float = 1e-5,
+) -> Tensor:
+    """Classify the exact better side without the predicted band-loss dead zone."""
+
+    if pair_indices is None or pair_indices.numel() == 0:
+        return predicted_score.sum() * 0.0
+    minus, plus = pair_indices[:, 0].long(), pair_indices[:, 1].long()
+    exact_loss = F.relu(float(focus_band_threshold) - exact_score.float()).square()
+    exact_difference = exact_loss[minus] - exact_loss[plus]
+    valid = exact_difference.abs() >= exact_margin
+    if not valid.any():
+        return predicted_score.sum() * 0.0
+    # A positive exact difference means +d has lower band loss and should receive
+    # the higher predicted Focus score. Direct score differences keep gradients
+    # alive even if both predicted scores temporarily cross the band threshold.
+    predicted_margin = predicted_score.float()[plus] - predicted_score.float()[minus]
+    target = (exact_difference[valid] > 0).to(predicted_margin.dtype)
+    return F.binary_cross_entropy_with_logits(predicted_margin[valid], target)
+
+
 def focus_band_classification_loss(
     predicted_focus_logit: Tensor,
     exact_focus_logit: Tensor,
@@ -317,6 +343,7 @@ def ltsn_loss(
     use_band_improvement_local_loss: bool = False,
     normalize_central_direction_by_rms: bool = True,
     central_direction_exact_margin: float = 1e-4,
+    central_direction_classification_only: bool = False,
     weights: LTSNLossWeights | None = None,
 ) -> LTSNLossResult:
     """Compute the complete development-start LTSN objective and components."""
@@ -373,8 +400,18 @@ def ltsn_loss(
             output.focus_logit.float(), exact_focus_logit.float(), local_pair_indices
         )
     )
-    central_direction = (
-        central_band_derivative_loss(
+    if focus_band_threshold is None:
+        central_direction = output.focus_logit.sum() * 0.0
+    elif central_direction_classification_only:
+        central_direction = central_band_direction_classification_loss(
+            output.focus_logit.float(),
+            exact_focus_logit.float(),
+            central_pair_indices,
+            focus_band_threshold=float(focus_band_threshold),
+            exact_margin=central_direction_exact_margin,
+        )
+    else:
+        central_direction = central_band_derivative_loss(
             output.focus_logit.float(),
             exact_focus_logit.float(),
             central_pair_indices,
@@ -383,9 +420,6 @@ def ltsn_loss(
             normalize_by_rms=normalize_central_direction_by_rms,
             exact_margin=central_direction_exact_margin,
         )
-        if focus_band_threshold is not None
-        else output.focus_logit.sum() * 0.0
-    )
     delta = trajectory_delta_loss(
         output.coordinate_mean,
         None if next_output is None else next_output.coordinate_mean,
