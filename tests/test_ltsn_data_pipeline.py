@@ -18,6 +18,7 @@ from generation.ltsn_pipeline import (
     load_reranking_gate,
     load_surrogate_training_gate,
     merge_trajectory_shard_manifests,
+    require_surrogate_training_gate,
     synthetic_descriptor_rows,
     validate_snapshot_coverage,
     write_csv_atomic,
@@ -264,6 +265,10 @@ def test_surrogate_training_gate_records_but_does_not_require_prompt_diversity(
     gate = load_surrogate_training_gate(path, contract)
     assert gate.prompt_noninferior is False
     assert gate.diversity_preserved is False
+    smoke_gate = require_surrogate_training_gate(path, contract, engineering_smoke=True)
+    assert smoke_gate is not None
+    assert smoke_gate.artifact_sha256 == sha256_file(path)
+    assert require_surrogate_training_gate(None, contract, engineering_smoke=True) is None
 
     payload["guidance_promotion_eligible"] = True
     path.write_text(json.dumps(payload), encoding="utf-8")

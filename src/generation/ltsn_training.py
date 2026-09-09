@@ -1032,7 +1032,11 @@ def train_ensemble(
     expected_training_gate_sha256 = "" if gate is None else gate.artifact_sha256
     manifest_gate_values = {row.get("surrogate_training_gate_sha256", "") for row in raw_rows}
     if manifest_gate_values != {expected_training_gate_sha256}:
-        raise LTSNContractError("label manifest uses a different surrogate training gate")
+        raise LTSNContractError(
+            "label manifest uses a different surrogate training gate: "
+            f"expected {expected_training_gate_sha256 or '<none>'}, "
+            f"manifest has {sorted(value or '<none>' for value in manifest_gate_values)}"
+        )
     guidance_values = {row.get("guidance_promotion_eligible", "false").lower() for row in raw_rows}
     if guidance_values != {"false"}:
         raise LTSNContractError(

@@ -38,9 +38,7 @@ def write_json_atomic(path: Path, payload: Any) -> None:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_suffix(path.suffix + ".part")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     os.replace(temporary, path)
 
 
@@ -171,9 +169,9 @@ def require_surrogate_training_gate(
     *,
     engineering_smoke: bool,
 ) -> SurrogateTrainingGate | None:
-    """Enforce the scope-limited training gate, with a non-qualifying smoke bypass."""
+    """Enforce the training gate, allowing smoke runs to omit but not ignore one."""
 
-    if engineering_smoke:
+    if engineering_smoke and gate_path is None:
         return None
     if gate_path is None:
         raise LTSNContractError(
@@ -325,9 +323,7 @@ class TrajectoryRecorder:
             raise RuntimeError("TrajectoryRecorder.begin() was not called")
         prompt_id, trajectory_id, split = context
         if final_latent is None:
-            raise LTSNContractError(
-                "ACE final pred_latents must have finite shape [B,T,64]"
-            )
+            raise LTSNContractError("ACE final pred_latents must have finite shape [B,T,64]")
         value = final_latent
         if hasattr(value, "detach"):
             value = value.detach()
@@ -347,21 +343,14 @@ class TrajectoryRecorder:
             or batch.shape[2] != 64
             or not np.isfinite(batch).all()
         ):
-            raise LTSNContractError(
-                "ACE final pred_latents must have finite shape [B,T,64]"
-            )
+            raise LTSNContractError("ACE final pred_latents must have finite shape [B,T,64]")
         if any(
-            record.trajectory_id == trajectory_id and record.is_final
-            for record in self.records
+            record.trajectory_id == trajectory_id and record.is_final for record in self.records
         ):
-            raise LTSNContractError(
-                f"trajectory already contains a final latent: {trajectory_id}"
-            )
+            raise LTSNContractError(f"trajectory already contains a final latent: {trajectory_id}")
         sample_ids: list[str] = []
         for batch_index, latent in enumerate(batch):
-            sample_id = (
-                f"{trajectory_id}__step{self.inference_steps:02d}__b{batch_index:02d}"
-            )
+            sample_id = f"{trajectory_id}__step{self.inference_steps:02d}__b{batch_index:02d}"
             latent_path = self.output_dir / "latents" / f"{sample_id}.npy"
             self._save_npy_atomic(latent_path, latent)
             self.records.append(
@@ -552,8 +541,7 @@ def merge_trajectory_shard_manifests(
             actual_identity = (str(row.get("prompt_id", "")), str(row.get("split", "")))
             if expected_identity != actual_identity:
                 raise LTSNContractError(
-                    "shard trajectory prompt/split differs from the frozen plan: "
-                    f"{trajectory_id}"
+                    f"shard trajectory prompt/split differs from the frozen plan: {trajectory_id}"
                 )
             provenance.add(
                 (
@@ -576,9 +564,7 @@ def merge_trajectory_shard_manifests(
                     continue
                 source = (shard_manifest.parent / relative).resolve()
                 if not source.is_file() or sha256_file(source) != row.get(hash_key, ""):
-                    raise LTSNContractError(
-                        f"shard artifact missing or hash-mismatched: {source}"
-                    )
+                    raise LTSNContractError(f"shard artifact missing or hash-mismatched: {source}")
                 try:
                     row[path_key] = source.relative_to(output_root).as_posix()
                 except ValueError as error:
@@ -668,9 +654,7 @@ def build_exact_label_tables(
                     "qualification-eligible labels require decoded_snapshot_exact_v1 descriptors"
                 )
             expected_audio_sha256 = trajectory.get("audio_sha256")
-            if not expected_audio_sha256 or descriptor.get(
-                "audio_sha256"
-            ) != expected_audio_sha256:
+            if not expected_audio_sha256 or descriptor.get("audio_sha256") != expected_audio_sha256:
                 raise LTSNContractError("exact descriptor audio hash differs from the snapshot")
         pitch = json.loads(descriptor["pitch_descriptors_json"])
         score = scorer.score(
@@ -727,9 +711,7 @@ def build_exact_label_tables(
                 "ace_model_sha256": trajectory["ace_model_sha256"],
                 "vae_sha256": trajectory["vae_sha256"],
                 "qualification_eligible": str(not engineering_smoke).lower(),
-                "surrogate_training_gate_sha256": (
-                    "" if gate is None else gate.artifact_sha256
-                ),
+                "surrogate_training_gate_sha256": ("" if gate is None else gate.artifact_sha256),
                 "guidance_promotion_eligible": "false",
             }
         )
@@ -792,9 +774,7 @@ def model_data_identity(rows: Iterable[Mapping[str, str]]) -> tuple[str, str, st
     """Return the one ACE model hash, VAE hash, and model family in a manifest."""
 
     rows = list(rows)
-    identities = {
-        (row["ace_model_sha256"], row["vae_sha256"], row["model_family"]) for row in rows
-    }
+    identities = {(row["ace_model_sha256"], row["vae_sha256"], row["model_family"]) for row in rows}
     if len(identities) != 1:
         raise LTSNContractError("manifest mixes ACE/VAE/model-family identities")
     return identities.pop()
