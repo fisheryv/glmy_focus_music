@@ -40,6 +40,7 @@ from generation.ltsn_training_augmentation import (
     _central_direction_evidence,
     _evaluation_ood_plan,
     _on_policy_plan,
+    _select_v5_symmetric_anchors,
     _v5_step_quotas,
     _v5_symmetric_plan,
     _write_augmentation_trajectory_manifest,
@@ -63,18 +64,21 @@ def _snapshot(
     direction_group: str = "",
     direction_sign: float = 0.0,
     direction_rms: float = 0.0,
+    split: str = "train",
+    prompt_id: str = "prompt",
+    focus_logit: float = 0.0,
 ) -> LTSNSnapshot:
     return LTSNSnapshot(
         sample_id=sample_id,
-        prompt_id="prompt",
+        prompt_id=prompt_id,
         trajectory_id=trajectory_id,
-        split="train",
+        split=split,
         step_number=step,
         timestep=0.5,
         latent_path=Path("unused.npy"),
         latent_sha256="a" * 64,
         coordinates=coordinates,
-        focus_logit=0.0,
+        focus_logit=focus_logit,
         ood_label=ood_label,
         is_final=step == 8,
         exact_label_table_sha256="b" * 64,
@@ -256,6 +260,49 @@ def test_v5_plan_has_frozen_quotas_and_symmetric_rms_pairs() -> None:
         groups.setdefault(str(item["direction_group_id"]), []).append(item)
     assert len(groups) == 2
     assert all({float(item["sign"]) for item in rows} == {-1.0, 1.0} for rows in groups.values())
+
+
+def test_v5_selection_redistributes_unavailable_step_quota_without_reducing_total() -> None:
+    class _Contract:
+        focus_band_threshold = 1.0
+
+    class _Provider:
+        contract = _Contract()
+
+        def describe(self, anchor: LTSNSnapshot) -> dict[str, object]:
+            return {"gradient_usable": "unusable" not in anchor.sample_id}
+
+        def retain(self, sample_ids: set[str]) -> None:
+            self.retained = sample_ids
+
+    records: list[LTSNSnapshot] = []
+    for split in ("train", "development"):
+        counts = {4: 5, 5: 5, 6: 5}
+        for step, count in counts.items():
+            for index in range(count):
+                suffix = "_unusable" if split == "development" and step == 4 and index >= 3 else ""
+                records.append(
+                    _snapshot(
+                        f"{split}_step{step}_{index}{suffix}",
+                        f"{split}_trajectory_{step}_{index}",
+                        step,
+                        split=split,
+                    )
+                )
+    provider = _Provider()
+
+    selected, _, summary = _select_v5_symmetric_anchors(
+        records,
+        provider,  # type: ignore[arg-type]
+        trajectories_per_prompt=20,
+        train_anchor_count=8,
+        development_anchor_count=8,
+    )
+
+    assert sum(anchor.split == "development" for anchor in selected) == 8
+    assert summary["development"]["requested_step_quotas"] == {"4": 4, "5": 2, "6": 2}
+    assert summary["development"]["realized_step_quotas"] == {"4": 3, "5": 3, "6": 2}
+    assert summary["development"]["quota_redistributed"] is True
 
 
 def test_v5_central_evidence_and_loss_use_minus_plus_order() -> None:

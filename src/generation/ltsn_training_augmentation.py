@@ -308,8 +308,12 @@ def _select_v5_symmetric_anchors(
     trajectories_per_prompt: int,
     train_anchor_count: int,
     development_anchor_count: int,
-) -> tuple[list[LTSNSnapshot], dict[str, dict[str, Any]]]:
-    """Select exact-OOB anchors with frozen 50/25/25 correction-step quotas."""
+) -> tuple[
+    list[LTSNSnapshot],
+    dict[str, dict[str, Any]],
+    dict[str, dict[str, Any]],
+]:
+    """Select exact-OOB anchors, redistributing unusable step quotas without reducing totals."""
 
     quotas = {
         "train": _v5_step_quotas(train_anchor_count),
@@ -337,14 +341,20 @@ def _select_v5_symmetric_anchors(
 
     selected: list[LTSNSnapshot] = []
     descriptions: dict[str, dict[str, Any]] = {}
+    selection_summary: dict[str, dict[str, Any]] = {}
     for split in ("train", "development"):
         prompt_ids = sorted(
             {prompt_id for candidate_split, _, prompt_id in grouped if candidate_split == split}
         )
         if not prompt_ids:
             raise LTSNContractError(f"V5 has no exact-OOB candidate prompts in {split}")
-        for step, quota in quotas[split].items():
-            candidates = {
+        candidates_by_step: dict[int, dict[str, list[LTSNSnapshot]]] = {}
+        offsets_by_step: dict[int, dict[str, int]] = {}
+        cursors: dict[int, int] = {}
+        eligible_by_step: dict[int, list[LTSNSnapshot]] = {}
+        exhausted: dict[int, bool] = {}
+        for step in (4, 5, 6):
+            candidates_by_step[step] = {
                 prompt_id: sorted(
                     grouped.get((split, step, prompt_id), ()),
                     key=lambda item: (
@@ -355,33 +365,81 @@ def _select_v5_symmetric_anchors(
                 )
                 for prompt_id in prompt_ids
             }
-            offsets = {prompt_id: 0 for prompt_id in prompt_ids}
-            accepted: list[LTSNSnapshot] = []
-            while len(accepted) < quota:
-                progressed = False
-                for prompt_id in prompt_ids:
-                    values = candidates[prompt_id]
-                    while offsets[prompt_id] < len(values):
-                        candidate = values[offsets[prompt_id]]
-                        offsets[prompt_id] += 1
-                        progressed = True
-                        description = provider.describe(candidate)
-                        descriptions[candidate.sample_id] = description
-                        if description["gradient_usable"]:
-                            accepted.append(candidate)
-                            break
-                    if len(accepted) == quota:
+            offsets_by_step[step] = {prompt_id: 0 for prompt_id in prompt_ids}
+            cursors[step] = 0
+            eligible_by_step[step] = []
+            exhausted[step] = False
+
+        def fill_to(
+            step: int,
+            target: int,
+            *,
+            candidates_by_step: dict[int, dict[str, list[LTSNSnapshot]]] = candidates_by_step,
+            offsets_by_step: dict[int, dict[str, int]] = offsets_by_step,
+            eligible_by_step: dict[int, list[LTSNSnapshot]] = eligible_by_step,
+            prompt_ids: tuple[str, ...] = tuple(prompt_ids),
+            exhausted: dict[int, bool] = exhausted,
+            cursors: dict[int, int] = cursors,
+        ) -> None:
+            candidates = candidates_by_step[step]
+            offsets = offsets_by_step[step]
+            eligible = eligible_by_step[step]
+            while len(eligible) < target:
+                if not any(
+                    offsets[prompt_id] < len(candidates[prompt_id]) for prompt_id in prompt_ids
+                ):
+                    exhausted[step] = True
+                    return
+                prompt_id = prompt_ids[cursors[step]]
+                cursors[step] = (cursors[step] + 1) % len(prompt_ids)
+                values = candidates[prompt_id]
+                while offsets[prompt_id] < len(values):
+                    candidate = values[offsets[prompt_id]]
+                    offsets[prompt_id] += 1
+                    description = provider.describe(candidate)
+                    descriptions[candidate.sample_id] = description
+                    if description["gradient_usable"]:
+                        eligible.append(candidate)
                         break
-                if not progressed:
-                    raise LTSNContractError(
-                        f"V5 cannot satisfy {split} step-{step} anchor quota {quota}; "
-                        f"accepted {len(accepted)}"
-                    )
-            selected.extend(accepted)
+
+        requested = quotas[split]
+        for step, quota in requested.items():
+            fill_to(step, quota)
+        realized = {step: min(requested[step], len(eligible_by_step[step])) for step in (4, 5, 6)}
+        deficit = sum(requested.values()) - sum(realized.values())
+        while deficit:
+            expandable = [step for step in (4, 5, 6) if not exhausted[step]]
+            if not expandable:
+                discovered = {step: len(eligible_by_step[step]) for step in (4, 5, 6)}
+                raise LTSNContractError(
+                    f"V5 cannot satisfy {split} total anchor count {sum(requested.values())}; "
+                    f"usable anchors discovered by step: {discovered}"
+                )
+            # Preserve the requested 50/25/25 profile as closely as possible:
+            # allocate each deficit to the expandable step with the smallest
+            # realized/requested ratio, with a deterministic step-number tie break.
+            step = min(expandable, key=lambda value: (realized[value] / requested[value], value))
+            before = len(eligible_by_step[step])
+            fill_to(step, realized[step] + 1)
+            if len(eligible_by_step[step]) == before:
+                continue
+            realized[step] += 1
+            deficit -= 1
+        for step in (4, 5, 6):
+            selected.extend(eligible_by_step[step][: realized[step]])
+        selection_summary[split] = {
+            "requested_step_quotas": {str(step): requested[step] for step in (4, 5, 6)},
+            "realized_step_quotas": {str(step): realized[step] for step in (4, 5, 6)},
+            "usable_anchors_discovered": {
+                str(step): len(eligible_by_step[step]) for step in (4, 5, 6)
+            },
+            "candidate_stream_exhausted": {str(step): exhausted[step] for step in (4, 5, 6)},
+            "quota_redistributed": realized != requested,
+        }
     if len({anchor.sample_id for anchor in selected}) != len(selected):
         raise LTSNContractError("V5 selected a duplicate symmetric anchor")
     provider.retain({anchor.sample_id for anchor in selected})
-    return selected, descriptions
+    return selected, descriptions, selection_summary
 
 
 def _v5_symmetric_plan(
@@ -840,6 +898,7 @@ def build_ltsn_training_augmentation(
         raise LTSNContractError("augmentation VAE hash differs from the source manifest")
     anchors = _select_anchors(source_records, trajectories_per_prompt)
     on_policy_provider: _OnPolicyDirectionProvider | None = None
+    v5_selection_summary: dict[str, dict[str, Any]] | None = None
     if local_mode in {"on_policy", "symmetric_on_policy"}:
         if on_policy_ensemble_manifest is None or not on_policy_ensemble_manifest.is_file():
             raise LTSNContractError("on-policy augmentation requires --on-policy-ensemble-manifest")
@@ -857,7 +916,7 @@ def build_ltsn_training_augmentation(
         if source_families != {ensemble_metadata.get("model_family")}:
             raise LTSNContractError("on-policy ensemble uses a different model family")
         if local_mode == "symmetric_on_policy":
-            on_policy_anchors, descriptions = _select_v5_symmetric_anchors(
+            on_policy_anchors, descriptions, v5_selection_summary = _select_v5_symmetric_anchors(
                 source_records,
                 on_policy_provider,
                 trajectories_per_prompt=trajectories_per_prompt,
@@ -931,6 +990,7 @@ def build_ltsn_training_augmentation(
             {
                 "v5_train_anchor_count": v5_train_anchor_count,
                 "v5_development_anchor_count": v5_development_anchor_count,
+                "v5_selection_summary": v5_selection_summary,
             }
             if local_mode == "symmetric_on_policy"
             else {}
@@ -1175,6 +1235,7 @@ def build_ltsn_training_augmentation(
         ),
         **(
             {
+                "v5_selection_summary": v5_selection_summary,
                 "symmetric_direction_groups": len(central_evidence),
                 "symmetric_anchors_by_split": {
                     split: len(
