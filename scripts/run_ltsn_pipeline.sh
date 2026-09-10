@@ -34,6 +34,10 @@ V51B_CONFIG="${V51B_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v51b_memorizat
 V51C_SUITE_DIR="${V51C_SUITE_DIR:-${RUN_ROOT}/training_augmentation_v51c}"
 V51C_MODEL_ROOT="${V51C_MODEL_ROOT:-${RUN_ROOT}/models_v51c}"
 V51C_REPORT="${V51C_REPORT:-${RUN_ROOT}/v51c_ablation_report.json}"
+V52A_DIR="${V52A_DIR:-${RUN_ROOT}/training_augmentation_v52a}"
+V52A_MODEL_ROOT="${V52A_MODEL_ROOT:-${RUN_ROOT}/models_v52a}"
+V52A_REPORT="${V52A_REPORT:-${RUN_ROOT}/v52a_identifiability_report.json}"
+V52A_CONFIG="${V52A_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v52a_identifiability.toml}"
 SOURCE_LTSN_MANIFEST="${SOURCE_LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
 SOURCE_LTSN_SPLIT_MANIFEST="${SOURCE_LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
 LTSN_MANIFEST="${LTSN_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/ltsn_manifest_v3.csv}"
@@ -441,6 +445,64 @@ report_v51c() {
     --output "${V51C_REPORT}"
 }
 
+collect_v52a() {
+  : "${ACE_MODEL_SHA256:?Set ACE_MODEL_SHA256 to the 64-hex model tree digest}"
+  : "${VAE_SHA256:?Set VAE_SHA256 to the 64-hex VAE tree digest}"
+  ACESTEP_DEVICE="${V52A_COLLECT_DEVICE:-cuda:0}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/collect_ltsn_v52a_multidirection.py" \
+    --root "${PROJECT_ROOT}" \
+    --source-manifest "${V51A_DIAGNOSTIC_VIEW_DIR}/ltsn_manifest_v51a.csv" \
+    --source-split-manifest "${V51A_DIAGNOSTIC_VIEW_DIR}/split_manifest_v51a.json" \
+    --source-evidence "${V51A_DIAGNOSTIC_VIEW_DIR}/central_direction_exact_evidence_v51a.csv" \
+    --ace-config "${PROJECT_ROOT}/configs/ace_rerank_180s.toml" \
+    --fingerprint "${FINGERPRINT}" \
+    --output-dir "${V52A_DIR}" \
+    --ace-model-sha256 "${ACE_MODEL_SHA256}" \
+    --vae-sha256 "${VAE_SHA256}" \
+    --train-anchors "${V52A_TRAIN_ANCHORS:-32}" \
+    --unseen-anchors "${V52A_UNSEEN_ANCHORS:-16}" \
+    --directions 8 \
+    --train-directions 6 \
+    --workers "${V52A_EXACT_WORKERS:-8}" \
+    --exact-batch-size "${V52A_EXACT_BATCH_SIZE:-256}" \
+    --materialize-mode "${MATERIALIZE_MODE:-auto}" \
+    --device "${V52A_COLLECT_DEVICE:-cuda:0}" \
+    --resume
+}
+
+train_v52a_one() {
+  local view_name="$1"
+  local model_name="$2"
+  TRAIN_DEVICES="${V52A_DEVICES:-}" \
+  TRAIN_DEVICE="${V52A_DEVICE:-cuda:0}" \
+  LTSN_MANIFEST="${V52A_DIR}/views/${view_name}/ltsn_manifest_v52a.csv" \
+  LTSN_SPLIT_MANIFEST="${V52A_DIR}/views/${view_name}/split_manifest_v52a.json" \
+  CONFIG="${V52A_CONFIG}" \
+  MODEL_DIR="${V52A_MODEL_ROOT}/${model_name}" \
+  TRAIN_ENGINEERING_SMOKE=1 \
+    train
+}
+
+train_v52a() {
+  [[ -f "${V52A_DIR}/views/v52a_views.json" ]] || {
+    echo "Run collect-v52a first" >&2
+    return 3
+  }
+  train_v52a_one true_pairs true_pairs
+  train_v52a_one permuted_pair_control permuted_pair_control
+}
+
+report_v52a() {
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_ltsn_v52a_identifiability.py" \
+    --fingerprint "${FINGERPRINT}" \
+    --views-summary "${V52A_DIR}/views/v52a_views.json" \
+    --true-ensemble "${V52A_MODEL_ROOT}/true_pairs/ensemble_manifest.json" \
+    --control-ensemble "${V52A_MODEL_ROOT}/permuted_pair_control/ensemble_manifest.json" \
+    --config "${V52A_CONFIG}" \
+    --output "${V52A_REPORT}" \
+    --device "${V52A_EVAL_DEVICE:-cuda:0}"
+}
+
 train() {
   [[ -f "${SURROGATE_TRAINING_GATE}" ]] || { echo "Passed ltsn_surrogate_training_v1 gate is required: ${SURROGATE_TRAINING_GATE}" >&2; exit 3; }
   local -a train_device_args
@@ -718,6 +780,9 @@ case "${STAGE}" in
   prepare-v51c) prepare_v51c ;;
   train-v51c) train_v51c ;;
   report-v51c) report_v51c ;;
+  collect-v52a) collect_v52a ;;
+  train-v52a) train_v52a ;;
+  report-v52a) report_v52a ;;
   calibrate) calibrate ;;
   calibrate-v5) calibrate_v5 ;;
   calibrate-ood-ablation) calibrate_ood_ablation ;;
@@ -739,5 +804,5 @@ case "${STAGE}" in
   qualify) qualify ;;
   qualify-v5) qualify_v5 ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|prepare-v51c|train-v51c|report-v51c|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|prepare-v51c|train-v51c|report-v51c|collect-v52a|train-v52a|report-v52a|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
 esac
