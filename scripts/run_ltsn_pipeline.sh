@@ -27,6 +27,10 @@ V51_SCREEN_REPORT="${V51_SCREEN_REPORT:-${RUN_ROOT}/v51_screen_report.json}"
 V51A_DIAGNOSTIC_VIEW_DIR="${V51A_DIAGNOSTIC_VIEW_DIR:-${RUN_ROOT}/training_augmentation_v51a}"
 V51A_MODEL_DIR="${V51A_MODEL_DIR:-${RUN_ROOT}/models_v51a_overfit}"
 V51A_REPORT="${V51A_REPORT:-${RUN_ROOT}/v51a_overfit_report.json}"
+V51B_LADDER_DIR="${V51B_LADDER_DIR:-${RUN_ROOT}/training_augmentation_v51b}"
+V51B_MODEL_ROOT="${V51B_MODEL_ROOT:-${RUN_ROOT}/models_v51b}"
+V51B_REPORT="${V51B_REPORT:-${RUN_ROOT}/v51b_memorization_report.json}"
+V51B_CONFIG="${V51B_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v51b_memorization.toml}"
 SOURCE_LTSN_MANIFEST="${SOURCE_LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
 SOURCE_LTSN_SPLIT_MANIFEST="${SOURCE_LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
 LTSN_MANIFEST="${LTSN_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/ltsn_manifest_v3.csv}"
@@ -322,6 +326,50 @@ report_v51a() {
     --output "${V51A_REPORT}"
 }
 
+prepare_v51b() {
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_v51b_memorization_ladder.py" \
+    --source-manifest "${V51A_DIAGNOSTIC_VIEW_DIR}/ltsn_manifest_v51a.csv" \
+    --source-split-manifest "${V51A_DIAGNOSTIC_VIEW_DIR}/split_manifest_v51a.json" \
+    --central-evidence "${V51A_DIAGNOSTIC_VIEW_DIR}/central_direction_exact_evidence_v51a.csv" \
+    --output-root "${V51B_LADDER_DIR}" \
+    --rungs 1 4 16 64 \
+    --development-anchors "${V51B_DEVELOPMENT_ANCHORS:-6}"
+}
+
+train_v51b() {
+  local -a rung_values
+  IFS=',' read -r -a rung_values <<< "${V51B_RUNGS:-1,4,16,64}"
+  (( ${#rung_values[@]} > 0 )) || { echo "V51B_RUNGS is empty" >&2; return 2; }
+  local rung rung_name
+  for rung in "${rung_values[@]}"; do
+    case "${rung}" in
+      1|4|16|64) ;;
+      *) echo "V51B_RUNGS entries must be one of 1,4,16,64: ${rung}" >&2; return 2 ;;
+    esac
+    printf -v rung_name 'rung_%03d' "${rung}"
+    [[ -f "${V51B_LADDER_DIR}/${rung_name}/ltsn_manifest_v51b.csv" ]] || {
+      echo "Run prepare-v51b first; missing ${rung_name}" >&2
+      return 3
+    }
+    LTSN_MANIFEST="${V51B_LADDER_DIR}/${rung_name}/ltsn_manifest_v51b.csv" \
+    LTSN_SPLIT_MANIFEST="${V51B_LADDER_DIR}/${rung_name}/split_manifest_v51b.json" \
+    CONFIG="${V51B_CONFIG}" \
+    MODEL_DIR="${V51B_MODEL_ROOT}/${rung_name}" \
+    TRAIN_ENGINEERING_SMOKE=1 \
+    TRAIN_DEVICES= \
+    TRAIN_DEVICE="${V51B_DEVICE:-cuda:1}" \
+      train
+  done
+}
+
+report_v51b() {
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_ltsn_v51b_memorization.py" \
+    --ladder-summary "${V51B_LADDER_DIR}/memorization_ladder.json" \
+    --models-root "${V51B_MODEL_ROOT}" \
+    --output "${V51B_REPORT}" \
+    --maximum-train-loss "${V51B_MAXIMUM_TRAIN_LOSS:-0.1}"
+}
+
 train() {
   [[ -f "${SURROGATE_TRAINING_GATE}" ]] || { echo "Passed ltsn_surrogate_training_v1 gate is required: ${SURROGATE_TRAINING_GATE}" >&2; exit 3; }
   local -a train_device_args
@@ -593,6 +641,9 @@ case "${STAGE}" in
   prepare-v51a) prepare_v51a ;;
   train-v51a) train_v51a ;;
   report-v51a) report_v51a ;;
+  prepare-v51b) prepare_v51b ;;
+  train-v51b) train_v51b ;;
+  report-v51b) report_v51b ;;
   calibrate) calibrate ;;
   calibrate-v5) calibrate_v5 ;;
   calibrate-ood-ablation) calibrate_ood_ablation ;;
@@ -614,5 +665,5 @@ case "${STAGE}" in
   qualify) qualify ;;
   qualify-v5) qualify_v5 ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
 esac

@@ -34,6 +34,7 @@ class LTSNConfig:
     transformer_heads: int = 8
     transformer_layers: int = 2
     dropout: float = 0.1
+    stem_dropout: float = 0.05
     logvar_min: float = -8.0
     logvar_max: float = 4.0
     inactive_coordinate_indices: tuple[int, ...] = ()
@@ -179,7 +180,7 @@ class PathHomologySurrogate(nn.Module):
             nn.Conv1d(cfg.latent_dim, cfg.stem_channels, kernel_size=9, stride=5, padding=4),
             nn.GroupNorm(8, cfg.stem_channels),
             nn.SiLU(),
-            nn.Dropout(0.05),
+            nn.Dropout(cfg.stem_dropout),
         )
         self.time_embedding = FourierStepEmbedding(cfg.condition_dim)
         self.local_projection = nn.Conv1d(cfg.stem_channels, cfg.local_channels, kernel_size=1)
