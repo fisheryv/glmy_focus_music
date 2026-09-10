@@ -333,9 +333,10 @@ def _write_trajectory_manifest(
                 "sample_id": item["sample_id"],
                 "prompt_id": item["prompt_id"],
                 "trajectory_id": item["sample_id"],
-                "split": "train"
-                if item["direction_partition"] == "train_direction"
-                else "development",
+                # Exact labeling enforces prompt-disjoint splits.  Direction
+                # holdout is applied later in separate frozen views, so every
+                # sample from a train anchor stays in the train partition here.
+                "split": ("train" if item["anchor_partition"] == "train_anchor" else "development"),
                 "model_family": anchor["model_family"],
                 "step_number": item["step_number"],
                 "timestep": item["timestep"],

@@ -10,6 +10,7 @@ import pytest
 from generation.ltsn_pipeline import write_csv_atomic
 from generation.ltsn_v52a import (
     _plan_items,
+    _write_trajectory_manifest,
     build_v52a_views,
     mcnemar_exact,
     orthogonal_smooth_directions,
@@ -84,6 +85,76 @@ def test_v52a_plan_freezes_six_train_and_two_holdout_directions(tmp_path: Path) 
     assert sum(row["direction_partition"] == "unseen_anchor" for row in planned) == 32
     assert len({row["direction_group_id"] for row in planned}) == 2 * 8 * 2
     assert all(value["maximum_absolute_pairwise_cosine"] < 1e-5 for value in audit.values())
+
+
+def test_v52a_exact_manifest_keeps_direction_holdout_in_anchor_split(
+    tmp_path: Path,
+) -> None:
+    planned = [
+        {
+            "sample_id": "train_direction",
+            "anchor_sample_id": "train_anchor",
+            "prompt_id": "shared_train_prompt",
+            "step_number": 4,
+            "timestep": 0.5,
+            "anchor_partition": "train_anchor",
+            "direction_partition": "train_direction",
+        },
+        {
+            "sample_id": "heldout_direction",
+            "anchor_sample_id": "train_anchor",
+            "prompt_id": "shared_train_prompt",
+            "step_number": 4,
+            "timestep": 0.5,
+            "anchor_partition": "train_anchor",
+            "direction_partition": "heldout_direction",
+        },
+        {
+            "sample_id": "unseen_direction",
+            "anchor_sample_id": "unseen_anchor",
+            "prompt_id": "unseen_prompt",
+            "step_number": 5,
+            "timestep": 0.4,
+            "anchor_partition": "unseen_anchor",
+            "direction_partition": "unseen_anchor",
+        },
+    ]
+    anchors = {
+        "train_anchor": {
+            "model_family": "acestep-v15-xl-turbo",
+            "ace_model_sha256": "a" * 64,
+            "vae_sha256": "b" * 64,
+        },
+        "unseen_anchor": {
+            "model_family": "acestep-v15-xl-turbo",
+            "ace_model_sha256": "a" * 64,
+            "vae_sha256": "b" * 64,
+        },
+    }
+    receipts = {
+        item["sample_id"]: {
+            "latent_path": f"latents/{item['sample_id']}.npy",
+            "latent_sha256": "c" * 64,
+            "audio_path": f"audio/{item['sample_id']}.wav",
+            "audio_sha256": "d" * 64,
+        }
+        for item in planned
+    }
+    path = tmp_path / "trajectories.csv"
+
+    _write_trajectory_manifest(
+        path=path,
+        planned=planned,
+        anchor_by_id=anchors,
+        receipt_by_id=receipts,
+    )
+
+    rows = _read_rows(path)
+    assert [row["split"] for row in rows] == ["train", "train", "development"]
+    prompt_splits: dict[str, set[str]] = {}
+    for row in rows:
+        prompt_splits.setdefault(row["prompt_id"], set()).add(row["split"])
+    assert all(len(splits) == 1 for splits in prompt_splits.values())
 
 
 def test_v52a_views_separate_direction_and_anchor_holdouts(tmp_path: Path) -> None:
