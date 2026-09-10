@@ -1,0 +1,51 @@
+[model]
+latent_dim = 64
+condition_dim = 128
+stem_channels = 128
+local_channels = 192
+global_channels = 256
+transformer_heads = 8
+transformer_layers = 2
+dropout = 0.0
+stem_dropout = 0.0
+logvar_min = -8.0
+logvar_max = 4.0
+inactive_coordinate_indices = [0, 1, 2]
+
+[training]
+learning_rate = 0.001
+weight_decay = 0.01
+warmup_fraction = 0.0
+minimum_learning_rate = 0.001
+effective_batch_size = 8
+micro_batch_size = 8
+max_epochs = 300
+minimum_epochs = 300
+early_stopping_patience = 300
+gradient_clip_norm = 10.0
+num_workers = 4
+seeds = [20260716]
+use_bf16 = false
+prompt_grouped_batches = true
+qualification_aligned_early_stopping = false
+coordinate_scale_floor = 0.001
+require_ood_both_classes = false
+ood_positive_weight_cap = 20.0
+use_band_improvement_local_loss = false
+normalize_central_direction_by_rms = false
+central_direction_exact_margin = 0.00001
+central_direction_primary_early_stopping = true
+central_direction_classification_only = true
+central_direction_overfit_diagnostic = true
+
+[loss]
+coordinate = 0.0
+nll = 0.0
+score = 0.0
+focus_band = 0.0
+ranking = 0.0
+trajectory_delta = 0.0
+phase_ranking = 0.0
+local_direction = 0.0
+central_direction = 1.0
+ood = 0.0

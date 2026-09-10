@@ -31,6 +31,9 @@ V51B_LADDER_DIR="${V51B_LADDER_DIR:-${RUN_ROOT}/training_augmentation_v51b}"
 V51B_MODEL_ROOT="${V51B_MODEL_ROOT:-${RUN_ROOT}/models_v51b}"
 V51B_REPORT="${V51B_REPORT:-${RUN_ROOT}/v51b_memorization_report.json}"
 V51B_CONFIG="${V51B_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v51b_memorization.toml}"
+V51C_SUITE_DIR="${V51C_SUITE_DIR:-${RUN_ROOT}/training_augmentation_v51c}"
+V51C_MODEL_ROOT="${V51C_MODEL_ROOT:-${RUN_ROOT}/models_v51c}"
+V51C_REPORT="${V51C_REPORT:-${RUN_ROOT}/v51c_ablation_report.json}"
 SOURCE_LTSN_MANIFEST="${SOURCE_LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
 SOURCE_LTSN_SPLIT_MANIFEST="${SOURCE_LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
 LTSN_MANIFEST="${LTSN_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/ltsn_manifest_v3.csv}"
@@ -370,6 +373,74 @@ report_v51b() {
     --maximum-train-loss "${V51B_MAXIMUM_TRAIN_LOSS:-0.1}"
 }
 
+prepare_v51c() {
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_v51c_ablation_suite.py" \
+    --source-manifest "${V51A_DIAGNOSTIC_VIEW_DIR}/ltsn_manifest_v51a.csv" \
+    --source-split-manifest "${V51A_DIAGNOSTIC_VIEW_DIR}/split_manifest_v51a.json" \
+    --central-evidence "${V51A_DIAGNOSTIC_VIEW_DIR}/central_direction_exact_evidence_v51a.csv" \
+    --config-root "${PROJECT_ROOT}/configs" \
+    --output-root "${V51C_SUITE_DIR}"
+}
+
+train_v51c() {
+  local -a variants
+  IFS=',' read -r -a variants <<< "${V51C_VARIANTS:-baseline,restore_dropout,restore_weight_decay,restore_lr_schedule,restore_batch32,restore_short_early_stop,permuted_pair_control}"
+  (( ${#variants[@]} > 0 )) || { echo "V51C_VARIANTS is empty" >&2; return 2; }
+  local variant config_name view_name
+  for variant in "${variants[@]}"; do
+    case "${variant}" in
+      baseline)
+        config_name="ltsn_training_v51c_baseline.toml"
+        view_name="true_pairs"
+        ;;
+      restore_dropout)
+        config_name="ltsn_training_v51c_restore_dropout.toml"
+        view_name="true_pairs"
+        ;;
+      restore_weight_decay)
+        config_name="ltsn_training_v51c_restore_weight_decay.toml"
+        view_name="true_pairs"
+        ;;
+      restore_lr_schedule)
+        config_name="ltsn_training_v51c_restore_lr_schedule.toml"
+        view_name="true_pairs"
+        ;;
+      restore_batch32)
+        config_name="ltsn_training_v51c_restore_batch32.toml"
+        view_name="true_pairs"
+        ;;
+      restore_short_early_stop)
+        config_name="ltsn_training_v51c_restore_short_early_stop.toml"
+        view_name="true_pairs"
+        ;;
+      permuted_pair_control)
+        config_name="ltsn_training_v51c_permuted_pair_control.toml"
+        view_name="permuted_pair_control"
+        ;;
+      *) echo "Unknown V5.1c variant: ${variant}" >&2; return 2 ;;
+    esac
+    [[ -f "${V51C_SUITE_DIR}/${view_name}/ltsn_manifest_v51c.csv" ]] || {
+      echo "Run prepare-v51c first; missing ${view_name} view" >&2
+      return 3
+    }
+    LTSN_MANIFEST="${V51C_SUITE_DIR}/${view_name}/ltsn_manifest_v51c.csv" \
+    LTSN_SPLIT_MANIFEST="${V51C_SUITE_DIR}/${view_name}/split_manifest_v51c.json" \
+    CONFIG="${PROJECT_ROOT}/configs/${config_name}" \
+    MODEL_DIR="${V51C_MODEL_ROOT}/${variant}" \
+    TRAIN_ENGINEERING_SMOKE=1 \
+    TRAIN_DEVICES= \
+    TRAIN_DEVICE="${V51C_DEVICE:-cuda:1}" \
+      train
+  done
+}
+
+report_v51c() {
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_ltsn_v51c_ablation.py" \
+    --suite-summary "${V51C_SUITE_DIR}/ablation_suite.json" \
+    --models-root "${V51C_MODEL_ROOT}" \
+    --output "${V51C_REPORT}"
+}
+
 train() {
   [[ -f "${SURROGATE_TRAINING_GATE}" ]] || { echo "Passed ltsn_surrogate_training_v1 gate is required: ${SURROGATE_TRAINING_GATE}" >&2; exit 3; }
   local -a train_device_args
@@ -644,6 +715,9 @@ case "${STAGE}" in
   prepare-v51b) prepare_v51b ;;
   train-v51b) train_v51b ;;
   report-v51b) report_v51b ;;
+  prepare-v51c) prepare_v51c ;;
+  train-v51c) train_v51c ;;
+  report-v51c) report_v51c ;;
   calibrate) calibrate ;;
   calibrate-v5) calibrate_v5 ;;
   calibrate-ood-ablation) calibrate_ood_ablation ;;
@@ -665,5 +739,5 @@ case "${STAGE}" in
   qualify) qualify ;;
   qualify-v5) qualify_v5 ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|prepare-v51c|train-v51c|report-v51c|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
 esac

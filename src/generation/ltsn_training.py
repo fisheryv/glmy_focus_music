@@ -65,6 +65,7 @@ class LTSNTrainingConfig:
     seeds: tuple[int, ...] = (20260716, 20260717, 20260718)
     use_bf16: bool = True
     prompt_grouped_batches: bool = False
+    central_direction_grouped_batches: bool = False
     qualification_aligned_early_stopping: bool = False
     coordinate_scale_floor: float = 1e-3
     require_ood_both_classes: bool = False
@@ -240,6 +241,59 @@ class PromptGroupedBatchSampler(Sampler[list[int]]):
     def set_epoch(self, epoch: int) -> None:
         """Change only batch order while keeping deterministic prompt-local packing."""
 
+        self.epoch = int(epoch)
+
+    def __iter__(self) -> Iterator[list[int]]:
+        yield from self._batches()
+
+    def __len__(self) -> int:
+        return len(self._batches())
+
+
+class CentralDirectionBatchSampler(Sampler[list[int]]):
+    """Keep arbitrary central-direction pairs intact for diagnostic controls."""
+
+    def __init__(self, records: Sequence[LTSNSnapshot], batch_size: int, seed: int) -> None:
+        self.batch_size = batch_size
+        self.seed = seed
+        self.epoch = 0
+        grouped: dict[str, list[int]] = defaultdict(list)
+        unpaired: list[int] = []
+        for index, record in enumerate(records):
+            if record.local_direction_group_id:
+                grouped[record.local_direction_group_id].append(index)
+            else:
+                unpaired.append(index)
+        units: list[tuple[int, ...]] = []
+        for group_id, indices in sorted(grouped.items()):
+            if len(indices) != 2:
+                raise LTSNContractError(
+                    f"central-direction sampler received an incomplete pair: {group_id}"
+                )
+            units.append(tuple(sorted(indices)))
+        units.extend((index,) for index in unpaired)
+        if not units:
+            raise LTSNContractError("central-direction sampler received no training records")
+        if any(len(unit) > batch_size for unit in units):
+            raise LTSNContractError("central-direction group exceeds micro batch size")
+        self.units = tuple(units)
+
+    def _batches(self) -> list[list[int]]:
+        rng = random.Random(self.seed + self.epoch)
+        units = list(self.units)
+        rng.shuffle(units)
+        output: list[list[int]] = []
+        batch: list[int] = []
+        for unit in units:
+            if batch and len(batch) + len(unit) > self.batch_size:
+                output.append(batch)
+                batch = []
+            batch.extend(unit)
+        if batch:
+            output.append(batch)
+        return output
+
+    def set_epoch(self, epoch: int) -> None:
         self.epoch = int(epoch)
 
     def __iter__(self) -> Iterator[list[int]]:
@@ -911,11 +965,14 @@ def _train_seed(
         pin_memory=device.type == "cuda",
     )
     train_dataset = LTSNSnapshotDataset(records, "train")
-    sampler: Sampler[list[int]] = (
-        PromptGroupedBatchSampler(train_dataset.records, training.micro_batch_size, seed)
-        if training.prompt_grouped_batches
-        else TrajectoryBatchSampler(train_dataset.records, training.micro_batch_size, seed)
-    )
+    if training.central_direction_grouped_batches:
+        sampler: Sampler[list[int]] = CentralDirectionBatchSampler(
+            train_dataset.records, training.micro_batch_size, seed
+        )
+    elif training.prompt_grouped_batches:
+        sampler = PromptGroupedBatchSampler(train_dataset.records, training.micro_batch_size, seed)
+    else:
+        sampler = TrajectoryBatchSampler(train_dataset.records, training.micro_batch_size, seed)
     train_loader = DataLoader(
         train_dataset,
         batch_sampler=sampler,
@@ -959,7 +1016,7 @@ def _train_seed(
     stale = 0
     history: list[dict[str, Any]] = []
     for epoch in range(1, training.max_epochs + 1):
-        if isinstance(sampler, PromptGroupedBatchSampler):
+        if isinstance(sampler, (PromptGroupedBatchSampler, CentralDirectionBatchSampler)):
             sampler.set_epoch(epoch)
         model.train()
         optimizer.zero_grad(set_to_none=True)
@@ -1005,9 +1062,7 @@ def _train_seed(
             focus_band_threshold=target_contract.get("focus_band_threshold"),
             normalize_central_direction_by_rms=(training.normalize_central_direction_by_rms),
             central_direction_exact_margin=training.central_direction_exact_margin,
-            central_direction_classification_only=(
-                training.central_direction_classification_only
-            ),
+            central_direction_classification_only=(training.central_direction_classification_only),
             central_direction_primary=training.central_direction_primary_early_stopping,
         )
         overfit_training: dict[str, float] = {}
@@ -1017,9 +1072,7 @@ def _train_seed(
                 predict_dataset(model, overfit_loader, device),
                 active_mask=target_contract["active_coordinate_mask"],
                 focus_band_threshold=target_contract.get("focus_band_threshold"),
-                normalize_central_direction_by_rms=(
-                    training.normalize_central_direction_by_rms
-                ),
+                normalize_central_direction_by_rms=(training.normalize_central_direction_by_rms),
                 central_direction_exact_margin=training.central_direction_exact_margin,
                 central_direction_classification_only=(
                     training.central_direction_classification_only
@@ -1027,7 +1080,8 @@ def _train_seed(
                 central_direction_primary=True,
             )
             selection_objective = (
-                1.0 - overfit_training["central_direction_agreement"]
+                1.0
+                - overfit_training["central_direction_agreement"]
                 + 0.25 * (1.0 - overfit_training["central_derivative_spearman"])
             )
         history.append(
@@ -1043,10 +1097,7 @@ def _train_seed(
                 "learning_rate": optimizer.param_groups[0]["lr"],
                 "selection_objective": selection_objective,
                 **development,
-                **{
-                    f"overfit_train_{name}": value
-                    for name, value in overfit_training.items()
-                },
+                **{f"overfit_train_{name}": value for name, value in overfit_training.items()},
             }
         )
         if selection_objective < best_objective - 1e-8:
@@ -1181,12 +1232,16 @@ def train_ensemble(
             )
         if (
             training.use_bf16
-            or not training.prompt_grouped_batches
+            or not (training.prompt_grouped_batches or training.central_direction_grouped_batches)
             or not training.central_direction_classification_only
         ):
             raise LTSNContractError(
-                "V5.1a overfit diagnostic requires FP32, prompt-grouped batches, "
+                "V5.1a overfit diagnostic requires FP32, grouped direction batches, "
                 "and direction-classification loss"
+            )
+        if training.prompt_grouped_batches and training.central_direction_grouped_batches:
+            raise LTSNContractError(
+                "diagnostic training cannot enable both prompt and central-direction samplers"
             )
     devices = _resolve_training_devices(training.seeds, device_name, device_names)
     for value in devices:
