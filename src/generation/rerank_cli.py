@@ -28,7 +28,12 @@ def _print(payload: dict[str, Any]) -> None:
 
 def _load(args: argparse.Namespace) -> tuple[Path, ExperimentConfig]:
     root = args.root.resolve()
-    config = load_experiment_config(root, args.config, run_id=args.run_id)
+    config = load_experiment_config(
+        root,
+        args.config,
+        run_id=args.run_id,
+        prompt_manifest=args.prompt_manifest,
+    )
     return root, config
 
 
@@ -230,6 +235,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--root", type=Path, default=Path.cwd())
     parser.add_argument("--config", type=Path, default=Path("configs/ace_rerank_180s.toml"))
     parser.add_argument("--run-id")
+    parser.add_argument(
+        "--prompt-manifest",
+        help="project-relative prompt CSV override; frozen into the selected run",
+    )
     parser.add_argument("--backend", choices=("ace", "fake"), default="ace")
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--noninferiority-report", type=Path)

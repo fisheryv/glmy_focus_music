@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from .artifact_hash import sha256_directory
 from .experiment import AceConfig
 
 
@@ -46,6 +47,10 @@ class AceStepAdapter:
         self._api: tuple[Any, Any, Any] | None = None
         self._topology_corrector: Any | None = None
         self._device = self.config.device
+        self._lora_path: Path | None = None
+        self._lora_sha256: str | None = None
+        self._lora_scale: float | None = None
+        self._lora_enabled = False
 
     def set_topology_corrector(self, corrector: Any | None) -> None:
         """Install a qualified experimental corrector on the PyTorch ACE backend."""
@@ -55,6 +60,51 @@ class AceStepAdapter:
         self._topology_corrector = corrector
         if self._handler is not None:
             self._handler.set_topology_corrector(corrector)
+
+    @staticmethod
+    def _require_lora_success(message: Any, action: str) -> None:
+        if not isinstance(message, str) or not message.startswith("✅"):
+            raise RuntimeError(f"ACE-Step LoRA {action} failed: {message}")
+
+    def load_lora(
+        self,
+        lora_path: Path,
+        *,
+        scale: float,
+        expected_sha256: str,
+    ) -> None:
+        """Load one hash-bound LoRA adapter and enable it for inference."""
+
+        resolved = lora_path.resolve()
+        if self.config.quantization is not None:
+            raise ValueError("topology LoRA inference forbids quantized ACE models")
+        if not resolved.is_dir():
+            raise FileNotFoundError(f"LoRA directory not found: {resolved}")
+        if not 0.0 <= scale <= 1.0:
+            raise ValueError("LoRA scale must lie in [0, 1]")
+        actual_sha256 = sha256_directory(resolved)
+        if actual_sha256 != expected_sha256:
+            raise ValueError("LoRA directory hash differs from the expected artifact")
+        self.initialize()
+        assert self._handler is not None
+        self._require_lora_success(self._handler.load_lora(str(resolved)), "load")
+        self._require_lora_success(self._handler.set_lora_scale(scale), "scale")
+        self._require_lora_success(self._handler.set_use_lora(True), "enable")
+        self._lora_path = resolved
+        self._lora_sha256 = actual_sha256
+        self._lora_scale = float(scale)
+        self._lora_enabled = True
+
+    def set_lora_enabled(self, enabled: bool) -> None:
+        """Toggle an already loaded LoRA without changing its frozen scale."""
+
+        if self._handler is None or self._lora_path is None:
+            raise RuntimeError("no LoRA adapter has been loaded")
+        self._require_lora_success(
+            self._handler.set_use_lora(bool(enabled)),
+            "enable" if enabled else "disable",
+        )
+        self._lora_enabled = bool(enabled)
 
     def _import_api(self) -> tuple[Any, Any, Any, Any]:
         checkout_text = str(self.checkout)
@@ -158,6 +208,10 @@ class AceStepAdapter:
             "model": self.config.model,
             "model_repository": self.config.model_repository,
             "device": self._device,
+            "lora_enabled": self._lora_enabled,
+            "lora_path": str(self._lora_path) if self._lora_path else None,
+            "lora_sha256": self._lora_sha256,
+            "lora_scale": self._lora_scale,
         }
         return GenerationResult(
             audio_path=audio_path.resolve(),

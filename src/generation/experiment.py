@@ -150,7 +150,11 @@ def _section(cls: type[Any], raw: dict[str, Any], name: str) -> Any:
 
 
 def load_experiment_config(
-    root: Path, path: Path, *, run_id: str | None = None
+    root: Path,
+    path: Path,
+    *,
+    run_id: str | None = None,
+    prompt_manifest: str | None = None,
 ) -> ExperimentConfig:
     resolved = path if path.is_absolute() else root / path
     with resolved.open("rb") as handle:
@@ -158,6 +162,8 @@ def load_experiment_config(
     experiment = dict(raw.get("experiment", {}))
     if run_id is not None:
         experiment["run_id"] = run_id
+    if prompt_manifest is not None:
+        experiment["prompt_manifest"] = prompt_manifest
     config = ExperimentConfig(
         **experiment,
         ace=_section(AceConfig, dict(raw.get("ace", {})), "ace"),

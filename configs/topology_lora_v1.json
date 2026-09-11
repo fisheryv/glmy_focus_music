@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "experiment": "exact_reranking_distilled_topology_lora_v1",
+  "status": "frozen_before_training",
+  "activation_tag": "topology_focus",
+  "teacher": {
+    "candidate_count": 8,
+    "include_untagged_baseline_replay": true,
+    "selection": "technical_quality_eligible_then_minimum_exact_18d_focus_band_loss"
+  },
+  "model": {
+    "checkout": "ACE-Step-1.5",
+    "checkpoint_dir": "ACE-Step-1.5/checkpoints",
+    "variant": "xl_turbo",
+    "base_model": "xl_turbo",
+    "device": "cuda:0",
+    "precision": "bf16"
+  },
+  "preprocess": {
+    "max_duration_seconds": 180
+  },
+  "training": {
+    "adapter_type": "lora",
+    "rank": 64,
+    "alpha": 128,
+    "dropout": 0.1,
+    "target_modules": [
+      "q_proj",
+      "k_proj",
+      "v_proj",
+      "o_proj"
+    ],
+    "attention_type": "both",
+    "learning_rate": 0.0001,
+    "batch_size": 1,
+    "gradient_accumulation": 4,
+    "epochs": 100,
+    "save_every_epochs": 10,
+    "seed": 42
+  },
+  "validation": {
+    "development_scales": [0.5, 0.75, 1.0],
+    "qualification_scale_source": "single_scale_selected_on_development_only",
+    "paired_topology_win_rate_minimum": 0.5,
+    "paired_topology_wilson_ci95_low_must_exceed": 0.5,
+    "median_exact_loss_change_must_be_negative": true,
+    "all_lora_outputs_must_pass_technical_quality": true,
+    "production_requires_separate_blind_quality_prompt_diversity_noninferiority": true
+  }
+}

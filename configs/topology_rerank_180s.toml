@@ -1,0 +1,39 @@
+[experiment]
+run_id = "topology_bestof8_formal_v1"
+prompt_manifest = "generation/prompts/ace_rerank_formal.csv"
+candidate_count = 8
+seed_start = 2026091100
+duration_seconds = 180.0
+workers = 2
+save_latents = false
+run_directory = "runs/topology_rerank_lora_v1/rerank"
+
+[ace]
+checkout = "ACE-Step-1.5"
+model = "acestep-v15-xl-turbo"
+model_repository = "ACE-Step/acestep-v15-xl-turbo"
+device = "cuda:1"
+inference_steps = 8
+shift = 3.0
+infer_method = "ode"
+sampler_mode = "euler"
+guidance_scale = 1.0
+compile_model = false
+offload_to_cpu = false
+offload_dit_to_cpu = false
+dcw_enabled = true
+dcw_mode = "double"
+dcw_scaler = 0.05
+dcw_high_scaler = 0.02
+dcw_wavelet = "haar"
+
+[scoring]
+fingerprint_path = "metadata/focus_path_homology_fingerprint_v2.json"
+noninferiority_protocol_path = "configs/ace_reranking_noninferiority.json"
+success_min_median_improvement = 0.10
+minimum_prompt_pools = 20
+permutations = 999
+bootstrap_resamples = 1000
+maximum_clip_fraction = 0.01
+minimum_rms = 0.0001
+maximum_dc_offset = 0.05
