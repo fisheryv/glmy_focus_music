@@ -1,0 +1,33 @@
+[target]
+target_id = "tac_topology_target_v1"
+spec_revision = "2026-09-11-stage0"
+fingerprint_path = "metadata/focus_path_homology_fingerprint_v2.json"
+scores_path = "metadata/focus_path_homology_fingerprint_v2_scores.csv"
+pitch_path = "metadata/pitch_v2_topology_segments.csv"
+phase_path = "metadata/phase_lifted_path_homology_features.csv"
+reference_split = "discovery"
+reference_group = "focus"
+reference_scale_seconds = 180.0
+dimensions = 18
+
+[geometry]
+pitch_active_indices = [3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+acoustic_phase_index = 16
+chroma_phase_index = 17
+distance_weights = [0.5, 0.25, 0.25]
+robust_center = "median"
+robust_scale = "normalized_mad_with_iqr_std_fallback"
+pitch_covariance = "fixed_identity_shrinkage"
+pitch_shrinkage = 0.1
+pitch_distance_normalization = "active_dimension_count"
+
+[reference_bands]
+quantiles = [0.5, 0.9, 0.95]
+
+[evidence]
+role = "development_diagnostic"
+scientific_evidence = false
+qualification_eligible = false
+guidance_promotion_eligible = false
+production_authorization = false
+

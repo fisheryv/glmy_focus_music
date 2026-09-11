@@ -13,7 +13,12 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from .ltsn_contract import LTSNContractError, load_fingerprint_contract, sha256_file
+from .ltsn_contract import (
+    LTSNContractError,
+    load_fingerprint_contract,
+    reject_reference_only_artifact,
+    sha256_file,
+)
 from .ltsn_dataset import LTSNSnapshotDataset, collate_ltsn_batch, read_ltsn_manifest
 from .ltsn_pipeline import canonical_json_sha256, write_json_atomic
 from .ltsn_training import load_checkpoint_model, predict_dataset, spearman_correlation
@@ -488,6 +493,7 @@ def qualify_ensemble(
     if sha256_file(manifest_path) != ensemble["metadata"]["training_manifest_sha256"]:
         raise LTSNContractError("qualification manifest differs from the trained ensemble")
     calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
+    reject_reference_only_artifact(calibration, "calibration artifact")
     if calibration.get("ensemble_manifest_sha256") != sha256_file(ensemble_manifest):
         raise LTSNContractError("calibration belongs to a different ensemble")
     if (
@@ -533,6 +539,7 @@ def qualify_ensemble(
     direction_payload = None
     if guidance_development_report is not None:
         direction_payload = json.loads(guidance_development_report.read_text(encoding="utf-8"))
+        reject_reference_only_artifact(direction_payload, "development guidance report")
         if direction_payload.get("mode") != "development":
             raise LTSNContractError("qualification requires a development guidance report")
         if direction_payload.get("authorization_scope") != "development_only":
@@ -650,6 +657,7 @@ def evaluate_guidance_pairs(
                 "confirmation requires a passed independent qualification report"
             )
         qualification = json.loads(qualification_report.read_text(encoding="utf-8"))
+        reject_reference_only_artifact(qualification, "qualification report")
         if qualification.get("fingerprint_json_sha256") != fingerprint_sha256:
             raise LTSNContractError("qualification report uses a different exact scorer")
         qualification_passed = qualification.get("qualification_passed") is True

@@ -42,6 +42,9 @@ V52B_DIR="${V52B_DIR:-${RUN_ROOT}/training_augmentation_v52b}"
 V52B_MODEL_ROOT="${V52B_MODEL_ROOT:-${RUN_ROOT}/models_v52b}"
 V52B_REPORT="${V52B_REPORT:-${RUN_ROOT}/v52b_probe_report.json}"
 V52B_CONFIG="${V52B_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v52b_probe.toml}"
+TAC_TARGET="${TAC_TARGET:-${PROJECT_ROOT}/metadata/tac_topology_target_v1.json}"
+V52C_DIR="${V52C_DIR:-${RUN_ROOT}/tac_v52c}"
+V52C_REPORT="${V52C_REPORT:-${V52C_DIR}/v52c_response_report.json}"
 SOURCE_LTSN_MANIFEST="${SOURCE_LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
 SOURCE_LTSN_SPLIT_MANIFEST="${SOURCE_LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
 LTSN_MANIFEST="${LTSN_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/ltsn_manifest_v3.csv}"
@@ -572,6 +575,53 @@ report_v52b() {
     --device "${V52B_EVAL_DEVICE:-cuda:0}"
 }
 
+build_tac_target() {
+  PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_tac_topology_target.py" \
+    --root "${PROJECT_ROOT}" \
+    --config "${PROJECT_ROOT}/configs/tac_topology_target_v1.toml" \
+    --output "${TAC_TARGET}"
+}
+
+collect_v52c() {
+  : "${ACE_MODEL_SHA256:?Set ACE_MODEL_SHA256 to the 64-hex model tree digest}"
+  : "${VAE_SHA256:?Set VAE_SHA256 to the 64-hex VAE tree digest}"
+  [[ -f "${TAC_TARGET}" ]] || {
+    echo "Run build-tac-target first" >&2
+    return 3
+  }
+  [[ -f "${V52A_DIR}/v52a_generation_plan.json" ]] || {
+    echo "V5.2a plan is required: ${V52A_DIR}/v52a_generation_plan.json" >&2
+    return 3
+  }
+  ACESTEP_DEVICE="${V52C_DEVICE:-cuda:0}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/collect_tac_v52c.py" \
+    --root "${PROJECT_ROOT}" \
+    --source-manifest "${V51A_DIAGNOSTIC_VIEW_DIR}/ltsn_manifest_v51a.csv" \
+    --v52a-plan "${V52A_DIR}/v52a_generation_plan.json" \
+    --v52a-master "${V52A_DIR}/ltsn_manifest_v52a_master.csv" \
+    --ace-config "${PROJECT_ROOT}/configs/ace_rerank_180s.toml" \
+    --fingerprint "${FINGERPRINT}" \
+    --target "${TAC_TARGET}" \
+    --output-dir "${V52C_DIR}" \
+    --ace-model-sha256 "${ACE_MODEL_SHA256}" \
+    --vae-sha256 "${VAE_SHA256}" \
+    --workers "${V52C_EXACT_WORKERS:-8}" \
+    --batch-size "${V52C_BATCH_SIZE:-64}" \
+    --materialize-mode "${MATERIALIZE_MODE:-auto}" \
+    --device "${V52C_DEVICE:-cuda:0}"
+}
+
+report_v52c() {
+  [[ -f "${V52C_DIR}/v52c_response_points.csv" ]] || {
+    echo "Run collect-v52c first" >&2
+    return 3
+  }
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/report_tac_v52c.py" \
+    --response-points "${V52C_DIR}/v52c_response_points.csv" \
+    --output "${V52C_REPORT}"
+}
+
 train() {
   [[ -f "${SURROGATE_TRAINING_GATE}" ]] || { echo "Passed ltsn_surrogate_training_v1 gate is required: ${SURROGATE_TRAINING_GATE}" >&2; exit 3; }
   local -a train_device_args
@@ -855,6 +905,9 @@ case "${STAGE}" in
   prepare-v52b) prepare_v52b ;;
   train-v52b) train_v52b ;;
   report-v52b) report_v52b ;;
+  build-tac-target) build_tac_target ;;
+  collect-v52c) collect_v52c ;;
+  report-v52c) report_v52c ;;
   calibrate) calibrate ;;
   calibrate-v5) calibrate_v5 ;;
   calibrate-ood-ablation) calibrate_ood_ablation ;;
@@ -876,5 +929,5 @@ case "${STAGE}" in
   qualify) qualify ;;
   qualify-v5) qualify_v5 ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|prepare-v51c|train-v51c|report-v51c|collect-v52a|train-v52a|report-v52a|prepare-v52b|train-v52b|report-v52b|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|prepare-v51c|train-v51c|report-v51c|collect-v52a|train-v52a|report-v52a|prepare-v52b|train-v52b|report-v52b|build-tac-target|collect-v52c|report-v52c|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
 esac

@@ -141,6 +141,35 @@ def test_confirmation_rejects_missing_qualification(tmp_path: Path) -> None:
         )
 
 
+def test_confirmation_rejects_reference_only_qualification(tmp_path: Path) -> None:
+    fingerprint_sha256 = load_fingerprint_contract(FINGERPRINT).artifact_sha256
+    qualification = tmp_path / "qualification.json"
+    qualification.write_text(
+        json.dumps(
+            {
+                "qualification_passed": True,
+                "fingerprint_json_sha256": fingerprint_sha256,
+                "reference_only": True,
+                "synthetic": True,
+                "scientific_evidence": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    pairs = tmp_path / "pairs.csv"
+    _write_pairs(pairs, fingerprint_sha256, diversity=True)
+
+    with pytest.raises(LTSNContractError, match="synthetic/reference-only"):
+        evaluate_guidance_pairs(
+            pair_table=pairs,
+            output_path=tmp_path / "confirmation.json",
+            fingerprint_sha256=fingerprint_sha256,
+            mode="confirmation",
+            qualification_report=qualification,
+            bootstrap_resamples=100,
+        )
+
+
 def test_development_pairs_are_scope_limited_and_never_promotable(tmp_path: Path) -> None:
     fingerprint_sha256 = load_fingerprint_contract(FINGERPRINT).artifact_sha256
     pairs = tmp_path / "pairs.csv"

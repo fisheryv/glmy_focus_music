@@ -26,6 +26,19 @@ class LTSNContractError(ValueError):
     """Raised when a scorer or LTSN checkpoint violates the frozen contract."""
 
 
+def reject_reference_only_artifact(payload: Mapping[str, Any], name: str) -> None:
+    """Keep synthetic comparison fixtures out of authorization paths."""
+
+    if (
+        payload.get("reference_only") is True
+        or payload.get("synthetic") is True
+        or payload.get("scientific_evidence") is False
+    ):
+        raise LTSNContractError(
+            f"{name} is synthetic/reference-only and cannot authorize production use"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class FingerprintContract:
     """Validated runtime subset of the frozen exact-scorer artifact."""

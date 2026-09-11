@@ -10,6 +10,7 @@ from generation.ltsn_contract import (
     DISTANCE_WEIGHTS,
     LTSNContractError,
     load_fingerprint_contract,
+    reject_reference_only_artifact,
     validate_checkpoint_metadata,
 )
 
@@ -62,6 +63,19 @@ def _checkpoint_metadata(contract):
         "ace_model_sha256": "7" * 64,
         "vae_sha256": "8" * 64,
     }
+
+
+@pytest.mark.parametrize(
+    "marker",
+    [
+        {"reference_only": True},
+        {"synthetic": True},
+        {"scientific_evidence": False},
+    ],
+)
+def test_reference_only_artifacts_cannot_authorize(marker) -> None:
+    with pytest.raises(LTSNContractError, match="synthetic/reference-only"):
+        reject_reference_only_artifact(marker, "qualification report")
 
 
 def test_loads_frozen_18d_contract_and_checkpoint(tmp_path) -> None:
