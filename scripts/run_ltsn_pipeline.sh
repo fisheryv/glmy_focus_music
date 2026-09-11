@@ -50,6 +50,8 @@ V52D_REPEAT_DIR="${V52D_REPEAT_DIR:-${V52D_DIR}/repeatability}"
 V52D_ACTION_DIR="${V52D_ACTION_DIR:-${V52D_DIR}/actions}"
 V52D_REPEAT_REPORT="${V52D_REPEAT_REPORT:-${V52D_REPEAT_DIR}/v52d_repeatability_report.json}"
 V52D_ACTION_REPORT="${V52D_ACTION_REPORT:-${V52D_ACTION_DIR}/v52d_action_report.json}"
+V52E_DIR="${V52E_DIR:-${RUN_ROOT}/tac_v52e}"
+V52E_REPORT="${V52E_REPORT:-${V52E_DIR}/v52e_action_report.json}"
 SOURCE_LTSN_MANIFEST="${SOURCE_LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
 SOURCE_LTSN_SPLIT_MANIFEST="${SOURCE_LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
 LTSN_MANIFEST="${LTSN_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/ltsn_manifest_v3.csv}"
@@ -689,6 +691,49 @@ report_v52d() {
     --output "${V52D_ACTION_REPORT}"
 }
 
+collect_v52e() {
+  : "${ACE_MODEL_SHA256:?Set ACE_MODEL_SHA256 to the 64-hex model tree digest}"
+  : "${VAE_SHA256:?Set VAE_SHA256 to the 64-hex VAE tree digest}"
+  [[ -f "${V52D_REPEAT_DIR}/v52d_repeatability_plan.json" ]] || {
+    echo "Run collect-v52d-repeatability first" >&2
+    return 3
+  }
+  [[ -f "${V52D_REPEAT_REPORT}" && -f "${V52D_ACTION_REPORT}" ]] || {
+    echo "Completed V5.2d repeatability and action reports are required" >&2
+    return 3
+  }
+  ACESTEP_DEVICE="${V52E_DEVICE:-cuda:0}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/collect_tac_v52e.py" \
+    --root "${PROJECT_ROOT}" \
+    --source-manifest "${V51A_DIAGNOSTIC_VIEW_DIR}/ltsn_manifest_v51a.csv" \
+    --v52c-plan "${V52C_DIR}/v52c_generation_plan.json" \
+    --v52d-repeatability-plan "${V52D_REPEAT_DIR}/v52d_repeatability_plan.json" \
+    --v52d-repeatability-report "${V52D_REPEAT_REPORT}" \
+    --v52d-action-report "${V52D_ACTION_REPORT}" \
+    --prompt-manifest "${PROMPT_MANIFEST}" \
+    --ace-config "${PROJECT_ROOT}/configs/ace_rerank_180s.toml" \
+    --fingerprint "${FINGERPRINT}" \
+    --target "${TAC_TARGET}" \
+    --output-dir "${V52E_DIR}" \
+    --ace-model-sha256 "${ACE_MODEL_SHA256}" \
+    --vae-sha256 "${VAE_SHA256}" \
+    --device "${V52E_DEVICE:-cuda:0}" \
+    --workers "${V52E_EXACT_WORKERS:-8}" \
+    --batch-size "${V52E_BATCH_SIZE:-12}" \
+    --materialize-mode "${MATERIALIZE_MODE:-auto}"
+}
+
+report_v52e() {
+  [[ -f "${V52E_DIR}/v52e_action_points.csv" ]] || {
+    echo "Run collect-v52e first" >&2
+    return 3
+  }
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/report_tac_v52e.py" \
+    --repeatability-report "${V52D_REPEAT_REPORT}" \
+    --action-points "${V52E_DIR}/v52e_action_points.csv" \
+    --output "${V52E_REPORT}"
+}
+
 train() {
   [[ -f "${SURROGATE_TRAINING_GATE}" ]] || { echo "Passed ltsn_surrogate_training_v1 gate is required: ${SURROGATE_TRAINING_GATE}" >&2; exit 3; }
   local -a train_device_args
@@ -978,6 +1023,8 @@ case "${STAGE}" in
   collect-v52d-repeatability) collect_v52d_repeatability ;;
   collect-v52d-actions) collect_v52d_actions ;;
   report-v52d) report_v52d ;;
+  collect-v52e) collect_v52e ;;
+  report-v52e) report_v52e ;;
   calibrate) calibrate ;;
   calibrate-v5) calibrate_v5 ;;
   calibrate-ood-ablation) calibrate_ood_ablation ;;
@@ -999,5 +1046,5 @@ case "${STAGE}" in
   qualify) qualify ;;
   qualify-v5) qualify_v5 ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|prepare-v51c|train-v51c|report-v51c|collect-v52a|train-v52a|report-v52a|prepare-v52b|train-v52b|report-v52b|build-tac-target|collect-v52c|report-v52c|collect-v52d-repeatability|collect-v52d-actions|report-v52d|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|prepare-v51c|train-v51c|report-v51c|collect-v52a|train-v52a|report-v52a|prepare-v52b|train-v52b|report-v52b|build-tac-target|collect-v52c|report-v52c|collect-v52d-repeatability|collect-v52d-actions|report-v52d|collect-v52e|report-v52e|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
 esac

@@ -137,12 +137,14 @@ class OnManifoldActionHook:
         scale: float = 0.0,
         sign: float = 0.0,
         seed: int = 20260912,
+        allowed_scales: Sequence[float] = V52D_SCALES,
     ) -> None:
         if target_step not in {4, 5, 6}:
             raise ValueError("V5.2d target step must be 4, 5, or 6")
         if basis_name is not None and basis_name not in V52D_ALL_BASES:
             raise ValueError(f"unsupported V5.2d basis: {basis_name}")
-        if basis_name is not None and (scale not in V52D_SCALES or sign not in {-1.0, 1.0}):
+        frozen_scales = tuple(float(value) for value in allowed_scales)
+        if basis_name is not None and (scale not in frozen_scales or sign not in {-1.0, 1.0}):
             raise ValueError("V5.2d action scale or sign changed")
         self.anchor_id = anchor_id
         self.target_step = target_step
@@ -150,6 +152,7 @@ class OnManifoldActionHook:
         self.scale = float(scale)
         self.sign = float(sign)
         self.seed = int(seed)
+        self.allowed_scales = frozen_scales
         self.history: list[np.ndarray] = []
         self.audit: dict[str, Any] | None = None
 
@@ -561,6 +564,7 @@ def _exact_batch(
     exact_repeats: int,
     workers: int,
     materialize_mode: str,
+    experiment: str = V52D_EXPERIMENT,
 ) -> tuple[list[dict[str, str]], list[dict[str, Any]]]:
     batch_dir = output_dir / "batches" / f"batch_{batch_index:05d}"
     logical_ids = [str(row["sample_id"]) for row in records]
@@ -592,7 +596,7 @@ def _exact_batch(
                     "is_final": "true",
                     "ace_model_sha256": record["ace_model_sha256"],
                     "vae_sha256": record["vae_sha256"],
-                    "training_augmentation_kind": V52D_EXPERIMENT,
+                    "training_augmentation_kind": experiment,
                     "local_anchor_sample_id": "",
                 }
             )

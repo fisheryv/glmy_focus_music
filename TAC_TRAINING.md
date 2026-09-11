@@ -126,6 +126,44 @@ McNemar 检验显著优于随机对照、动作效应中位数超过重复性噪
 只有 `stage1d_status=supported_for_critic_collection` 且 `next_stage_authorized=true` 才进入
 Stage 2。
 
+## Stage 1e：V5.2e fresh-anchor 预注册确认
+
+V5.2d 未通过时，不修改门禁，也不在其 action 标签上继续调参。V5.2e 自动从 V5.2c 的 16 个
+anchors 中排除 V5.2d 已使用的 8 个，仅使用剩余 8 个 fresh anchors。动作方向冻结为
+PCA-1/PCA-2 及其一一匹配的 random-1/random-2，尺度冻结为 `0.125/0.25/0.5`，其中
+`0.25` 是符号参考尺度：
+
+```text
+8 fresh anchors × 4 bases × 3 scales × 2 signs = 192 full rollouts
+```
+
+本实验复用已通过的 V5.2d repeatability 噪声工件，但不复用任何 V5.2d action 标签。采集器
+会哈希绑定 V5.2c 计划、V5.2d repeatability 计划/报告、V5.2d action 报告、prompt、配置、
+冻结指纹和 TAC target，并拒绝非 `not_supported` 的 V5.2d 输入。运行：
+
+```bash
+export RUN_ROOT=$PWD/runs/ltsn_turbo
+export ACE_MODEL_SHA256=<与-v52d-一致的64位sha256>
+export VAE_SHA256=<与-v52d-一致的64位sha256>
+export V52E_DEVICE=cuda:0
+export V52E_EXACT_WORKERS=8
+export V52E_BATCH_SIZE=12
+
+bash scripts/run_ltsn_pipeline.sh collect-v52e
+bash scripts/run_ltsn_pipeline.sh report-v52e
+python -m json.tool "$RUN_ROOT/tac_v52e/v52e_action_report.json"
+```
+
+单卡运行，避免跨 GPU 重复性污染。每个 action 都从同一 prompt/seed 完整重跑，在目标 step
+注入后继续去噪；WAV 在每个 exact batch 完成后删除，中断后可直接重跑恢复。最终
+`retained_wav_files` 必须为 0，保留 192 个 final latent、descriptor、points、outcomes、plan
+和 report。
+
+确认门禁与 V5.2d 相同：on-manifold 跨尺度一致率至少 0.80、Wilson 95% 下界高于 0.50、
+一一匹配 McNemar `p < 0.05` 且 on-manifold-only 更多、效应中位数大于三倍 repeatability
+噪声、全部 pairs 为 ID。tie 按失败计。basis/step/anchor 分层只作描述，不得替代预注册门禁。
+仅当 `stage1e_status=supported_for_critic_collection` 且 `next_stage_authorized=true` 才进入 Stage 2。
+
 ## Stage 2：TAC critic（等待 Stage 1 授权）
 
 Stage 1 通过后再实现并采集 on-manifold action 数据。首轮 64 anchors，每个 anchor 约 48 个
