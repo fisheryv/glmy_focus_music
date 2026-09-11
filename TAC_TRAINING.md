@@ -80,8 +80,51 @@ cross_radius_sign.agreement >= 0.80
 cross_radius_sign.wilson95[0] > 0.50
 ```
 
-只有 `stage1_status == "supported_for_critic_collection"` 且
-`next_stage_authorized == true` 才进入 Stage 2。不要因为失败而降低阈值。
+V5.2c 实测未通过上述门禁，因此不能直接进入 critic。不要因为失败而降低阈值；使用下面的
+V5.2d 测量重复性和真实 rollout action。
+
+## Stage 1d：V5.2d on-manifold rollout audit
+
+XL-Turbo 是 CFG 蒸馏模型，没有 conditional/unconditional 双分支，所以本实验明确记录
+`cfg_residual=unavailable_xl_turbo_cfg_distilled_no_unconditional_branch`，不构造伪 CFG
+方向。三个 on-manifold basis 是当前 scheduler update 与历史更新 PCA-1/PCA-2；三个随机
+方向在同一有效 latent 子空间内正交化，并与上述方向一一匹配。
+
+先运行 8-anchor 重复性审计：每个 anchor 重复三次完整 no-op rollout，每个音频重复两次
+exact extraction。latent 与 FLOAT WAV 的 bitwise hash 作为定位信息；硬门禁要求 exact
+extraction bitwise 一致、目标距离噪声 95% 分位数不超过 baseline 中位距离的 1%，且全部重复
+样本为 ID。action 采集阶段还要求动作效应超过实测噪声三倍。
+
+```bash
+export RUN_ROOT=$PWD/runs/ltsn_turbo
+export ACE_MODEL_SHA256=<与-v52a/v52c-一致的64位sha256>
+export VAE_SHA256=<与-v52a/v52c-一致的64位sha256>
+export V52D_DEVICE=cuda:0
+export V52D_EXACT_WORKERS=8
+
+bash scripts/run_ltsn_pipeline.sh collect-v52d-repeatability
+python -m json.tool \
+  "$RUN_ROOT/tac_v52d/repeatability/v52d_repeatability_report.json"
+```
+
+仅当 `repeatability_status=passed` 与 `action_collection_authorized=true` 时运行：
+
+```bash
+export V52D_ACTION_BATCH_SIZE=12
+bash scripts/run_ltsn_pipeline.sh collect-v52d-actions
+bash scripts/run_ltsn_pipeline.sh report-v52d
+python -m json.tool "$RUN_ROOT/tac_v52d/actions/v52d_action_report.json"
+```
+
+pilot 共 288 个 action rollouts：8 anchors × 6 bases × 3 scales × 2 signs。每次都从相同
+prompt/seed 重新生成，在目标 step 注入 action，然后完成剩余去噪并 exact-score 最终音频。
+动作尺度按该 step 的实际 scheduler-update RMS 归一化为 0.25/0.5/1.0。WAV 按 batch 临时
+保留并在 exact 成功后删除；最终两个输出目录的 `retained_wav_files` 必须为 0。
+
+V5.2d 同时要求：on-manifold 跨尺度一致率至少 0.80、Wilson 下界高于 0.50、一一匹配的
+McNemar 检验显著优于随机对照、动作效应中位数超过重复性噪声三倍、全部 pair 为 ID。
+只有 `stage1d_status=supported_for_critic_collection` 且 `next_stage_authorized=true` 才进入
+Stage 2。
 
 ## Stage 2：TAC critic（等待 Stage 1 授权）
 
@@ -105,5 +148,3 @@ Stage 3 先在每个去噪状态枚举少量 on-manifold 动作，以 critic 的
 confidence bound 排序，并保留 no-op fallback。只有 fresh prompt/seed 的 exact 闭环试验通过，
 才进入 Stage 4 的 direction-aware actor--critic。actor 只模仿已验证的候选选择并接受 critic
 约束；最终授权仍由独立 exact scorer、质量门禁和新鲜确认集决定。
-
-
