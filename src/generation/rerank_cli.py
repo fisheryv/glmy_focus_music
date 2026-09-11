@@ -57,7 +57,6 @@ def _preflight(root: Path, config: ExperimentConfig, backend_name: str) -> dict[
             "pandas",
             "librosa",
             "soundfile",
-            "ripser",
             "sklearn",
             "pyloudnorm",
             "imageio_ffmpeg",
@@ -196,7 +195,22 @@ def command_issue_gate(args: argparse.Namespace) -> int:
         experiment_root(root, config) / "noninferiority_report.json"
     )
     output = args.gate_output or (root / "metadata" / "ace_reranking_effect_gate.json")
-    payload = issue_reranking_gate(root, config, report.resolve(), output.resolve())
+    selection_override = None
+    selection_metadata = None
+    if args.selection_contract is not None:
+        from .constrained_reranker import load_selection_contract
+
+        selection_override, selection_metadata = load_selection_contract(
+            experiment_root(root, config), args.selection_contract.resolve()
+        )
+    payload = issue_reranking_gate(
+        root,
+        config,
+        report.resolve(),
+        output.resolve(),
+        selection_override=selection_override,
+        selection_metadata=selection_metadata,
+    )
     _print({"ok": True, "output": str(output.resolve()), **payload})
     return 0
 
@@ -245,6 +259,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--noninferiority-table", type=Path)
     parser.add_argument("--gate-output", type=Path)
     parser.add_argument("--training-gate-output", type=Path)
+    parser.add_argument("--selection-contract", type=Path)
     return parser
 
 

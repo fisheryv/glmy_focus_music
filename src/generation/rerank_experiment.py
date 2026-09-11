@@ -8,6 +8,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections.abc import Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
@@ -457,6 +458,9 @@ def rank_and_summarize(
     config: ExperimentConfig,
     records: list[CandidateRecord],
     descriptors: list[dict[str, Any]],
+    *,
+    selection_override: Mapping[str, str] | None = None,
+    selection_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     run_root = experiment_root(project_root, config)
     descriptors = _normalize_descriptor_rows(descriptors)
@@ -476,6 +480,7 @@ def rank_and_summarize(
     ranked_rows: list[dict[str, Any]] = []
     pool_rows: list[dict[str, Any]] = []
     complete_pools: list[list[dict[str, Any]]] = []
+    observed_prompts: set[str] = set()
     for prompt_id, pool in sorted(pools_by_prompt.items()):
         if len(pool) != config.candidate_count:
             continue
@@ -497,13 +502,22 @@ def rank_and_summarize(
                 float(row["technical_quality_penalty"]), str(row["candidate_id"])
             ),
         )
+        winner = ranked[0]
+        if selection_override is not None:
+            selected_id = selection_override.get(prompt_id)
+            matches = [row for row in pool if row["candidate_id"] == selected_id]
+            if len(matches) != 1:
+                raise ValueError(f"selection override is missing or invalid for {prompt_id}")
+            winner = matches[0]
+            if int(winner["technical_quality_eligible"]) != 1:
+                raise ValueError(f"selection override chose ineligible audio for {prompt_id}")
+        observed_prompts.add(prompt_id)
         for rank, row in enumerate(ranked, start=1):
             row["rank"] = rank
-            row["selected"] = int(rank == 1)
+            row["selected"] = int(row["candidate_id"] == winner["candidate_id"])
             row["baseline"] = int(row["candidate_index"] == 0)
             ranked_rows.append(row)
         baseline = next(row for row in pool if row["candidate_index"] == 0)
-        winner = ranked[0]
         baseline_loss = float(baseline["focus_band_loss"])
         selected_loss = float(winner["focus_band_loss"])
         evaluable = baseline_loss > 0.0
@@ -531,6 +545,8 @@ def rank_and_summarize(
             }
         )
         complete_pools.append(pool)
+    if selection_override is not None and set(selection_override) != observed_prompts:
+        raise ValueError("selection override prompt IDs do not match complete candidate pools")
     if not pool_rows:
         raise ValueError("no complete candidate pools are available for ranking")
     evaluable_rows = [
@@ -643,6 +659,8 @@ def rank_and_summarize(
             else "; ".join(topology_blockers)
         ),
     }
+    if selection_metadata is not None:
+        summary["selection_policy"] = dict(selection_metadata)
     _write_json(run_root / "summary.json", summary)
     return summary
 
@@ -931,6 +949,8 @@ def issue_surrogate_training_gate(
         "noninferiority_report_sha256": sha256_file(noninferiority_report),
         "protocol_sha256": evidence["protocol_sha256"],
     }
+    if "selection_policy" in summary:
+        payload["selection_policy"] = summary["selection_policy"]
     _write_json(output_path, payload)
     load_surrogate_training_gate(output_path, scorer.contract)
     return payload
@@ -941,6 +961,9 @@ def issue_reranking_gate(
     config: ExperimentConfig,
     noninferiority_report: Path,
     output_path: Path,
+    *,
+    selection_override: Mapping[str, str] | None = None,
+    selection_metadata: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Issue a passed gate only from exact topology and bound non-inferiority evidence."""
 
@@ -950,7 +973,12 @@ def issue_reranking_gate(
     if not descriptor_path.is_file():
         raise FileNotFoundError("exact 18-D descriptor table is missing")
     summary = rank_and_summarize(
-        project_root, config, records, _read_descriptor_csv(descriptor_path)
+        project_root,
+        config,
+        records,
+        _read_descriptor_csv(descriptor_path),
+        selection_override=selection_override,
+        selection_metadata=selection_metadata,
     )
     summary_path = run_root / "summary.json"
     if summary.get("topology_passed") is not True:
@@ -982,6 +1010,8 @@ def issue_reranking_gate(
         "noninferiority_report_sha256": sha256_file(noninferiority_report),
         "protocol_sha256": evidence["protocol_sha256"],
     }
+    if "selection_policy" in summary:
+        payload["selection_policy"] = summary["selection_policy"]
     _write_json(output_path, payload)
     load_reranking_gate(output_path, scorer.contract)
     return payload

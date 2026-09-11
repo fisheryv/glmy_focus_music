@@ -1,0 +1,33 @@
+prompt_id,caption,split,bpm,keyscale,timesignature
+q01_celesta_felt_piano,"Instrumental focus music with celesta and felt piano, an even pulse, sparse motifs, smooth dynamics, and no vocals",confirmation,78,,4
+q02_bass_clarinet_pad,"Instrumental focus music with bass clarinet and a warm pad, slow connected phrases, restrained harmony, and no vocals",confirmation,72,,4
+q03_english_horn_harp,"Instrumental focus music with English horn and soft harp, regular phrasing, limited melodic range, and no vocals",confirmation,76,,4
+q04_dulcimer_strings,"Instrumental focus music with gentle hammered dulcimer and muted strings, steady repetition, soft attacks, and no vocals",confirmation,84,,4
+q05_kalimba_ambient,"Instrumental focus music with kalimba and diffuse ambient layers, predictable rhythm, gradual timbral motion, and no vocals",confirmation,88,,4
+q06_glockenspiel_rhodes,"Instrumental focus music with soft glockenspiel and Rhodes piano, restrained high frequencies, stable pulse, and no vocals",confirmation,82,,4
+q07_oboe_muted_piano,"Instrumental focus music with quiet oboe and muted piano, long phrases, controlled dynamics, and no vocals",confirmation,74,,4
+q08_bassoon_chamber,"Instrumental focus music with bassoon and a small muted chamber ensemble, even flow, understated motifs, and no vocals",confirmation,70,,4
+q09_flute_harmonics,"Instrumental focus music with breathy flute and soft string harmonics, continuous texture, gentle transitions, and no vocals",confirmation,80,,4
+q10_clarinet_vibraphone,"Instrumental focus music with clarinet and muted vibraphone, stable meter, narrow melodic movement, and no vocals",confirmation,86,,4
+q11_viola_marimba,"Instrumental focus music with viola and soft marimba, regular pulse, restrained counterpoint, smooth dynamics, and no vocals",confirmation,83,,4
+q12_cello_harmonics,"Instrumental focus music with cello harmonics and a quiet sustained bed, slow evolution, low distraction, and no vocals",confirmation,68,,4
+q13_pizzicato_pad,"Instrumental focus music with muted pizzicato strings and a warm pad, gentle repetition, even accents, and no vocals",confirmation,90,,4
+q14_acoustic_bass_brushes,"Instrumental focus music with acoustic bass and very soft brushes, steady groove, sparse harmony, and no vocals",confirmation,92,,4
+q15_handpan_drone,"Instrumental focus music with softly played handpan and a stable drone, limited pitch movement, smooth decay, and no vocals",confirmation,75,,4
+q16_udu_soft_synth,"Instrumental focus music with quiet udu percussion and soft synthesizer, regular low-intensity pulse, and no vocals",confirmation,85,,4
+q17_frame_drum_pad,"Instrumental focus music with restrained frame drum and an airy pad, predictable rhythm, gradual changes, and no vocals",confirmation,87,,4
+q18_shaker_felt_piano,"Instrumental focus music with subtle shaker and felt piano, even timing, understated melody, and no vocals",confirmation,89,,4
+q19_plucked_strings_ambient,"Instrumental focus music with softly plucked strings and ambient layers, seamless phrasing, controlled dynamics, and no vocals",confirmation,81,,4
+q20_mandolin_pad,"Instrumental focus music with muted mandolin and a smooth pad, narrow melodic range, stable pulse, and no vocals",confirmation,86,,4
+q21_koto_soft_synth,"Instrumental focus music with gently plucked koto and soft synthesizer, sparse motifs, slow harmonic motion, and no vocals",confirmation,77,,4
+q22_guzheng_ambient,"Instrumental focus music with restrained guzheng and diffuse ambience, connected phrases, soft attacks, and no vocals",confirmation,79,,4
+q23_erhu_pad,"Instrumental focus music with quiet erhu and a warm sustained pad, limited melodic movement, smooth dynamics, and no vocals",confirmation,73,,4
+q24_shakuhachi_drone,"Instrumental focus music with breathy shakuhachi and a low stable drone, long pauses, gradual evolution, and no vocals",confirmation,66,,4
+q25_organ_felt_piano,"Instrumental focus music with soft organ and felt piano, steady harmonic rhythm, restrained register, and no vocals",confirmation,78,,4
+q26_electric_piano_flute,"Instrumental focus music with mellow electric piano and soft flute, regular phrasing, gentle transitions, and no vocals",confirmation,84,,4
+q27_analog_bass_mallet,"Instrumental focus music with rounded analog bass and muted mallets, stable groove, sparse accents, and no vocals",confirmation,91,,4
+q28_granular_piano,"Instrumental focus music with softly granulated piano, continuous background texture, slow timbral drift, and no vocals",confirmation,80,,4
+q29_noise_harmonics,"Instrumental focus music with soft filtered noise and quiet harmonics, even energy, minimal foreground motion, and no vocals",confirmation,76,,4
+q30_bowed_glass_pad,"Instrumental focus music with subtle bowed glass tones and a smooth pad, long connected layers, and no vocals",confirmation,69,,4
+q31_formant_pad,"Instrumental focus music with a choirless formant-like pad, restrained harmony, stable dynamics, and no vocals",confirmation,72,,4
+q32_sine_plucks_strings,"Instrumental focus music with soft sine plucks and muted strings, predictable pulse, limited melodic range, and no vocals",confirmation,88,,4

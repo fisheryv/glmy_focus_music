@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "experiment": "exact_topology_constrained_reranker_v1",
+  "status": "frozen_before_calibration",
+  "selection_scope": "technical_quality_then_exact_topology_under_semantic_guards",
+  "constraints": {
+    "prompt_margin": 0.0,
+    "diversity_margin": 0.0,
+    "strict_topology_improvement": true,
+    "fallback_to_baseline": true,
+    "require_every_prompt_diversity_non_decrease": true
+  },
+  "algorithm": {
+    "name": "deterministic_greedy_single_substitution_v1",
+    "initial_assignment": "candidate_index_0_for_every_prompt",
+    "proposal_order": [
+      "relative_exact_loss_improvement_descending",
+      "prompt_alignment_descending",
+      "prompt_id_ascending",
+      "candidate_id_ascending"
+    ],
+    "acceptance": "strict_exact_improvement_and_zero_margin_prompt_and_all_row_diversity_guards"
+  },
+  "embedding": {
+    "model_id": "laion/clap-htsat-fused",
+    "model_revision": "365dea6ef167def6676140ed93bbc43f84dabb28",
+    "segment_seconds": 10.0,
+    "track_pooling": "valid_sample_weighted_mean_of_l2_normalized_windows_then_l2_normalize",
+    "prompt_metric": "audio_text_cosine",
+    "diversity_metric": "one_minus_nearest_neighbor_audio_cosine"
+  },
+  "confirmation": {
+    "prompt_count": 32,
+    "candidates_per_prompt": 8,
+    "duration_seconds": 180.0,
+    "requires_new_prompt_families": true,
+    "requires_new_seeds": true,
+    "noninferiority_protocol": "configs/ace_reranking_noninferiority.json"
+  }
+}
