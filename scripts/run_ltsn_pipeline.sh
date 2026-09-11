@@ -38,6 +38,10 @@ V52A_DIR="${V52A_DIR:-${RUN_ROOT}/training_augmentation_v52a}"
 V52A_MODEL_ROOT="${V52A_MODEL_ROOT:-${RUN_ROOT}/models_v52a}"
 V52A_REPORT="${V52A_REPORT:-${RUN_ROOT}/v52a_identifiability_report.json}"
 V52A_CONFIG="${V52A_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v52a_identifiability.toml}"
+V52B_DIR="${V52B_DIR:-${RUN_ROOT}/training_augmentation_v52b}"
+V52B_MODEL_ROOT="${V52B_MODEL_ROOT:-${RUN_ROOT}/models_v52b}"
+V52B_REPORT="${V52B_REPORT:-${RUN_ROOT}/v52b_probe_report.json}"
+V52B_CONFIG="${V52B_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v52b_probe.toml}"
 SOURCE_LTSN_MANIFEST="${SOURCE_LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
 SOURCE_LTSN_SPLIT_MANIFEST="${SOURCE_LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
 LTSN_MANIFEST="${LTSN_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/ltsn_manifest_v3.csv}"
@@ -503,6 +507,71 @@ report_v52a() {
     --device "${V52A_EVAL_DEVICE:-cuda:0}"
 }
 
+prepare_v52b() {
+  [[ -f "${V52A_REPORT}" ]] || {
+    echo "Run report-v52a first" >&2
+    return 3
+  }
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/prepare_ltsn_v52b.py" \
+    --master-manifest "${V52A_DIR}/ltsn_manifest_v52a_master.csv" \
+    --evidence "${V52A_DIR}/central_direction_exact_evidence_v52a.csv" \
+    --views-summary "${V52A_DIR}/views/v52a_views.json" \
+    --v52a-report "${V52A_REPORT}" \
+    --output-dir "${V52B_DIR}" \
+    --operational-rms 0.005 \
+    --control-seed 20260911
+}
+
+train_v52b_one() {
+  local variant="$1"
+  local target_mode="$2"
+  if [[ -f "${V52B_MODEL_ROOT}/${variant}/${target_mode}/ensemble_manifest.json" ]]; then
+    echo "V5.2b ${variant}/${target_mode} ensemble already exists; skipping"
+    return 0
+  fi
+  local -a device_args
+  if [[ -n "${V52B_DEVICES:-}" ]]; then
+    local -a devices
+    IFS=',' read -r -a devices <<< "${V52B_DEVICES}"
+    device_args=(--devices "${devices[@]}")
+  else
+    device_args=(--device "${V52B_DEVICE:-cuda:0}")
+  fi
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/train_ltsn_v52b_probe.py" \
+    --fingerprint "${FINGERPRINT}" \
+    --pair-manifest "${V52B_DIR}/v52b_pair_manifest.csv" \
+    --preparation "${V52B_DIR}/v52b_preparation.json" \
+    --config "${V52B_CONFIG}" \
+    --output-dir "${V52B_MODEL_ROOT}/${variant}/${target_mode}" \
+    --variant "${variant}" \
+    --target-mode "${target_mode}" \
+    "${device_args[@]}"
+}
+
+train_v52b() {
+  [[ -f "${V52B_DIR}/v52b_preparation.json" ]] || {
+    echo "Run prepare-v52b first" >&2
+    return 3
+  }
+  local variant target_mode
+  for variant in scalar pair direction_field; do
+    for target_mode in true matched_control; do
+      train_v52b_one "${variant}" "${target_mode}"
+    done
+  done
+}
+
+report_v52b() {
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_ltsn_v52b.py" \
+    --fingerprint "${FINGERPRINT}" \
+    --pair-manifest "${V52B_DIR}/v52b_pair_manifest.csv" \
+    --preparation "${V52B_DIR}/v52b_preparation.json" \
+    --config "${V52B_CONFIG}" \
+    --models-root "${V52B_MODEL_ROOT}" \
+    --output "${V52B_REPORT}" \
+    --device "${V52B_EVAL_DEVICE:-cuda:0}"
+}
+
 train() {
   [[ -f "${SURROGATE_TRAINING_GATE}" ]] || { echo "Passed ltsn_surrogate_training_v1 gate is required: ${SURROGATE_TRAINING_GATE}" >&2; exit 3; }
   local -a train_device_args
@@ -783,6 +852,9 @@ case "${STAGE}" in
   collect-v52a) collect_v52a ;;
   train-v52a) train_v52a ;;
   report-v52a) report_v52a ;;
+  prepare-v52b) prepare_v52b ;;
+  train-v52b) train_v52b ;;
+  report-v52b) report_v52b ;;
   calibrate) calibrate ;;
   calibrate-v5) calibrate_v5 ;;
   calibrate-ood-ablation) calibrate_ood_ablation ;;
@@ -804,5 +876,5 @@ case "${STAGE}" in
   qualify) qualify ;;
   qualify-v5) qualify_v5 ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|prepare-v51c|train-v51c|report-v51c|collect-v52a|train-v52a|report-v52a|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|prepare-v51c|train-v51c|report-v51c|collect-v52a|train-v52a|report-v52a|prepare-v52b|train-v52b|report-v52b|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
 esac

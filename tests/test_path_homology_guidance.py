@@ -129,11 +129,17 @@ def test_surrogate_outputs_frozen_dimensions_and_time_conditioning() -> None:
 
     first = model(latent, 0.75, 4, mask)
     second = model(latent, 0.50, 6, mask)
+    encoded = model.encode(latent, 0.75, 4, mask)
+    split_readout = model.readout(encoded)
 
     assert first.coordinate_mean.shape == (2, 18)
     assert first.coordinate_logvar.shape == (2, 18)
     assert first.ood_logit.shape == (2,)
     assert not torch.allclose(first.coordinate_mean, second.coordinate_mean)
+    assert encoded.shape == (2, 256)
+    assert all(
+        torch.equal(combined, split) for combined, split in zip(first, split_readout, strict=True)
+    )
 
 
 def test_v2_inactive_coordinates_are_exact_zero_without_architecture_change() -> None:

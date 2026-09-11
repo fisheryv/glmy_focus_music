@@ -239,14 +239,14 @@ class PathHomologySurrogate(nn.Module):
             raise ValueError("timestep and step_number must be scalar or batch-aligned")
         return tensor
 
-    def forward(
+    def encode(
         self,
         latent: Tensor,
         timestep: Tensor | float,
         step_number: Tensor | int,
         attention_mask: Tensor | None = None,
-    ) -> LTSNOutput:
-        """Predict 18-D coordinates for a clean-latent estimate shaped ``[B,T,64]``."""
+    ) -> Tensor:
+        """Return the shared 256-D representation for ``[B,T,64]`` ACE latents."""
 
         if latent.ndim != 3 or latent.shape[-1] != self.config.latent_dim:
             raise ValueError(f"latent must have shape [B,T,{self.config.latent_dim}]")
@@ -288,7 +288,13 @@ class PathHomologySurrogate(nn.Module):
             ),
             dim=-1,
         )
-        shared = self.fusion(pooled)
+        return self.fusion(pooled)
+
+    def readout(self, shared: Tensor) -> LTSNOutput:
+        """Apply the frozen-shape coordinate, OOD, and Focus heads to shared features."""
+
+        if shared.ndim != 2 or shared.shape[-1] != 256:
+            raise ValueError("shared representation must have shape [B,256]")
         coordinate_mean = self.coordinate_mean_head(shared) * self.coordinate_active_mask
         coordinate_logvar = self.coordinate_logvar_head(shared).clamp(
             self.config.logvar_min, self.config.logvar_max
@@ -301,3 +307,14 @@ class PathHomologySurrogate(nn.Module):
         ood_logit = self.ood_head(shared).squeeze(-1)
         focus_logit = coordinate_mean.float() @ self.focus_coef + self.focus_intercept
         return LTSNOutput(coordinate_mean, coordinate_logvar, ood_logit, focus_logit)
+
+    def forward(
+        self,
+        latent: Tensor,
+        timestep: Tensor | float,
+        step_number: Tensor | int,
+        attention_mask: Tensor | None = None,
+    ) -> LTSNOutput:
+        """Predict 18-D coordinates for a clean-latent estimate shaped ``[B,T,64]``."""
+
+        return self.readout(self.encode(latent, timestep, step_number, attention_mask))
