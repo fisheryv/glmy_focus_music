@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "experiment": "exact_topology_constrained_reranker_v2",
+  "status": "frozen_before_calibration",
+  "selection_scope": "global_exact_topology_assignment_under_unchanged_semantic_guards",
+  "constraints": {
+    "prompt_margin": 0.0,
+    "diversity_margin": 0.0,
+    "strict_topology_improvement": true,
+    "fallback_to_baseline": true,
+    "require_every_prompt_diversity_non_decrease": true,
+    "allow_topology_neutral_support_moves": false
+  },
+  "algorithm": {
+    "name": "deterministic_global_assignment_v2",
+    "candidate_count": 16,
+    "effect_threshold": 0.1,
+    "maximum_search_nodes": 5000000,
+    "initial_assignment": "candidate_index_0_for_every_prompt",
+    "objective": [
+      "effectful_pool_count_descending",
+      "median_relative_exact_improvement_descending",
+      "new_target_band_hits_descending",
+      "changed_pool_count_descending",
+      "sum_relative_exact_improvement_descending",
+      "candidate_id_vector_ascending"
+    ],
+    "acceptance": "global_assignment_with_strict_exact_improvement_zero_margin_prompt_and_all_row_diversity_guards",
+    "incomplete_search_policy": "fail_closed"
+  },
+  "embedding": {
+    "model_id": "laion/clap-htsat-fused",
+    "model_revision": "365dea6ef167def6676140ed93bbc43f84dabb28",
+    "segment_seconds": 10.0,
+    "track_pooling": "valid_sample_weighted_mean_of_l2_normalized_windows_then_l2_normalize",
+    "prompt_metric": "audio_text_cosine",
+    "diversity_metric": "one_minus_nearest_neighbor_audio_cosine"
+  },
+  "confirmation": {
+    "prompt_count": 32,
+    "candidates_per_prompt": 16,
+    "duration_seconds": 180.0,
+    "requires_new_prompt_families": true,
+    "requires_new_seeds": true,
+    "noninferiority_protocol": "configs/ace_reranking_noninferiority.json"
+  }
+}

@@ -25,6 +25,7 @@ from generation.ltsn_contract import sha256_file
 from generation.ltsn_pipeline import load_reranking_gate, load_surrogate_training_gate
 from generation.path_homology_exact_scorer import ExactPathHomologyScorer
 from generation.rerank_experiment import (
+    _is_formal_design,
     _validated_noninferiority,
     ensure_experiment,
     evaluate_noninferiority_table,
@@ -36,6 +37,28 @@ from generation.rerank_experiment import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_formal_design_accepts_bestof16_only_for_frozen_v2_policy() -> None:
+    config = ExperimentConfig(
+        run_id="formal_v2",
+        prompt_manifest="prompts.csv",
+        candidate_count=16,
+        duration_seconds=180.0,
+    )
+
+    assert _is_formal_design(
+        config,
+        prompt_pools=32,
+        candidates_scored=512,
+        selection_metadata={"name": "exact_topology_constrained_reranker_v2"},
+    )
+    assert not _is_formal_design(
+        config,
+        prompt_pools=32,
+        candidates_scored=512,
+        selection_metadata=None,
+    )
 
 
 def _copy_target_inputs(target: Path) -> None:

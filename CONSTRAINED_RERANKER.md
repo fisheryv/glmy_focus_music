@@ -1,6 +1,8 @@
-# Constrained reranker calibration and fresh confirmation
+# Constrained reranker v1 calibration and fresh confirmation
 
-This v2 route preserves the existing exact-topology, blind-quality, prompt, and diversity gates.
+This historical greedy-v1 route preserves the existing exact-topology, blind-quality, prompt,
+and diversity gates. Its completed calibration is retained as a failed result. Use
+`CONSTRAINED_RERANKER_V2.md` for the global best-of-16 follow-up; do not overwrite the v1 run.
 It does not reinterpret the failed `topology_bestof8_formal_v1` run. That run remains a negative
 formal result and is not reused for calibration or confirmation.
 

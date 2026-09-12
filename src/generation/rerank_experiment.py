@@ -453,6 +453,25 @@ def _validate_exact_descriptor_rows(
         raise ValueError("exact descriptor table does not cover the candidate manifest")
 
 
+def _is_formal_design(
+    config: ExperimentConfig,
+    *,
+    prompt_pools: int,
+    candidates_scored: int,
+    selection_metadata: Mapping[str, Any] | None,
+) -> bool:
+    policy_name = str((selection_metadata or {}).get("name", ""))
+    expected_candidate_count = (
+        16 if policy_name == "exact_topology_constrained_reranker_v2" else 8
+    )
+    return bool(
+        prompt_pools == 32
+        and candidates_scored == 32 * expected_candidate_count
+        and config.candidate_count == expected_candidate_count
+        and np.isclose(config.duration_seconds, 180.0)
+    )
+
+
 def rank_and_summarize(
     project_root: Path,
     config: ExperimentConfig,
@@ -578,11 +597,11 @@ def rank_and_summarize(
     )
     median_improvement = float(np.median(improvements))
     sufficient = len(pool_rows) >= config.scoring.minimum_prompt_pools
-    formal_design = bool(
-        len(pool_rows) == 32
-        and len(ranked_rows) == 256
-        and config.candidate_count == 8
-        and np.isclose(config.duration_seconds, 180.0)
+    formal_design = _is_formal_design(
+        config,
+        prompt_pools=len(pool_rows),
+        candidates_scored=len(ranked_rows),
+        selection_metadata=selection_metadata,
     )
     topology_passed = bool(
         formal_design

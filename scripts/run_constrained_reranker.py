@@ -12,6 +12,7 @@ from generation.constrained_reranker import (
     build_candidate_semantics,
     build_constrained_prompt_manifests,
     freeze_calibrated_selector,
+    load_selector_config,
 )
 from generation.experiment import load_experiment_config
 from generation.rerank_experiment import experiment_root
@@ -59,10 +60,12 @@ def main() -> int:
     args = build_parser().parse_args()
     root = args.root.resolve()
     if args.command == "prepare-prompts":
+        selector = load_selector_config(_resolve(root, args.selector_config))
         payload = build_constrained_prompt_manifests(
             _resolve(root, args.prompt_source),
             _resolve(root, args.confirmation_source),
             _resolve(root, args.prompt_output),
+            experiment=selector["experiment"],
         )
     elif args.command == "freeze-calibration":
         if args.output_dir is None or args.frozen_selector is None:
