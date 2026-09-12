@@ -12,7 +12,7 @@ from typing import Any
 from .artifact_hash import sha256_directory
 from .ltsn_contract import LTSNContractError, sha256_file
 from .ltsn_pipeline import canonical_json_sha256, write_json_atomic
-from .topology_lora import TOPOLOGY_LORA_EXPERIMENT
+from .topology_lora import TOPOLOGY_LORA_EXPERIMENT_V2, TOPOLOGY_LORA_EXPERIMENTS
 
 
 def load_lora_config(path: Path) -> dict[str, Any]:
@@ -21,25 +21,45 @@ def load_lora_config(path: Path) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if (
         payload.get("schema_version") != 1
-        or payload.get("experiment") != TOPOLOGY_LORA_EXPERIMENT
+        or payload.get("experiment") not in TOPOLOGY_LORA_EXPERIMENTS
         or payload.get("status") != "frozen_before_training"
     ):
         raise LTSNContractError("topology LoRA configuration is not frozen")
     if payload.get("model", {}).get("variant") != "xl_turbo":
         raise LTSNContractError("topology LoRA must use the ACE-Step XL-Turbo base")
+    if payload["experiment"] == TOPOLOGY_LORA_EXPERIMENT_V2:
+        teacher = payload.get("teacher", {})
+        if (
+            teacher.get("candidate_count") != 16
+            or teacher.get("selection") != "frozen_global_constrained_reranker_v2"
+        ):
+            raise LTSNContractError("v2 topology LoRA requires constrained best-of-16 teachers")
     return payload
 
 
-def _teacher_inputs(teacher_dir: Path) -> tuple[Path, dict[str, Any]]:
+def _teacher_inputs(
+    teacher_dir: Path, expected_experiment: str
+) -> tuple[Path, dict[str, Any]]:
     report_path = teacher_dir / "teacher_report.json"
     dataset_path = teacher_dir / "ace_lora_dataset.json"
     report = json.loads(report_path.read_text(encoding="utf-8"))
     if (
-        report.get("experiment") != TOPOLOGY_LORA_EXPERIMENT
+        report.get("experiment") != expected_experiment
         or report.get("dataset_json_sha256") != sha256_file(dataset_path)
         or report.get("winner_samples", 0) < 1
     ):
         raise LTSNContractError("LoRA teacher dataset is missing or its binding changed")
+    if expected_experiment == TOPOLOGY_LORA_EXPERIMENT_V2:
+        required_hashes = (
+            "reranking_gate_sha256",
+            "selection_contract_sha256",
+            "selector_config_sha256",
+            "frozen_selector_sha256",
+        )
+        if report.get("teacher_source") != "frozen_constrained_exact_18d_bestof16" or any(
+            len(str(report.get(name, ""))) != 64 for name in required_hashes
+        ):
+            raise LTSNContractError("v2 LoRA teacher provenance is incomplete")
     return dataset_path, report
 
 
@@ -58,7 +78,7 @@ def build_native_command(
     if stage not in {"preprocess", "train"}:
         raise ValueError("stage must be preprocess or train")
     config = load_lora_config(config_path)
-    dataset_path, teacher = _teacher_inputs(teacher_dir)
+    dataset_path, teacher = _teacher_inputs(teacher_dir, config["experiment"])
     model = config["model"]
     executable = str((python_bin or Path(sys.executable)).resolve())
     checkpoint_dir = (project_root / model["checkpoint_dir"]).resolve()
@@ -125,7 +145,7 @@ def build_native_command(
         ]
     plan = {
         "schema_version": 1,
-        "experiment": TOPOLOGY_LORA_EXPERIMENT,
+        "experiment": config["experiment"],
         "stage": stage,
         "config_path": str(config_path.resolve()),
         "config_sha256": sha256_file(config_path),
@@ -186,14 +206,15 @@ def finalize_lora_artifact(
 ) -> dict[str, Any]:
     """Bind the completed adapter directory to its teacher and frozen config."""
 
-    _teacher_inputs(teacher_dir)
+    config = load_lora_config(config_path)
+    _teacher_inputs(teacher_dir, config["experiment"])
     adapter_dir = output_dir / "final"
     required = (adapter_dir / "adapter_config.json", adapter_dir / "adapter_model.safetensors")
     if not all(path.is_file() for path in required):
         raise LTSNContractError("ACE-Step final LoRA adapter files are missing")
     report = {
         "schema_version": 1,
-        "experiment": TOPOLOGY_LORA_EXPERIMENT,
+        "experiment": config["experiment"],
         "status": "trained_unqualified",
         "production_authorization": False,
         "lora_path": str(adapter_dir.resolve()),

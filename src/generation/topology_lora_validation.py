@@ -24,7 +24,7 @@ from .experiment import CandidateRecord, ExperimentConfig, read_prompts, write_c
 from .ltsn_contract import LTSNContractError, sha256_file
 from .ltsn_pipeline import canonical_json_sha256, write_json_atomic
 from .path_homology_exact_scorer import ExactPathHomologyScorer
-from .topology_lora import TOPOLOGY_LORA_EXPERIMENT, TOPOLOGY_LORA_TAG
+from .topology_lora import TOPOLOGY_LORA_TAG
 from .topology_lora_training import load_lora_config
 
 VALIDATION_SPLITS = ("development", "qualification")
@@ -54,12 +54,13 @@ def _freeze_validation(
     split: str,
     lora_path: Path,
     lora_sha256: str,
+    lora_experiment: str,
     scale: float,
     seed_start: int,
 ) -> None:
     payload = {
         "schema_version": 1,
-        "experiment": TOPOLOGY_LORA_EXPERIMENT,
+        "experiment": lora_experiment,
         "split": split,
         "prompt_manifest": str(prompt_manifest.resolve()),
         "prompt_manifest_sha256": sha256_file(prompt_manifest),
@@ -258,7 +259,7 @@ def summarize_paired_validation(
         "pair_rows": pair_rows,
         "summary": {
             "schema_version": 1,
-            "experiment": TOPOLOGY_LORA_EXPERIMENT,
+            "experiment": validation_config["experiment"],
             "split": split,
             "prompt_pairs": len(pair_rows),
             "paired_topology_win_rate": win_rate,
@@ -304,6 +305,7 @@ def run_paired_validation(
     if {row.get("split") for row in prompt_rows} != {split}:
         raise LTSNContractError("validation prompt manifest has the wrong split")
     run_dir.mkdir(parents=True, exist_ok=True)
+    lora_config = load_lora_config(lora_config_path)
     _freeze_validation(
         run_dir=run_dir,
         experiment_config=config,
@@ -311,6 +313,7 @@ def run_paired_validation(
         split=split,
         lora_path=lora_path,
         lora_sha256=lora_sha256,
+        lora_experiment=lora_config["experiment"],
         scale=scale,
         seed_start=seed_start,
     )
@@ -346,7 +349,7 @@ def run_paired_validation(
     result = summarize_paired_validation(
         rows=rows,
         config=config,
-        validation_config=load_lora_config(lora_config_path),
+        validation_config=lora_config,
         split=split,
     )
     from .ltsn_pipeline import write_csv_atomic
@@ -402,7 +405,7 @@ def select_development_scale(
     )
     payload = {
         "schema_version": 1,
-        "experiment": TOPOLOGY_LORA_EXPERIMENT,
+        "experiment": config["experiment"],
         "selection_split": "development",
         "status": "selected" if selected else "not_supported",
         "selected_scale": selected[0] if selected else None,

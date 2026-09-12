@@ -14,6 +14,11 @@ from .ltsn_pipeline import load_reranking_gate, write_csv_atomic, write_json_ato
 from .path_homology_exact_scorer import ExactPathHomologyScorer
 
 TOPOLOGY_LORA_EXPERIMENT = "exact_reranking_distilled_topology_lora_v1"
+TOPOLOGY_LORA_EXPERIMENT_V2 = "constrained_reranking_distilled_topology_lora_v2"
+TOPOLOGY_LORA_EXPERIMENTS = {
+    TOPOLOGY_LORA_EXPERIMENT,
+    TOPOLOGY_LORA_EXPERIMENT_V2,
+}
 TOPOLOGY_LORA_TAG = "topology_focus"
 ALLOWED_PROMPT_SPLITS = ("train", "development", "calibration", "qualification")
 
@@ -31,7 +36,10 @@ def _family_id(prompt_id: str) -> str:
 
 
 def build_reranking_prompt_splits(
-    source_path: Path, output_dir: Path
+    source_path: Path,
+    output_dir: Path,
+    *,
+    experiment: str = TOPOLOGY_LORA_EXPERIMENT,
 ) -> dict[str, Any]:
     """Freeze family-disjoint reranking manifests from the formal prompt table."""
 
@@ -70,7 +78,7 @@ def build_reranking_prompt_splits(
         }
     payload = {
         "schema_version": 1,
-        "experiment": TOPOLOGY_LORA_EXPERIMENT,
+        "experiment": experiment,
         "source_path": str(source_path.resolve()),
         "source_sha256": sha256_file(source_path),
         "family_disjoint": True,
@@ -152,6 +160,8 @@ def export_lora_teacher_dataset(
     fingerprint_path: Path,
     reranking_gate_path: Path,
     output_dir: Path,
+    selection_contract_path: Path | None = None,
+    experiment: str = TOPOLOGY_LORA_EXPERIMENT,
     activation_tag: str = TOPOLOGY_LORA_TAG,
     include_baseline_replay: bool = True,
 ) -> dict[str, Any]:
@@ -180,6 +190,46 @@ def export_lora_teacher_dataset(
     pools = {row["prompt_id"]: row for row in pool_rows}
     if set(pools) != prompt_ids:
         raise LTSNContractError("reranking pools do not match the train prompt split")
+    selection_contract_sha256 = None
+    selector_config_sha256 = None
+    frozen_selector_sha256 = None
+    if experiment == TOPOLOGY_LORA_EXPERIMENT_V2:
+        if selection_contract_path is None:
+            raise LTSNContractError("v2 LoRA teacher requires a constrained selection contract")
+        from .constrained_reranker import (
+            CONSTRAINED_EXPERIMENT_V2,
+            load_selection_contract,
+        )
+
+        selected, selection_metadata = load_selection_contract(
+            run_dir, selection_contract_path.resolve()
+        )
+        contract = _load_json(selection_contract_path, "selection contract")
+        gate = _load_json(reranking_gate_path, "reranking gate")
+        summary_policy = summary.get("selection_policy", {})
+        gate_policy = gate.get("selection_policy", {})
+        selector_config_sha256 = contract.get("selector_config_sha256")
+        frozen_selector_sha256 = contract.get("frozen_selector_sha256")
+        if (
+            contract.get("experiment") != CONSTRAINED_EXPERIMENT_V2
+            or selection_metadata.get("name") != CONSTRAINED_EXPERIMENT_V2
+            or summary_policy.get("name") != CONSTRAINED_EXPERIMENT_V2
+            or summary_policy.get("selection_contract_sha256")
+            != sha256_file(selection_contract_path)
+            or summary_policy.get("selector_config_sha256") != selector_config_sha256
+            or gate_policy.get("name") != CONSTRAINED_EXPERIMENT_V2
+            or gate_policy.get("selector_config_sha256") != selector_config_sha256
+        ):
+            raise LTSNContractError("v2 teacher selection is not bound to the passed v2 gate")
+        if selected != {
+            prompt_id: row["selected_candidate_id"] for prompt_id, row in pools.items()
+        }:
+            raise LTSNContractError("v2 teacher pool summary differs from selection contract")
+        selection_contract_sha256 = sha256_file(selection_contract_path)
+    elif selection_contract_path is not None:
+        raise LTSNContractError("v1 LoRA teacher does not accept a v2 selection contract")
+    elif experiment not in TOPOLOGY_LORA_EXPERIMENTS:
+        raise LTSNContractError("unknown topology LoRA experiment")
 
     samples: list[dict[str, Any]] = []
     audit_rows: list[dict[str, Any]] = []
@@ -222,7 +272,7 @@ def export_lora_teacher_dataset(
     output_dir.mkdir(parents=True, exist_ok=True)
     dataset = {
         "metadata": {
-            "name": TOPOLOGY_LORA_EXPERIMENT,
+            "name": experiment,
             "custom_tag": "",
             "tag_position": "prepend",
             "genre_ratio": 0,
@@ -237,11 +287,15 @@ def export_lora_teacher_dataset(
     write_csv_atomic(manifest_path, audit_rows)
     report = {
         "schema_version": 1,
-        "experiment": TOPOLOGY_LORA_EXPERIMENT,
+        "experiment": experiment,
         "teacher_dataset_only": True,
         "qualification_authority": False,
         "production_authorization": False,
-        "teacher_source": "frozen_exact_18d_best_of_n",
+        "teacher_source": (
+            "frozen_constrained_exact_18d_bestof16"
+            if experiment == TOPOLOGY_LORA_EXPERIMENT_V2
+            else "frozen_exact_18d_best_of_n"
+        ),
         "activation_tag": activation_tag,
         "train_prompts": len(prompt_ids),
         "winner_samples": sum(row["teacher_role"] == "winner" for row in audit_rows),
@@ -253,6 +307,13 @@ def export_lora_teacher_dataset(
         "reranking_run_dir": str(run_dir),
         "reranking_summary_sha256": sha256_file(run_dir / "summary.json"),
         "reranking_gate_sha256": sha256_file(reranking_gate_path),
+        "candidate_manifest_sha256": summary["candidate_manifest_sha256"],
+        "descriptor_table_sha256": summary.get("descriptor_table_sha256"),
+        "selection_table_sha256": summary["selection_table_sha256"],
+        "pool_summary_sha256": summary["pool_summary_sha256"],
+        "selection_contract_sha256": selection_contract_sha256,
+        "selector_config_sha256": selector_config_sha256,
+        "frozen_selector_sha256": frozen_selector_sha256,
         "prompt_manifest_sha256": sha256_file(prompt_manifest_path),
         "dataset_json_sha256": sha256_file(dataset_path),
         "teacher_manifest_sha256": sha256_file(manifest_path),

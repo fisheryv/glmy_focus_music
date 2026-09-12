@@ -16,8 +16,10 @@ from generation.experiment import (
     write_candidate_manifest,
 )
 from generation.ltsn_contract import LTSNContractError, sha256_file
+from generation.ltsn_pipeline import canonical_json_sha256
 from generation.path_homology_exact_scorer import ExactPathHomologyScorer
 from generation.topology_lora import (
+    TOPOLOGY_LORA_EXPERIMENT_V2,
     build_reranking_prompt_splits,
     export_lora_teacher_dataset,
 )
@@ -174,6 +176,65 @@ def _teacher_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
     return run_dir, gate_path, prompts
 
 
+def _add_v2_selection_fixture(run_dir: Path, gate_path: Path) -> Path:
+    constrained = run_dir / "constrained"
+    constrained.mkdir()
+    selector = constrained / "selector.json"
+    selector.write_text('{"selector": "v2"}', encoding="utf-8")
+    frozen = constrained / "frozen_selector.json"
+    frozen.write_text('{"status": "frozen"}', encoding="utf-8")
+    semantic = constrained / "semantic_audit.json"
+    semantic.write_text('{"semantic": "bound"}', encoding="utf-8")
+    selection = constrained / "constrained_selection.csv"
+    _write_csv(
+        selection,
+        [
+            {
+                "prompt_id": "p1",
+                "selected_candidate_id": "p1__c01__s11",
+            }
+        ],
+    )
+    descriptors = run_dir / "descriptors_18d.csv"
+    descriptors.write_text("candidate_id\np1__c01__s11\n", encoding="utf-8")
+    candidate_manifest = run_dir / "manifests" / "candidates.csv"
+    selector_sha256 = sha256_file(selector)
+    contract = {
+        "schema_version": 1,
+        "experiment": "exact_topology_constrained_reranker_v2",
+        "run_id": run_dir.name,
+        "selector_config_path": "constrained/selector.json",
+        "selector_config_sha256": selector_sha256,
+        "frozen_selector_path": "constrained/frozen_selector.json",
+        "frozen_selector_sha256": sha256_file(frozen),
+        "candidate_manifest_sha256": sha256_file(candidate_manifest),
+        "descriptor_table_sha256": sha256_file(descriptors),
+        "semantic_audit_sha256": sha256_file(semantic),
+        "selection_table_sha256": sha256_file(selection),
+        "feasibility_audit_sha256": None,
+        "selected_candidates": {"p1": "p1__c01__s11"},
+        "diagnostic": {"search_complete": True},
+    }
+    contract["contract_sha256"] = canonical_json_sha256(contract)
+    contract_path = constrained / "selection_contract.json"
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    policy = {
+        "name": "exact_topology_constrained_reranker_v2",
+        "selection_contract_path": "constrained/selection_contract.json",
+        "selection_contract_sha256": sha256_file(contract_path),
+        "selector_config_sha256": selector_sha256,
+    }
+    summary_path = run_dir / "summary.json"
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    summary["descriptor_table_sha256"] = sha256_file(descriptors)
+    summary["selection_policy"] = policy
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+    gate = json.loads(gate_path.read_text(encoding="utf-8"))
+    gate["selection_policy"] = policy
+    gate_path.write_text(json.dumps(gate), encoding="utf-8")
+    return contract_path
+
+
 def test_teacher_export_tags_only_exact_winner(tmp_path: Path) -> None:
     run_dir, gate_path, prompts = _teacher_fixture(tmp_path)
     output = tmp_path / "teacher"
@@ -206,6 +267,28 @@ def test_teacher_export_tags_only_exact_winner(tmp_path: Path) -> None:
         )
 
 
+def test_v2_teacher_export_requires_and_binds_constrained_selection(tmp_path: Path) -> None:
+    run_dir, gate_path, prompts = _teacher_fixture(tmp_path)
+    contract_path = _add_v2_selection_fixture(run_dir, gate_path)
+    output = tmp_path / "teacher_v2"
+
+    report = export_lora_teacher_dataset(
+        reranking_run_dir=run_dir,
+        prompt_manifest_path=prompts,
+        fingerprint_path=ROOT / "metadata" / "focus_path_homology_fingerprint_v2.json",
+        reranking_gate_path=gate_path,
+        selection_contract_path=contract_path,
+        output_dir=output,
+        experiment=TOPOLOGY_LORA_EXPERIMENT_V2,
+    )
+
+    dataset = json.loads((output / "ace_lora_dataset.json").read_text(encoding="utf-8"))
+    assert report["experiment"] == TOPOLOGY_LORA_EXPERIMENT_V2
+    assert report["selection_contract_sha256"] == sha256_file(contract_path)
+    assert report["selector_config_sha256"] is not None
+    assert dataset["metadata"]["name"] == TOPOLOGY_LORA_EXPERIMENT_V2
+
+
 def test_native_training_command_is_bound_to_teacher(tmp_path: Path) -> None:
     teacher = tmp_path / "teacher"
     teacher.mkdir()
@@ -236,6 +319,43 @@ def test_native_training_command_is_bound_to_teacher(tmp_path: Path) -> None:
 
     assert "--target-modules" in command
     assert command[command.index("--base-model") + 1] == "xl_turbo"
+    assert plan["dataset_json_sha256"] == sha256_file(dataset)
+
+
+def test_v2_native_training_plan_retains_v2_teacher_binding(tmp_path: Path) -> None:
+    teacher = tmp_path / "teacher_v2"
+    teacher.mkdir()
+    dataset = teacher / "ace_lora_dataset.json"
+    dataset.write_text('{"samples": [{"audio_path": "x.wav"}]}', encoding="utf-8")
+    (teacher / "teacher_report.json").write_text(
+        json.dumps(
+            {
+                "experiment": TOPOLOGY_LORA_EXPERIMENT_V2,
+                "dataset_json_sha256": sha256_file(dataset),
+                "winner_samples": 1,
+                "teacher_source": "frozen_constrained_exact_18d_bestof16",
+                "reranking_gate_sha256": "a" * 64,
+                "selection_contract_sha256": "b" * 64,
+                "selector_config_sha256": "c" * 64,
+                "frozen_selector_sha256": "d" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    tensors = tmp_path / "tensors_v2"
+    tensors.mkdir()
+    (tensors / "sample.pt").write_bytes(b"tensor")
+
+    _, plan = build_native_command(
+        stage="train",
+        project_root=ROOT,
+        config_path=ROOT / "configs" / "topology_lora_v2.json",
+        teacher_dir=teacher,
+        tensor_dir=tensors,
+        output_dir=tmp_path / "lora_v2",
+    )
+
+    assert plan["experiment"] == TOPOLOGY_LORA_EXPERIMENT_V2
     assert plan["dataset_json_sha256"] == sha256_file(dataset)
 
 

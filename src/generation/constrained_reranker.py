@@ -858,6 +858,13 @@ def apply_constrained_selection(
         "confirmation_ready_for_noninferiority": bool(
             frozen_selector_path is not None and summary["topology_passed"]
         ),
+        "teacher_selection_ready": bool(
+            frozen_selector_path is not None
+            and diagnostic["all_prompt_constraints_passed"]
+            and diagnostic["all_diversity_constraints_passed"]
+            and diagnostic.get("search_complete", True)
+            and summary["all_selected_technical_quality_eligible"]
+        ),
         "selection_contract_sha256": sha256_file(contract_path),
         "summary_sha256": sha256_file(run_root / "summary.json"),
     }

@@ -13,7 +13,11 @@ from .experiment import load_experiment_config
 from .ltsn_contract import LTSNContractError, sha256_file
 from .ltsn_pipeline import load_reranking_gate
 from .path_homology_exact_scorer import ExactPathHomologyScorer
-from .topology_lora import build_reranking_prompt_splits, export_lora_teacher_dataset
+from .topology_lora import (
+    TOPOLOGY_LORA_EXPERIMENT_V2,
+    build_reranking_prompt_splits,
+    export_lora_teacher_dataset,
+)
 from .topology_lora_training import (
     finalize_lora_artifact,
     load_lora_config,
@@ -32,8 +36,11 @@ def _resolved(root: Path, value: Path) -> Path:
 
 def command_prepare_prompts(args: argparse.Namespace) -> int:
     root = args.root.resolve()
+    config = load_lora_config(_resolved(root, args.config))
     payload = build_reranking_prompt_splits(
-        _resolved(root, args.source), _resolved(root, args.output_dir)
+        _resolved(root, args.source),
+        _resolved(root, args.output_dir),
+        experiment=config["experiment"],
     )
     _print(payload)
     return 0
@@ -41,8 +48,17 @@ def command_prepare_prompts(args: argparse.Namespace) -> int:
 
 def command_check_gate(args: argparse.Namespace) -> int:
     root = args.root.resolve()
+    config = load_lora_config(_resolved(root, args.config))
+    gate_path = _resolved(root, args.reranking_gate)
     scorer = ExactPathHomologyScorer.from_json(_resolved(root, args.fingerprint))
-    gate = load_reranking_gate(_resolved(root, args.reranking_gate), scorer.contract)
+    gate = load_reranking_gate(gate_path, scorer.contract)
+    if config["experiment"] == TOPOLOGY_LORA_EXPERIMENT_V2:
+        payload = json.loads(gate_path.read_text(encoding="utf-8"))
+        if (
+            payload.get("selection_policy", {}).get("name")
+            != "exact_topology_constrained_reranker_v2"
+        ):
+            raise LTSNContractError("v2 LoRA requires the passed constrained-reranker v2 gate")
     _print(
         {
             "ok": True,
@@ -56,12 +72,17 @@ def command_check_gate(args: argparse.Namespace) -> int:
 
 def command_export_teacher(args: argparse.Namespace) -> int:
     root = args.root.resolve()
+    config = load_lora_config(_resolved(root, args.config))
     payload = export_lora_teacher_dataset(
         reranking_run_dir=_resolved(root, args.reranking_run),
         prompt_manifest_path=_resolved(root, args.prompt_manifest),
         fingerprint_path=_resolved(root, args.fingerprint),
         reranking_gate_path=_resolved(root, args.reranking_gate),
         output_dir=_resolved(root, args.output_dir),
+        selection_contract_path=(
+            _resolved(root, args.selection_contract) if args.selection_contract else None
+        ),
+        experiment=config["experiment"],
         activation_tag=args.activation_tag,
         include_baseline_replay=not args.no_baseline_replay,
     )
@@ -186,6 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-dir", type=Path, default=Path("runs/topology_rerank_lora_v1/prompts")
     )
     parser.add_argument("--reranking-run", type=Path)
+    parser.add_argument("--selection-contract", type=Path)
     parser.add_argument("--prompt-manifest", type=Path)
     parser.add_argument(
         "--fingerprint",
