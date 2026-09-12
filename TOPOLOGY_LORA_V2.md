@@ -22,10 +22,19 @@ The teacher run plans 5,120 generated tracks. Confirm disk capacity before `teac
 ```bash
 bash scripts/run_topology_rerank_lora_v2.sh prepare-prompts
 bash scripts/run_topology_rerank_lora_v2.sh check-gate
-bash scripts/run_topology_rerank_lora_v2.sh teacher-run
+TEACHER_DEVICES="cuda:0 cuda:1 cuda:2 cuda:3" \
+  bash scripts/run_topology_rerank_lora_v2.sh teacher-run
 bash scripts/run_topology_rerank_lora_v2.sh teacher-semantics
 bash scripts/run_topology_rerank_lora_v2.sh teacher-apply
 ```
+
+`teacher-run` 按 prompt pool（而不是单个 candidate）稳定分片。每个 spawn worker
+只加载一次 ACE-Step，写入独立的 `generation_shards/shard_NNN`；父进程在全部
+shard 的 candidate identity、音频 SHA256、metadata（以及启用时的 latent）通过
+校验后，才原子发布正式 `manifests/candidates.csv`。中断后重复同一命令会复用
+hash 有效的 shard 结果。审计结果位于
+`manifests/multigpu_generation_audit.json`，任何 worker 或 merge 失败都会保留
+`formal_manifest_published=false`。
 
 Inspect:
 

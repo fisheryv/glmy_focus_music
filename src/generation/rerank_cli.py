@@ -20,6 +20,10 @@ from .rerank_experiment import (
     issue_surrogate_training_gate,
     score_candidates,
 )
+from .rerank_multigpu import (
+    generate_candidates_multi_device,
+    validate_generation_devices,
+)
 
 
 def _print(payload: dict[str, Any]) -> None:
@@ -37,7 +41,12 @@ def _load(args: argparse.Namespace) -> tuple[Path, ExperimentConfig]:
     return root, config
 
 
-def _preflight(root: Path, config: ExperimentConfig, backend_name: str) -> dict[str, Any]:
+def _preflight(
+    root: Path,
+    config: ExperimentConfig,
+    backend_name: str,
+    devices: list[str] | None = None,
+) -> dict[str, Any]:
     checkout = root / config.ace.checkout
     required_paths = {
         "pipeline_config": root / "configs" / "pipeline.toml",
@@ -75,10 +84,22 @@ def _preflight(root: Path, config: ExperimentConfig, backend_name: str) -> dict[
         except ImportError:
             cuda["available"] = False
             cuda["error"] = "torch is not installed"
+    requested_devices: tuple[str, ...] = ()
+    if devices:
+        requested_devices = validate_generation_devices(devices)
+        if backend_name != "ace":
+            raise ValueError("--devices is supported only with --backend ace")
+        requested_indices = [int(device.split(":", 1)[1]) for device in requested_devices]
+        cuda["requested_devices"] = list(requested_devices)
+        cuda["requested_devices_available"] = bool(cuda.get("available")) and all(
+            index < int(cuda.get("device_count", 0)) for index in requested_indices
+        )
     path_status = {name: path.is_file() for name, path in required_paths.items()}
     ok = all(path_status.values()) and all(dependencies.values())
     if backend_name == "ace":
         ok = ok and bool(cuda["available"])
+    if requested_devices:
+        ok = ok and bool(cuda["requested_devices_available"])
     return {
         "ok": ok,
         "backend": backend_name,
@@ -98,7 +119,7 @@ def _backend(root: Path, config: ExperimentConfig, name: str):
 
 def command_preflight(args: argparse.Namespace) -> int:
     root, config = _load(args)
-    payload = _preflight(root, config, args.backend)
+    payload = _preflight(root, config, args.backend, args.devices)
     _print(payload)
     return 0 if payload["ok"] else 1
 
@@ -120,12 +141,22 @@ def command_plan(args: argparse.Namespace) -> int:
 
 def command_generate(args: argparse.Namespace) -> int:
     root, config = _load(args)
-    records = generate_candidates(
-        root,
-        config,
-        _backend(root, config, args.backend),
-        retry_failed=args.retry_failed,
-    )
+    if args.devices:
+        if args.backend != "ace":
+            raise ValueError("--devices is supported only with --backend ace")
+        records = generate_candidates_multi_device(
+            root,
+            config,
+            args.devices,
+            retry_failed=args.retry_failed,
+        )
+    else:
+        records = generate_candidates(
+            root,
+            config,
+            _backend(root, config, args.backend),
+            retry_failed=args.retry_failed,
+        )
     failed = [record for record in records if record.status == "failed"]
     _print(
         {
@@ -254,6 +285,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="project-relative prompt CSV override; frozen into the selected run",
     )
     parser.add_argument("--backend", choices=("ace", "fake"), default="ace")
+    parser.add_argument(
+        "--devices",
+        nargs="+",
+        metavar="CUDA_DEVICE",
+        help="spawn one prompt-pool shard per explicit CUDA device, for example cuda:0 cuda:1",
+    )
     parser.add_argument("--retry-failed", action="store_true")
     parser.add_argument("--noninferiority-report", type=Path)
     parser.add_argument("--noninferiority-table", type=Path)

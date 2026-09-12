@@ -53,11 +53,13 @@ case "${STAGE}" in
     ;;
   teacher-run)
     require_v2_authority
+    read -r -a TEACHER_DEVICE_ARGS <<< "${TEACHER_DEVICES:-cuda:0 cuda:1 cuda:2 cuda:3}"
     "${PYTHON_BIN}" -m generation.rerank_cli preflight \
-      --root "${PROJECT_ROOT}" --config "${TEACHER_CONFIG}" --backend ace
+      --root "${PROJECT_ROOT}" --config "${TEACHER_CONFIG}" --backend ace \
+      --devices "${TEACHER_DEVICE_ARGS[@]}"
     "${PYTHON_BIN}" -m generation.rerank_cli run \
       --root "${PROJECT_ROOT}" --config "${TEACHER_CONFIG}" \
-      --backend ace --retry-failed
+      --backend ace --devices "${TEACHER_DEVICE_ARGS[@]}" --retry-failed
     ;;
   teacher-semantics)
     require_v2_authority
