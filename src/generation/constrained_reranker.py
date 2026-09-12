@@ -440,6 +440,7 @@ def _global_assignment_candidates(
     baseline_diversity_by_prompt = dict(zip(prompt_ids, baseline_diversity, strict=True))
     prompt_margin = float(selector["constraints"]["prompt_margin"])
     diversity_margin = float(selector["constraints"]["diversity_margin"])
+    pairwise_roundoff_tolerance = float(np.finfo(np.float64).eps * 8.0)
     effect_threshold = float(selector["algorithm"]["effect_threshold"])
     maximum_nodes = int(selector["algorithm"]["maximum_search_nodes"])
     positive_prompt_ids = [
@@ -457,7 +458,7 @@ def _global_assignment_candidates(
         similarity = float(embeddings[left_candidate] @ embeddings[right_candidate])
         left_limit = 1.0 - baseline_diversity_by_prompt[left_prompt] + diversity_margin
         right_limit = 1.0 - baseline_diversity_by_prompt[right_prompt] + diversity_margin
-        return similarity <= min(left_limit, right_limit)
+        return similarity <= min(left_limit, right_limit) + pairwise_roundoff_tolerance
 
     options: dict[str, list[_GlobalOption]] = {}
     funnel_rows: list[dict[str, Any]] = []
@@ -535,6 +536,8 @@ def _global_assignment_candidates(
     best_score: tuple[int, float, int, int, float] | None = None
     best_signature: tuple[str, ...] | None = None
     search_nodes = 0
+    exact_diversity_rejections = 0
+    exact_feasible_leaf_assignments = 0
 
     def viable_options(prompt_id: str) -> list[_GlobalOption]:
         return [
@@ -571,13 +574,33 @@ def _global_assignment_candidates(
         )
 
     def search(unassigned: tuple[str, ...]) -> None:
-        nonlocal best_options, best_score, best_signature, search_nodes
+        nonlocal best_options, best_score, best_signature
+        nonlocal exact_diversity_rejections, exact_feasible_leaf_assignments, search_nodes
         search_nodes += 1
         if search_nodes > maximum_nodes:
             raise LTSNContractError(
                 f"global constrained search exceeded {maximum_nodes} nodes"
             )
         if not unassigned:
+            leaf_assignment = dict(baseline_assignment)
+            leaf_assignment.update(
+                {
+                    prompt_id: option.candidate_id
+                    for prompt_id, option in selected_options.items()
+                }
+            )
+            leaf_diversity = nearest_neighbor_diversity(
+                np.stack(
+                    [embeddings[leaf_assignment[prompt_id]] for prompt_id in prompt_ids]
+                )
+            )
+            if any(
+                value - baseline_diversity_by_prompt[prompt_id] < -diversity_margin
+                for prompt_id, value in zip(prompt_ids, leaf_diversity, strict=True)
+            ):
+                exact_diversity_rejections += 1
+                return
+            exact_feasible_leaf_assignments += 1
             score = score_of(selected_options)
             signature = tuple(
                 selected_options[prompt_id].candidate_id
@@ -630,7 +653,19 @@ def _global_assignment_candidates(
             search(remaining)
             del selected_options[prompt_id]
 
+    baseline_options = {
+        prompt_id: options[prompt_id][0] for prompt_id in positive_prompt_ids
+    }
+    best_options = baseline_options
+    best_score = score_of(baseline_options)
+    best_signature = tuple(
+        baseline_options[prompt_id].candidate_id for prompt_id in positive_prompt_ids
+    )
     search(tuple(positive_prompt_ids))
+    if exact_feasible_leaf_assignments == 0:
+        raise LTSNContractError(
+            "global constrained search did not enumerate its exact baseline fallback"
+        )
     if best_options is None or best_score is None:
         raise LTSNContractError("global constrained assignment has no feasible baseline fallback")
     assignment = dict(baseline_assignment)
@@ -675,6 +710,9 @@ def _global_assignment_candidates(
         "search_complete": True,
         "search_nodes": search_nodes,
         "maximum_search_nodes": maximum_nodes,
+        "pairwise_roundoff_tolerance": pairwise_roundoff_tolerance,
+        "exact_diversity_rejected_leaf_assignments": exact_diversity_rejections,
+        "exact_feasible_leaf_assignments": exact_feasible_leaf_assignments,
         "objective": selector["algorithm"]["objective"],
         "pool_funnel": funnel_rows,
     }

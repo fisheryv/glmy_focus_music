@@ -186,3 +186,47 @@ def test_v2_global_assignment_can_accept_jointly_feasible_substitutions(
     assert report["feasibility_audit"]["maximum_feasible_effectful_pools"] == 2
     assert report["feasibility_audit"]["candidate_pool_supports_effectful_majority"] is True
     assert all(row["diversity_difference"] >= 0.0 for row in selection_rows)
+
+
+def test_v2_baseline_fallback_survives_pairwise_float_roundoff(tmp_path: Path) -> None:
+    semantic_dir = tmp_path / "semantic"
+    semantic_dir.mkdir()
+    generator = np.random.default_rng(1)
+    baseline_embeddings = generator.normal(size=(64, 512))
+    rows = []
+    candidate_ids = []
+    embeddings = []
+    for prompt_index, baseline_embedding in enumerate(baseline_embeddings):
+        prompt_id = f"p{prompt_index:02d}"
+        for candidate_index in range(16):
+            candidate_id = f"{prompt_id}__c{candidate_index:02d}"
+            candidate_ids.append(candidate_id)
+            embeddings.append(baseline_embedding)
+            rows.append(
+                {
+                    "candidate_id": candidate_id,
+                    "prompt_id": prompt_id,
+                    "candidate_index": candidate_index,
+                    "audio_sha256": f"{prompt_index:064x}",
+                    "focus_band_loss": 1.0,
+                    "technical_quality_eligible": int(candidate_index == 0),
+                    "prompt_alignment": 0.8,
+                }
+            )
+    write_csv_atomic(semantic_dir / "candidate_semantics.csv", rows)
+    np.savez_compressed(
+        semantic_dir / "candidate_embeddings.npz",
+        candidate_ids=np.asarray(candidate_ids),
+        embeddings=np.asarray(embeddings),
+    )
+
+    selected, selection_rows, report = select_constrained_candidates(
+        semantic_dir=semantic_dir,
+        selector_config_path=ROOT / "configs" / "constrained_reranker_v2.json",
+    )
+
+    assert all(candidate_id.endswith("__c00") for candidate_id in selected.values())
+    assert report["changed_pools"] == 0
+    assert report["search_complete"] is True
+    assert report["feasibility_audit"]["exact_feasible_leaf_assignments"] >= 1
+    assert min(row["diversity_difference"] for row in selection_rows) == 0.0
