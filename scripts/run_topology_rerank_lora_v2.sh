@@ -82,6 +82,10 @@ case "${STAGE}" in
       --selection-contract "${TEACHER_SELECTION}/selection_contract.json" \
       --output-dir "${TEACHER_DIR}"
     ;;
+  check-lora-env)
+    "${PYTHON_BIN}" -m generation.topology_lora_cli check-env \
+      "${LORA_COMMON[@]}" --python-bin "${PYTHON_BIN}"
+    ;;
   preprocess-lora)
     "${PYTHON_BIN}" -m generation.topology_lora_cli preprocess \
       "${LORA_COMMON[@]}" --teacher-dir "${TEACHER_DIR}" \
@@ -130,7 +134,7 @@ case "${STAGE}" in
       --validation-run "${VALIDATION_ROOT}/qualification"
     ;;
   *)
-    echo "Usage: $0 {prepare-prompts|check-gate|teacher-run|teacher-semantics|teacher-apply|export-teacher|preprocess-lora|train-lora|finalize-lora|validate-development|select-scale|validate-qualification}" >&2
+    echo "Usage: $0 {prepare-prompts|check-gate|teacher-run|teacher-semantics|teacher-apply|export-teacher|check-lora-env|preprocess-lora|train-lora|finalize-lora|validate-development|select-scale|validate-qualification}" >&2
     exit 2
     ;;
 esac

@@ -60,6 +60,15 @@ dataset JSON or source audio after export.
 
 ## LoRA preprocessing and training
 
+Install the supplemental native-training dependencies into the same interpreter selected by
+`PYTHON_BIN`, then verify that the ACE-Step entrypoint imports successfully:
+
+```bash
+"${PYTHON_BIN:-ACE-Step-1.5/.venv/bin/python}" -m pip install \
+  -r configs/topology_lora_training_requirements.txt
+bash scripts/run_topology_rerank_lora_v2.sh check-lora-env
+```
+
 ```bash
 bash scripts/run_topology_rerank_lora_v2.sh preprocess-lora
 bash scripts/run_topology_rerank_lora_v2.sh train-lora

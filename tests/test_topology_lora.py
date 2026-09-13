@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import csv
 import json
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -23,7 +25,10 @@ from generation.topology_lora import (
     build_reranking_prompt_splits,
     export_lora_teacher_dataset,
 )
-from generation.topology_lora_training import build_native_command
+from generation.topology_lora_training import (
+    build_native_command,
+    check_native_training_environment,
+)
 from generation.topology_lora_validation import (
     select_development_scale,
     summarize_paired_validation,
@@ -357,6 +362,57 @@ def test_v2_native_training_plan_retains_v2_teacher_binding(tmp_path: Path) -> N
 
     assert plan["experiment"] == TOPOLOGY_LORA_EXPERIMENT_V2
     assert plan["dataset_json_sha256"] == sha256_file(dataset)
+
+
+def test_native_training_environment_reports_missing_supplemental_dependencies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result = SimpleNamespace(
+        returncode=1,
+        stdout=json.dumps({"missing_modules": ["loguru"], "versions": {}}),
+        stderr="",
+    )
+    monkeypatch.setattr("generation.topology_lora_training.subprocess.run", lambda *a, **k: result)
+
+    with pytest.raises(LTSNContractError, match="topology_lora_training_requirements.txt"):
+        check_native_training_environment(
+            project_root=ROOT,
+            config_path=ROOT / "configs" / "topology_lora_v2.json",
+            python_bin=Path(sys.executable),
+        )
+
+
+def test_native_training_environment_imports_entrypoint(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = []
+
+    def fake_run(*args: object, **kwargs: object) -> SimpleNamespace:
+        calls.append((args, kwargs))
+        if len(calls) == 1:
+            return SimpleNamespace(
+                returncode=0,
+                stdout=json.dumps(
+                    {"missing_modules": [], "versions": {"loguru": "0.7.3"}}
+                ),
+                stderr="",
+            )
+        return SimpleNamespace(returncode=0, stdout="entrypoint_import_ok\n", stderr="")
+
+    monkeypatch.setattr("generation.topology_lora_training.subprocess.run", fake_run)
+
+    payload = check_native_training_environment(
+        project_root=ROOT,
+        config_path=ROOT / "configs" / "topology_lora_v2.json",
+        python_bin=Path(sys.executable),
+    )
+
+    assert payload["ok"] is True
+    assert payload["entrypoint_importable"] is True
+    assert payload["requirements_sha256"] == sha256_file(
+        ROOT / "configs" / "topology_lora_training_requirements.txt"
+    )
+    assert len(calls) == 2
 
 
 class _FakeHandler:

@@ -14,6 +14,120 @@ from .ltsn_contract import LTSNContractError, sha256_file
 from .ltsn_pipeline import canonical_json_sha256, write_json_atomic
 from .topology_lora import TOPOLOGY_LORA_EXPERIMENT_V2, TOPOLOGY_LORA_EXPERIMENTS
 
+_NATIVE_TRAINING_DISTRIBUTIONS = {
+    "torch": "torch",
+    "torchaudio": "torchaudio",
+    "transformers": "transformers",
+    "diffusers": "diffusers",
+    "soundfile": "soundfile",
+    "safetensors": "safetensors",
+    "loguru": "loguru",
+    "peft": "peft",
+    "lycoris": "lycoris-lora",
+    "lightning": "lightning",
+    "tensorboard": "tensorboard",
+}
+_SUPPLEMENTAL_TRAINING_MODULES = {
+    "loguru",
+    "peft",
+    "lycoris",
+    "lightning",
+    "tensorboard",
+}
+
+
+def _native_environment(project_root: Path, checkout: Path) -> dict[str, str]:
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(checkout), str(project_root / "src"), environment.get("PYTHONPATH", "")]
+    ).rstrip(os.pathsep)
+    return environment
+
+
+def check_native_training_environment(
+    *,
+    project_root: Path,
+    config_path: Path,
+    python_bin: Path | None = None,
+) -> dict[str, Any]:
+    """Check the exact interpreter used by ACE-Step before preprocessing or training."""
+
+    config = load_lora_config(config_path)
+    checkout = (project_root / config["model"]["checkout"]).resolve()
+    executable = str((python_bin or Path(sys.executable)).resolve())
+    if not Path(executable).is_file():
+        raise LTSNContractError(f"LoRA Python interpreter is missing: {executable}")
+    requirements_path = (
+        project_root / "configs" / "topology_lora_training_requirements.txt"
+    ).resolve()
+    probe = (
+        "import importlib.metadata as m, importlib.util as u, json, sys; "
+        "items=json.loads(sys.argv[1]); missing=[]; versions={}; "
+        "[(missing.append(module) if u.find_spec(module) is None else "
+        "versions.__setitem__(dist, m.version(dist))) for module,dist in items.items()]; "
+        "print(json.dumps({'missing_modules':missing,'versions':versions},sort_keys=True)); "
+        "raise SystemExit(1 if missing else 0)"
+    )
+    result = subprocess.run(
+        [executable, "-c", probe, json.dumps(_NATIVE_TRAINING_DISTRIBUTIONS)],
+        cwd=checkout,
+        env=_native_environment(project_root, checkout),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    try:
+        payload = json.loads(result.stdout.strip())
+    except (TypeError, ValueError) as exc:
+        raise LTSNContractError(
+            f"could not inspect ACE-Step training environment: {result.stderr.strip()}"
+        ) from exc
+    missing = [str(module) for module in payload.get("missing_modules", [])]
+    if missing:
+        if set(missing) <= _SUPPLEMENTAL_TRAINING_MODULES:
+            install = f"{executable} -m pip install -r {requirements_path}"
+        else:
+            synced_python = checkout / ".venv" / (
+                "Scripts/python.exe" if os.name == "nt" else "bin/python"
+            )
+            install = (
+                f"cd {checkout} && uv sync --locked; then use "
+                f"{synced_python} as PYTHON_BIN"
+            )
+        raise LTSNContractError(
+            "ACE-Step training environment is incomplete; "
+            f"missing modules: {', '.join(missing)}. Install the pinned dependencies with: "
+            f"{install}"
+        )
+    entrypoint = subprocess.run(
+        [
+            executable,
+            "-c",
+            "import acestep.training_v2.cli.train_fixed; print('entrypoint_import_ok')",
+        ],
+        cwd=checkout,
+        env=_native_environment(project_root, checkout),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if entrypoint.returncode != 0:
+        detail = (entrypoint.stderr or entrypoint.stdout).strip()
+        raise LTSNContractError(
+            "ACE-Step native training entrypoint cannot be imported by "
+            f"{executable}: {detail}"
+        )
+    return {
+        "ok": True,
+        "python_executable": executable,
+        "ace_checkout": str(checkout),
+        "entrypoint": "acestep.training_v2.cli.train_fixed",
+        "entrypoint_importable": True,
+        "versions": payload["versions"],
+        "requirements_path": str(requirements_path),
+        "requirements_sha256": sha256_file(requirements_path),
+    }
+
 
 def load_lora_config(path: Path) -> dict[str, Any]:
     """Load and minimally validate the frozen topology-LoRA configuration."""
@@ -171,6 +285,12 @@ def run_native_stage(
 ) -> dict[str, Any]:
     """Freeze a native ACE command, execute it, and record completion."""
 
+    environment_report = check_native_training_environment(
+        project_root=project_root,
+        config_path=config_path,
+        python_bin=python_bin,
+    )
+
     command, plan = build_native_command(
         stage=stage,
         project_root=project_root,
@@ -189,12 +309,17 @@ def run_native_stage(
     else:
         write_json_atomic(plan_path, plan)
     checkout = (project_root / load_lora_config(config_path)["model"]["checkout"]).resolve()
-    environment = dict(os.environ)
-    environment["PYTHONPATH"] = os.pathsep.join(
-        [str(checkout), str(project_root / "src"), environment.get("PYTHONPATH", "")]
-    ).rstrip(os.pathsep)
-    subprocess.run(command, cwd=checkout, env=environment, check=True)
-    completion = {**plan, "completed": True}
+    subprocess.run(
+        command,
+        cwd=checkout,
+        env=_native_environment(project_root, checkout),
+        check=True,
+    )
+    completion = {
+        **plan,
+        "completed": True,
+        "training_environment": environment_report,
+    }
     if stage == "preprocess":
         completion["tensor_bundle_sha256"] = sha256_directory(tensor_dir)
     write_json_atomic(audit_dir / f"{stage}_complete.json", completion)

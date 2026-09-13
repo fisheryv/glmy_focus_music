@@ -19,6 +19,7 @@ from .topology_lora import (
     export_lora_teacher_dataset,
 )
 from .topology_lora_training import (
+    check_native_training_environment,
     finalize_lora_artifact,
     load_lora_config,
     run_native_stage,
@@ -99,6 +100,17 @@ def command_native(args: argparse.Namespace) -> int:
         teacher_dir=_resolved(root, args.teacher_dir),
         tensor_dir=_resolved(root, args.tensor_dir),
         output_dir=_resolved(root, args.lora_output),
+        python_bin=args.python_bin,
+    )
+    _print(payload)
+    return 0
+
+
+def command_check_env(args: argparse.Namespace) -> int:
+    root = args.root.resolve()
+    payload = check_native_training_environment(
+        project_root=root,
+        config_path=_resolved(root, args.config),
         python_bin=args.python_bin,
     )
     _print(payload)
@@ -192,6 +204,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=(
             "prepare-prompts",
             "check-gate",
+            "check-env",
             "export-teacher",
             "preprocess",
             "train",
@@ -264,6 +277,8 @@ def main(argv: list[str] | None = None) -> int:
             return command_prepare_prompts(args)
         if args.command == "check-gate":
             return command_check_gate(args)
+        if args.command == "check-env":
+            return command_check_env(args)
         if args.command == "export-teacher":
             if args.reranking_run is None or args.prompt_manifest is None:
                 parser.error("export-teacher requires --reranking-run and --prompt-manifest")

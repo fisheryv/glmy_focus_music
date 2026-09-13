@@ -1,0 +1,7 @@
+# Supplemental ACE-Step 1.5 training dependencies pinned to ACE-Step-1.5/uv.lock.
+# Install these into the same interpreter selected by PYTHON_BIN.
+loguru==0.7.3
+peft==0.18.1
+lycoris-lora==3.4.0
+lightning==2.6.1
+tensorboard==2.20.0
