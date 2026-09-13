@@ -36,12 +36,50 @@ _SUPPLEMENTAL_TRAINING_MODULES = {
 }
 
 
+def _python_executable(python_bin: Path | None) -> Path:
+    """Return an absolute interpreter path without dereferencing a venv symlink."""
+
+    requested = (python_bin or Path(sys.executable)).expanduser()
+    return Path(os.path.abspath(os.fspath(requested)))
+
+
 def _native_environment(project_root: Path, checkout: Path) -> dict[str, str]:
     environment = dict(os.environ)
     environment["PYTHONPATH"] = os.pathsep.join(
         [str(checkout), str(project_root / "src"), environment.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
     return environment
+
+
+def _freeze_native_stage_plan(
+    *,
+    audit_dir: Path,
+    stage: str,
+    plan: dict[str, Any],
+    stage_output: Path,
+) -> Path | None:
+    """Freeze a plan, preserving a failed pre-execution plan when the interpreter changes."""
+
+    plan_path = audit_dir / f"{stage}_plan.json"
+    completion_path = audit_dir / f"{stage}_complete.json"
+    if not plan_path.is_file():
+        write_json_atomic(plan_path, plan)
+        return None
+    previous = json.loads(plan_path.read_text(encoding="utf-8"))
+    if previous.get("plan_sha256") == plan["plan_sha256"]:
+        return None
+    if completion_path.is_file():
+        raise LTSNContractError(f"completed {stage} plan differs from the frozen command")
+    if stage_output.is_dir() and any(path.is_file() for path in stage_output.rglob("*")):
+        raise LTSNContractError(
+            f"existing {stage} plan differs and its output directory is not empty"
+        )
+    previous_sha256 = str(previous.get("plan_sha256") or canonical_json_sha256(previous))
+    archived = audit_dir / f"{stage}_plan_superseded_{previous_sha256[:12]}.json"
+    if not archived.is_file():
+        write_json_atomic(archived, previous)
+    write_json_atomic(plan_path, plan)
+    return archived
 
 
 def check_native_training_environment(
@@ -54,8 +92,9 @@ def check_native_training_environment(
 
     config = load_lora_config(config_path)
     checkout = (project_root / config["model"]["checkout"]).resolve()
-    executable = str((python_bin or Path(sys.executable)).resolve())
-    if not Path(executable).is_file():
+    executable_path = _python_executable(python_bin)
+    executable = str(executable_path)
+    if not executable_path.is_file():
         raise LTSNContractError(f"LoRA Python interpreter is missing: {executable}")
     requirements_path = (
         project_root / "configs" / "topology_lora_training_requirements.txt"
@@ -194,7 +233,7 @@ def build_native_command(
     config = load_lora_config(config_path)
     dataset_path, teacher = _teacher_inputs(teacher_dir, config["experiment"])
     model = config["model"]
-    executable = str((python_bin or Path(sys.executable)).resolve())
+    executable = str(_python_executable(python_bin))
     checkpoint_dir = (project_root / model["checkpoint_dir"]).resolve()
     command = [
         executable,
@@ -301,13 +340,12 @@ def run_native_stage(
         python_bin=python_bin,
     )
     audit_dir = output_dir.parent / "audit"
-    plan_path = audit_dir / f"{stage}_plan.json"
-    if plan_path.is_file():
-        previous = json.loads(plan_path.read_text(encoding="utf-8"))
-        if previous.get("plan_sha256") != plan["plan_sha256"]:
-            raise LTSNContractError(f"existing {stage} plan differs from the frozen command")
-    else:
-        write_json_atomic(plan_path, plan)
+    superseded_plan = _freeze_native_stage_plan(
+        audit_dir=audit_dir,
+        stage=stage,
+        plan=plan,
+        stage_output=tensor_dir if stage == "preprocess" else output_dir,
+    )
     checkout = (project_root / load_lora_config(config_path)["model"]["checkout"]).resolve()
     subprocess.run(
         command,
@@ -319,6 +357,7 @@ def run_native_stage(
         **plan,
         "completed": True,
         "training_environment": environment_report,
+        "superseded_failed_plan": str(superseded_plan) if superseded_plan else None,
     }
     if stage == "preprocess":
         completion["tensor_bundle_sha256"] = sha256_directory(tensor_dir)

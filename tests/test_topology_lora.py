@@ -26,6 +26,8 @@ from generation.topology_lora import (
     export_lora_teacher_dataset,
 )
 from generation.topology_lora_training import (
+    _freeze_native_stage_plan,
+    _python_executable,
     build_native_command,
     check_native_training_environment,
 )
@@ -325,6 +327,61 @@ def test_native_training_command_is_bound_to_teacher(tmp_path: Path) -> None:
     assert "--target-modules" in command
     assert command[command.index("--base-model") + 1] == "xl_turbo"
     assert plan["dataset_json_sha256"] == sha256_file(dataset)
+
+
+def test_native_training_python_path_is_not_symlink_resolved(
+    tmp_path: Path,
+) -> None:
+    venv_python = tmp_path / "ACE-Step-1.5" / ".venv" / "bin" / "python"
+    target_python = tmp_path / "system" / "python3.12"
+    venv_python.parent.mkdir(parents=True)
+    target_python.parent.mkdir(parents=True)
+    target_python.write_bytes(b"python")
+    try:
+        venv_python.symlink_to(target_python)
+    except OSError:
+        pytest.skip("filesystem does not permit symlink creation")
+
+    assert _python_executable(venv_python) == venv_python.absolute()
+
+
+def test_failed_empty_native_plan_can_be_safely_superseded(tmp_path: Path) -> None:
+    audit = tmp_path / "audit"
+    output = tmp_path / "tensors"
+    previous = {"stage": "preprocess", "plan_sha256": "a" * 64}
+    current = {"stage": "preprocess", "plan_sha256": "b" * 64}
+    audit.mkdir()
+    (audit / "preprocess_plan.json").write_text(json.dumps(previous), encoding="utf-8")
+
+    archived = _freeze_native_stage_plan(
+        audit_dir=audit,
+        stage="preprocess",
+        plan=current,
+        stage_output=output,
+    )
+
+    assert archived == audit / f"preprocess_plan_superseded_{'a' * 12}.json"
+    assert json.loads((audit / "preprocess_plan.json").read_text(encoding="utf-8")) == current
+    assert json.loads(archived.read_text(encoding="utf-8")) == previous
+
+
+def test_native_plan_change_is_rejected_after_output_exists(tmp_path: Path) -> None:
+    audit = tmp_path / "audit"
+    output = tmp_path / "tensors"
+    audit.mkdir()
+    output.mkdir()
+    (audit / "preprocess_plan.json").write_text(
+        json.dumps({"plan_sha256": "a" * 64}), encoding="utf-8"
+    )
+    (output / "partial.pt").write_bytes(b"partial")
+
+    with pytest.raises(LTSNContractError, match="output directory is not empty"):
+        _freeze_native_stage_plan(
+            audit_dir=audit,
+            stage="preprocess",
+            plan={"plan_sha256": "b" * 64},
+            stage_output=output,
+        )
 
 
 def test_v2_native_training_plan_retains_v2_teacher_binding(tmp_path: Path) -> None:
