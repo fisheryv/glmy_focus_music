@@ -27,6 +27,7 @@ LORA_OUTPUT="${PROJECT_ROOT}/${PIPELINE_ROOT}/lora"
 LORA_ARTIFACT="${PROJECT_ROOT}/${PIPELINE_ROOT}/lora_artifact.json"
 VALIDATION_ROOT="${PROJECT_ROOT}/${PIPELINE_ROOT}/validation"
 SCALE_SELECTION="${PROJECT_ROOT}/${PIPELINE_ROOT}/scale_selection.json"
+LORA_GPU="${LORA_GPU:-1}"
 
 LORA_COMMON=(--root "${PROJECT_ROOT}" --config "${LORA_CONFIG}")
 
@@ -87,12 +88,14 @@ case "${STAGE}" in
       "${LORA_COMMON[@]}" --python-bin "${PYTHON_BIN}"
     ;;
   preprocess-lora)
+    CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES="${LORA_GPU}" \
     "${PYTHON_BIN}" -m generation.topology_lora_cli preprocess \
       "${LORA_COMMON[@]}" --teacher-dir "${TEACHER_DIR}" \
       --tensor-dir "${TENSOR_DIR}" --lora-output "${LORA_OUTPUT}" \
       --python-bin "${PYTHON_BIN}"
     ;;
   train-lora)
+    CUDA_DEVICE_ORDER=PCI_BUS_ID CUDA_VISIBLE_DEVICES="${LORA_GPU}" \
     "${PYTHON_BIN}" -m generation.topology_lora_cli train \
       "${LORA_COMMON[@]}" --teacher-dir "${TEACHER_DIR}" \
       --tensor-dir "${TENSOR_DIR}" --lora-output "${LORA_OUTPUT}" \

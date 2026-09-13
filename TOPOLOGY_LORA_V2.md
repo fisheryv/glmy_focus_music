@@ -75,6 +75,15 @@ bash scripts/run_topology_rerank_lora_v2.sh train-lora
 bash scripts/run_topology_rerank_lora_v2.sh finalize-lora
 ```
 
+Preprocessing and training default to physical GPU 1 through
+`CUDA_VISIBLE_DEVICES=1`; the frozen configuration continues to address that selected card as
+logical `cuda:0`. Override the physical card at runtime without changing the config hash:
+
+```bash
+LORA_GPU=2 bash scripts/run_topology_rerank_lora_v2.sh preprocess-lora
+LORA_GPU=2 bash scripts/run_topology_rerank_lora_v2.sh train-lora
+```
+
 The finalized adapter remains `trained_unqualified`; training alone is not production evidence.
 
 ## Development scale selection and qualification
