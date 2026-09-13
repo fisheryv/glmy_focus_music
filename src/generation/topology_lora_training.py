@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .ace_lora_native_entrypoint import RUNTIME_POLICY, VARIANT_DIRECTORY_ALIASES
 from .artifact_hash import sha256_directory
 from .ltsn_contract import LTSNContractError, sha256_file
 from .ltsn_pipeline import canonical_json_sha256, write_json_atomic
@@ -70,10 +71,40 @@ def _freeze_native_stage_plan(
         return None
     if completion_path.is_file():
         raise LTSNContractError(f"completed {stage} plan differs from the frozen command")
-    if stage_output.is_dir() and any(path.is_file() for path in stage_output.rglob("*")):
-        raise LTSNContractError(
-            f"existing {stage} plan differs and its output directory is not empty"
+    output_files = (
+        [path for path in stage_output.rglob("*") if path.is_file()]
+        if stage_output.is_dir()
+        else []
+    )
+    if output_files:
+        previous_command = list(previous.get("command", []))
+        current_command = list(plan.get("command", []))
+        previous_without_policy = {
+            key: value
+            for key, value in previous.items()
+            if key not in {"command", "native_runtime_policy", "plan_sha256"}
+        }
+        current_without_policy = {
+            key: value
+            for key, value in plan.items()
+            if key not in {"command", "native_runtime_policy", "plan_sha256"}
+        }
+        safe_wrapper_transition = bool(
+            stage == "preprocess"
+            and previous_without_policy == current_without_policy
+            and len(previous_command) >= 4
+            and len(current_command) >= 4
+            and previous_command[0] == current_command[0]
+            and previous_command[1] == current_command[1] == "-m"
+            and previous_command[2] == "acestep.training_v2.cli.train_fixed"
+            and current_command[2] == "generation.ace_lora_native_entrypoint"
+            and previous_command[3:] == current_command[3:]
+            and all(path.name.endswith((".pt", ".tmp.pt")) for path in output_files)
         )
+        if not safe_wrapper_transition:
+            raise LTSNContractError(
+                f"existing {stage} plan differs and its output directory is not empty"
+            )
     previous_sha256 = str(previous.get("plan_sha256") or canonical_json_sha256(previous))
     archived = audit_dir / f"{stage}_plan_superseded_{previous_sha256[:12]}.json"
     if not archived.is_file():
@@ -235,14 +266,18 @@ def build_native_command(
     model = config["model"]
     executable = str(_python_executable(python_bin))
     checkpoint_dir = (project_root / model["checkpoint_dir"]).resolve()
+    runtime_model_variant = VARIANT_DIRECTORY_ALIASES.get(
+        model["variant"], model["variant"]
+    )
+    runtime_model_dir = checkpoint_dir / runtime_model_variant
     command = [
         executable,
         "-m",
-        "acestep.training_v2.cli.train_fixed",
+        "generation.ace_lora_native_entrypoint",
         "--checkpoint-dir",
         str(checkpoint_dir),
         "--model-variant",
-        model["variant"],
+        runtime_model_variant,
         "--device",
         model["device"],
         "--precision",
@@ -306,10 +341,46 @@ def build_native_command(
         "dataset_json_sha256": teacher["dataset_json_sha256"],
         "tensor_dir": str(tensor_dir.resolve()),
         "output_dir": str(output_dir.resolve()),
+        "runtime_model_variant": runtime_model_variant,
+        "runtime_model_dir": str(runtime_model_dir),
+        "native_runtime_policy": RUNTIME_POLICY,
         "command": command,
     }
     plan["plan_sha256"] = canonical_json_sha256(plan)
     return command, plan
+
+
+def _validate_preprocess_outputs(dataset_path: Path, tensor_dir: Path) -> dict[str, Any]:
+    dataset = json.loads(dataset_path.read_text(encoding="utf-8"))
+    samples = dataset.get("samples")
+    if not isinstance(samples, list) or not samples:
+        raise LTSNContractError("LoRA teacher dataset has no preprocess samples")
+    expected_names = [f"{Path(str(sample['audio_path'])).stem}.pt" for sample in samples]
+    if len(set(expected_names)) != len(expected_names):
+        raise LTSNContractError("LoRA teacher audio stems collide in tensor output")
+    final_files = {
+        path.name: path
+        for path in tensor_dir.glob("*.pt")
+        if not path.name.endswith(".tmp.pt")
+    }
+    temporary_files = sorted(path.name for path in tensor_dir.glob("*.tmp.pt"))
+    expected = set(expected_names)
+    observed = set(final_files)
+    missing = sorted(expected - observed)
+    unexpected = sorted(observed - expected)
+    empty = sorted(name for name, path in final_files.items() if path.stat().st_size == 0)
+    if missing or unexpected or temporary_files or empty:
+        raise LTSNContractError(
+            "ACE-Step preprocessing output is incomplete or contaminated: "
+            f"expected={len(expected)}, final={len(observed)}, missing={len(missing)}, "
+            f"unexpected={len(unexpected)}, temporary={len(temporary_files)}, empty={len(empty)}"
+        )
+    return {
+        "expected_samples": len(expected),
+        "final_tensors": len(observed),
+        "temporary_tensors": 0,
+        "complete": True,
+    }
 
 
 def run_native_stage(
@@ -353,11 +424,19 @@ def run_native_stage(
         env=_native_environment(project_root, checkout),
         check=True,
     )
+    preprocess_output = None
+    if stage == "preprocess":
+        dataset_path, _ = _teacher_inputs(
+            teacher_dir,
+            load_lora_config(config_path)["experiment"],
+        )
+        preprocess_output = _validate_preprocess_outputs(dataset_path, tensor_dir)
     completion = {
         **plan,
         "completed": True,
         "training_environment": environment_report,
         "superseded_failed_plan": str(superseded_plan) if superseded_plan else None,
+        "preprocess_output": preprocess_output,
     }
     if stage == "preprocess":
         completion["tensor_bundle_sha256"] = sha256_directory(tensor_dir)

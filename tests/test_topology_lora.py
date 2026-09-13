@@ -334,7 +334,9 @@ def test_native_training_command_is_bound_to_teacher(tmp_path: Path) -> None:
 
     assert "--target-modules" in command
     assert command[2] == "generation.ace_lora_native_entrypoint"
+    assert command[command.index("--model-variant") + 1] == "acestep-v15-xl-turbo"
     assert command[command.index("--base-model") + 1] == "xl_turbo"
+    assert plan["runtime_model_variant"] == "acestep-v15-xl-turbo"
     assert plan["native_runtime_policy"]["attention_backend"] == "sdpa"
     assert plan["dataset_json_sha256"] == sha256_file(dataset)
 
