@@ -16,6 +16,8 @@ RUNTIME_POLICY = {
     "preprocess_fail_fast": True,
     "cleanup_preserves_primary_cuda_error": True,
     "variant_alias_contract": "ace_step_1_5_all_official_variants_v1",
+    "safe_root": "project_root",
+    "train_output_must_contain_final_adapter": True,
 }
 
 VARIANT_DIRECTORY_ALIASES = {
@@ -34,10 +36,29 @@ def _install_variant_aliases() -> None:
     VARIANT_DIR_MAP.update(VARIANT_DIRECTORY_ALIASES)
 
 
+def _install_project_safe_root() -> Path:
+    """Limit ACE-Step filesystem access to the explicit Focus Music project root."""
+
+    raw_root = os.environ.get("FOCUS_LORA_SAFE_ROOT", "").strip()
+    if not raw_root:
+        raise RuntimeError("FOCUS_LORA_SAFE_ROOT is required for native LoRA stages")
+    safe_root = Path(raw_root).expanduser().resolve()
+    if not safe_root.is_dir():
+        raise RuntimeError(f"FOCUS_LORA_SAFE_ROOT is not a directory: {safe_root}")
+    if safe_root == Path(safe_root.anchor):
+        raise RuntimeError("FOCUS_LORA_SAFE_ROOT must not be a filesystem root")
+
+    from acestep.training.path_safety import set_safe_root
+
+    set_safe_root(str(safe_root))
+    return safe_root
+
+
 def _install_safe_runtime(*, preprocess_mode: bool) -> Any:
     if preprocess_mode:
         os.environ["CUDA_LAUNCH_BLOCKING"] = "1"
 
+    _install_project_safe_root()
     _install_variant_aliases()
 
     import torch

@@ -46,6 +46,7 @@ def _python_executable(python_bin: Path | None) -> Path:
 
 def _native_environment(project_root: Path, checkout: Path) -> dict[str, str]:
     environment = dict(os.environ)
+    environment["FOCUS_LORA_SAFE_ROOT"] = str(project_root.resolve())
     environment["PYTHONPATH"] = os.pathsep.join(
         [str(checkout), str(project_root / "src"), environment.get("PYTHONPATH", "")]
     ).rstrip(os.pathsep)
@@ -58,6 +59,7 @@ def _freeze_native_stage_plan(
     stage: str,
     plan: dict[str, Any],
     stage_output: Path,
+    allow_failed_train_retry: bool = False,
 ) -> Path | None:
     """Freeze a plan, preserving a failed pre-execution plan when the interpreter changes."""
 
@@ -101,7 +103,14 @@ def _freeze_native_stage_plan(
             and previous_command[3:] == current_command[3:]
             and all(path.name.endswith((".pt", ".tmp.pt")) for path in output_files)
         )
-        if not safe_wrapper_transition:
+        safe_train_policy_transition = bool(
+            allow_failed_train_retry
+            and stage == "train"
+            and previous_without_policy == current_without_policy
+            and previous_command == current_command
+            and not _train_adapter_is_complete(stage_output)
+        )
+        if not (safe_wrapper_transition or safe_train_policy_transition):
             raise LTSNContractError(
                 f"existing {stage} plan differs and its output directory is not empty"
             )
@@ -383,6 +392,56 @@ def _validate_preprocess_outputs(dataset_path: Path, tensor_dir: Path) -> dict[s
     }
 
 
+def _train_adapter_paths(output_dir: Path) -> tuple[Path, Path]:
+    adapter_dir = output_dir / "final"
+    return adapter_dir / "adapter_config.json", adapter_dir / "adapter_model.safetensors"
+
+
+def _train_adapter_is_complete(output_dir: Path) -> bool:
+    return all(
+        path.is_file() and path.stat().st_size > 0
+        for path in _train_adapter_paths(output_dir)
+    )
+
+
+def _validate_train_outputs(output_dir: Path) -> dict[str, Any]:
+    required = _train_adapter_paths(output_dir)
+    missing = [str(path) for path in required if not path.is_file()]
+    empty = [str(path) for path in required if path.is_file() and path.stat().st_size == 0]
+    if missing or empty:
+        raise LTSNContractError(
+            "ACE-Step reported success but the final LoRA adapter is incomplete: "
+            f"missing={len(missing)}, empty={len(empty)}"
+        )
+    return {
+        "final_adapter_dir": str((output_dir / "final").resolve()),
+        "adapter_config_sha256": sha256_file(required[0]),
+        "adapter_model_sha256": sha256_file(required[1]),
+        "adapter_config_bytes": required[0].stat().st_size,
+        "adapter_model_bytes": required[1].stat().st_size,
+        "complete": True,
+    }
+
+
+def _archive_invalid_train_completion(audit_dir: Path, output_dir: Path) -> Path | None:
+    """Atomically preserve a false completion marker before a safe retry."""
+
+    completion_path = audit_dir / "train_complete.json"
+    if not completion_path.is_file() or _train_adapter_is_complete(output_dir):
+        return None
+    completion_sha256 = sha256_file(completion_path)
+    archived = audit_dir / f"train_complete_invalid_{completion_sha256[:12]}.json"
+    suffix = 1
+    while archived.exists():
+        if sha256_file(archived) == completion_sha256:
+            os.replace(completion_path, archived)
+            return archived
+        archived = audit_dir / f"train_complete_invalid_{completion_sha256[:12]}_{suffix}.json"
+        suffix += 1
+    os.replace(completion_path, archived)
+    return archived
+
+
 def run_native_stage(
     *,
     stage: str,
@@ -411,11 +470,17 @@ def run_native_stage(
         python_bin=python_bin,
     )
     audit_dir = output_dir.parent / "audit"
+    invalid_completion = (
+        _archive_invalid_train_completion(audit_dir, output_dir)
+        if stage == "train"
+        else None
+    )
     superseded_plan = _freeze_native_stage_plan(
         audit_dir=audit_dir,
         stage=stage,
         plan=plan,
         stage_output=tensor_dir if stage == "preprocess" else output_dir,
+        allow_failed_train_retry=invalid_completion is not None,
     )
     checkout = (project_root / load_lora_config(config_path)["model"]["checkout"]).resolve()
     subprocess.run(
@@ -425,18 +490,25 @@ def run_native_stage(
         check=True,
     )
     preprocess_output = None
+    train_output = None
     if stage == "preprocess":
         dataset_path, _ = _teacher_inputs(
             teacher_dir,
             load_lora_config(config_path)["experiment"],
         )
         preprocess_output = _validate_preprocess_outputs(dataset_path, tensor_dir)
+    else:
+        train_output = _validate_train_outputs(output_dir)
     completion = {
         **plan,
         "completed": True,
         "training_environment": environment_report,
         "superseded_failed_plan": str(superseded_plan) if superseded_plan else None,
+        "superseded_invalid_completion": (
+            str(invalid_completion) if invalid_completion else None
+        ),
         "preprocess_output": preprocess_output,
+        "train_output": train_output,
     }
     if stage == "preprocess":
         completion["tensor_bundle_sha256"] = sha256_directory(tensor_dir)
@@ -452,9 +524,7 @@ def finalize_lora_artifact(
     config = load_lora_config(config_path)
     _teacher_inputs(teacher_dir, config["experiment"])
     adapter_dir = output_dir / "final"
-    required = (adapter_dir / "adapter_config.json", adapter_dir / "adapter_model.safetensors")
-    if not all(path.is_file() for path in required):
-        raise LTSNContractError("ACE-Step final LoRA adapter files are missing")
+    _validate_train_outputs(output_dir)
     report = {
         "schema_version": 1,
         "experiment": config["experiment"],

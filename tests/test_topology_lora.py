@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import importlib.util
 import json
 import sys
 from pathlib import Path
@@ -28,10 +29,13 @@ from generation.topology_lora import (
 )
 from generation.topology_lora_training import (
     _freeze_native_stage_plan,
+    _native_environment,
     _python_executable,
     _validate_preprocess_outputs,
+    _validate_train_outputs,
     build_native_command,
     check_native_training_environment,
+    run_native_stage,
 )
 from generation.topology_lora_validation import (
     select_development_scale,
@@ -338,7 +342,42 @@ def test_native_training_command_is_bound_to_teacher(tmp_path: Path) -> None:
     assert command[command.index("--base-model") + 1] == "xl_turbo"
     assert plan["runtime_model_variant"] == "acestep-v15-xl-turbo"
     assert plan["native_runtime_policy"]["attention_backend"] == "sdpa"
+    assert plan["native_runtime_policy"]["safe_root"] == "project_root"
+    assert plan["native_runtime_policy"]["train_output_must_contain_final_adapter"] is True
     assert plan["dataset_json_sha256"] == sha256_file(dataset)
+
+
+def test_native_environment_binds_ace_safe_root_to_project(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    checkout = project / "ACE-Step-1.5"
+    checkout.mkdir(parents=True)
+
+    environment = _native_environment(project, checkout)
+
+    assert environment["FOCUS_LORA_SAFE_ROOT"] == str(project.resolve())
+
+
+def test_ace_path_safety_accepts_project_paths_and_rejects_escape(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_loguru = SimpleNamespace(logger=SimpleNamespace())
+    monkeypatch.setitem(sys.modules, "loguru", fake_loguru)
+    module_path = ROOT / "ACE-Step-1.5" / "acestep" / "training" / "path_safety.py"
+    spec = importlib.util.spec_from_file_location("ace_path_safety_contract", module_path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    project = tmp_path / "project"
+    tensors = project / "runs" / "tensors"
+    outside = tmp_path / "outside" / "secret.pt"
+    tensors.mkdir(parents=True)
+    outside.parent.mkdir()
+    module.set_safe_root(str(project))
+
+    assert module.safe_path(str(tensors)) == str(tensors.resolve())
+    with pytest.raises(ValueError, match="Path escapes safe root"):
+        module.safe_path(str(outside))
 
 
 def test_native_training_python_path_is_not_symlink_resolved(
@@ -461,6 +500,120 @@ def test_preprocess_output_contract_rejects_partial_tensors(tmp_path: Path) -> N
         "temporary_tensors": 0,
         "complete": True,
     }
+
+
+def _native_stage_fixture(tmp_path: Path) -> tuple[Path, Path, Path]:
+    teacher = tmp_path / "teacher"
+    teacher.mkdir()
+    dataset = teacher / "ace_lora_dataset.json"
+    dataset.write_text('{"samples": [{"audio_path": "x.wav"}]}', encoding="utf-8")
+    (teacher / "teacher_report.json").write_text(
+        json.dumps(
+            {
+                "experiment": "exact_reranking_distilled_topology_lora_v1",
+                "dataset_json_sha256": sha256_file(dataset),
+                "winner_samples": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    tensors = tmp_path / "tensors"
+    tensors.mkdir()
+    (tensors / "sample.pt").write_bytes(b"tensor")
+    return teacher, tensors, tmp_path / "lora"
+
+
+def test_train_return_zero_without_final_adapter_is_not_complete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    teacher, tensors, output = _native_stage_fixture(tmp_path)
+    monkeypatch.setattr(
+        "generation.topology_lora_training.check_native_training_environment",
+        lambda **kwargs: {"ok": True},
+    )
+    monkeypatch.setattr(
+        "generation.topology_lora_training.subprocess.run",
+        lambda *args, **kwargs: SimpleNamespace(returncode=0),
+    )
+
+    with pytest.raises(LTSNContractError, match="final LoRA adapter is incomplete"):
+        run_native_stage(
+            stage="train",
+            project_root=ROOT,
+            config_path=ROOT / "configs" / "topology_lora_v1.json",
+            teacher_dir=teacher,
+            tensor_dir=tensors,
+            output_dir=output,
+            python_bin=Path(sys.executable),
+        )
+
+    assert not (tmp_path / "audit" / "train_complete.json").exists()
+
+
+def test_invalid_train_completion_is_archived_and_valid_adapter_completes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    teacher, tensors, output = _native_stage_fixture(tmp_path)
+    audit = tmp_path / "audit"
+    audit.mkdir()
+    output.mkdir()
+    (output / "sidestep.log").write_text("0 steps executed", encoding="utf-8")
+    invalid_payload = {"completed": True, "preprocess_output": None}
+    invalid_completion = audit / "train_complete.json"
+    invalid_completion.write_text(json.dumps(invalid_payload), encoding="utf-8")
+    _, current_plan = build_native_command(
+        stage="train",
+        project_root=ROOT,
+        config_path=ROOT / "configs" / "topology_lora_v1.json",
+        teacher_dir=teacher,
+        tensor_dir=tensors,
+        output_dir=output,
+        python_bin=Path(sys.executable),
+    )
+    previous_plan = dict(current_plan)
+    previous_plan["native_runtime_policy"] = {
+        key: value
+        for key, value in current_plan["native_runtime_policy"].items()
+        if key not in {"safe_root", "train_output_must_contain_final_adapter"}
+    }
+    previous_plan["plan_sha256"] = canonical_json_sha256(
+        {key: value for key, value in previous_plan.items() if key != "plan_sha256"}
+    )
+    (audit / "train_plan.json").write_text(json.dumps(previous_plan), encoding="utf-8")
+    monkeypatch.setattr(
+        "generation.topology_lora_training.check_native_training_environment",
+        lambda **kwargs: {"ok": True},
+    )
+
+    def fake_train(command: list[str], **kwargs: object) -> SimpleNamespace:
+        final = output / "final"
+        final.mkdir(parents=True)
+        (final / "adapter_config.json").write_text("{}", encoding="utf-8")
+        (final / "adapter_model.safetensors").write_bytes(b"weights")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("generation.topology_lora_training.subprocess.run", fake_train)
+
+    completion = run_native_stage(
+        stage="train",
+        project_root=ROOT,
+        config_path=ROOT / "configs" / "topology_lora_v1.json",
+        teacher_dir=teacher,
+        tensor_dir=tensors,
+        output_dir=output,
+        python_bin=Path(sys.executable),
+    )
+
+    archived = Path(completion["superseded_invalid_completion"])
+    assert archived.name.startswith("train_complete_invalid_")
+    assert json.loads(archived.read_text(encoding="utf-8")) == invalid_payload
+    assert completion["train_output"]["complete"] is True
+    assert _validate_train_outputs(output)["adapter_model_bytes"] == len(b"weights")
+    assert json.loads((audit / "train_complete.json").read_text(encoding="utf-8"))[
+        "completed"
+    ] is True
 
 
 def test_v2_native_training_plan_retains_v2_teacher_binding(tmp_path: Path) -> None:
