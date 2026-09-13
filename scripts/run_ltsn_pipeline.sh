@@ -605,7 +605,8 @@ prepare_v6_final_target() {
     echo "Run prepare-v52b first; V6 reuses its existing operational pairs" >&2
     return 3
   }
-  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_v6_final_target_view.py" \
+  PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_v6_final_target_view.py" \
     --root "${PROJECT_ROOT}" \
     --fingerprint "${FINGERPRINT}" \
     --tac-target "${TAC_TARGET}" \
@@ -620,7 +621,8 @@ train_v6_final_target() {
     echo "Run prepare-v6-final-target first" >&2
     return 3
   }
-  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/train_ltsn_v6_final_target.py" \
+  PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/train_ltsn_v6_final_target.py" \
     --fingerprint "${FINGERPRINT}" \
     --tac-target "${TAC_TARGET}" \
     --view "${V6_FINAL_TARGET_DIR}/v6_final_target_view.csv" \
@@ -636,7 +638,8 @@ report_v6_final_target() {
     echo "Run train-v6-final-target first" >&2
     return 3
   }
-  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/report_ltsn_v6_final_target.py" \
+  PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/report_ltsn_v6_final_target.py" \
     --fingerprint "${FINGERPRINT}" \
     --tac-target "${TAC_TARGET}" \
     --view "${V6_FINAL_TARGET_DIR}/v6_final_target_view.csv" \
