@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import csv
+import dataclasses
 import json
 import multiprocessing
 import os
 from collections import Counter
+from collections.abc import Mapping
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
@@ -48,6 +50,7 @@ def _initialize_exact_descriptor_worker(
     work_dir: str,
     centers: np.ndarray,
     codebook_sha256: str,
+    repetition_config_overrides: dict[str, Any] | None = None,
 ) -> None:
     """Load immutable exact-label state once and clamp native thread pools."""
 
@@ -69,13 +72,19 @@ def _initialize_exact_descriptor_worker(
     _EXACT_THREADPOOL_LIMITER = threadpool_limits(limits=EXACT_WORKER_BLAS_THREADS)
     project_path = Path(project_root)
     work_path = Path(work_dir)
+    repetition_config = load_repetition_config(project_path)
+    if repetition_config_overrides:
+        repetition_config = dataclasses.replace(
+            repetition_config, **repetition_config_overrides
+        )
+        repetition_config.validate()
     _EXACT_WORKER_STATE = {
         "project_root": project_path,
         "work_dir": work_path,
         "centers": np.asarray(centers, dtype=np.float64),
         "codebook_sha256": codebook_sha256,
         "repetition_model": load_repetition_model(work_path),
-        "repetition_config": load_repetition_config(project_path),
+        "repetition_config": repetition_config,
         "topology_config": load_topology_config(project_path),
     }
 
@@ -86,6 +95,7 @@ def _copy_snapshot_audio(
     rows: list[dict[str, str]],
     *,
     materialize_mode: str,
+    duration_seconds: float,
 ) -> tuple[list[CandidateRecord], Counter[str]]:
     records: list[CandidateRecord] = []
     methods: Counter[str] = Counter()
@@ -106,9 +116,10 @@ def _copy_snapshot_audio(
         )
         methods[method] += 1
         duration = float(_technical_audio_metrics(target)["raw_duration_seconds"])
-        if duration + 0.5 < 180.0:
+        if duration + 0.5 < duration_seconds:
             raise LTSNContractError(
-                f"exact LTSN teacher requires a 180 s snapshot audio: {source} ({duration:.3f}s)"
+                "exact LTSN teacher audio is shorter than the bound duration "
+                f"{duration_seconds:g} s: {source} ({duration:.3f}s)"
             )
         records.append(
             CandidateRecord(
@@ -118,7 +129,7 @@ def _copy_snapshot_audio(
                 candidate_index=int(row["step_number"]),
                 candidate_id=row["sample_id"],
                 seed=0,
-                duration_seconds=180.0,
+                duration_seconds=duration_seconds,
                 status="generated",
                 audio_relative_path=target.relative_to(work_dir).as_posix(),
                 audio_sha256=expected,
@@ -200,9 +211,13 @@ def _compute_exact_descriptor(
     }
 
 
-def _batch_input_sha256(rows: list[dict[str, str]]) -> str:
-    return canonical_json_sha256(
-        [
+def _batch_input_sha256(
+    rows: list[dict[str, str]],
+    *,
+    duration_seconds: float = 180.0,
+    analysis_contract: Mapping[str, Any] | None = None,
+) -> str:
+    identities = [
             {
                 "sample_id": row["sample_id"],
                 "audio_sha256": row.get("audio_sha256", ""),
@@ -210,7 +225,19 @@ def _batch_input_sha256(rows: list[dict[str, str]]) -> str:
             }
             for row in rows
         ]
-    )
+    # Preserve every existing 180 s receipt while binding new short-duration
+    # checkpoints to the requested native duration.
+    payload: Any = identities
+    if (
+        not np.isclose(duration_seconds, 180.0, rtol=0.0, atol=1e-9)
+        or analysis_contract is not None
+    ):
+        payload = {
+            "duration_seconds": float(duration_seconds),
+            "analysis_contract": dict(analysis_contract or {}),
+            "rows": identities,
+        }
+    return canonical_json_sha256(payload)
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -264,12 +291,15 @@ def _extract_batch(
     materialize_mode: str,
     codebook_path: Path,
     centers: np.ndarray,
+    duration_seconds: float,
+    repetition_config_overrides: dict[str, Any] | None,
 ) -> tuple[list[dict[str, Any]], Counter[str]]:
     records, methods = _copy_snapshot_audio(
         trajectory_manifest,
         work_dir,
         rows,
         materialize_mode=materialize_mode,
+        duration_seconds=duration_seconds,
     )
     processed = preprocess_candidates(project_root, work_dir, records, workers=workers)
     feature_rows = extract_candidate_features(
@@ -303,6 +333,7 @@ def _extract_batch(
             str(work_dir),
             centers,
             codebook_sha256,
+            repetition_config_overrides,
         ),
     ) as executor:
         futures = {
@@ -336,6 +367,8 @@ def build_exact_snapshot_descriptors(
     materialize_mode: str = "auto",
     cleanup_batches: bool = True,
     resume: bool = True,
+    duration_seconds: float = 180.0,
+    repetition_config_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Run exact extraction in resumable, storage-bounded batches."""
 
@@ -343,6 +376,8 @@ def build_exact_snapshot_descriptors(
         raise ValueError("batch_size must be positive")
     if workers <= 0:
         raise ValueError("workers must be positive")
+    if not np.isfinite(duration_seconds) or duration_seconds <= 0.0:
+        raise ValueError("duration_seconds must be positive and finite")
     if materialize_mode not in MATERIALIZE_MODES:
         raise ValueError(f"unsupported materialization mode: {materialize_mode}")
     rows = sorted(read_trajectory_manifest(trajectory_manifest), key=lambda row: row["sample_id"])
@@ -366,7 +401,11 @@ def build_exact_snapshot_descriptors(
         batch_work_dir = batches_root / batch_id
         descriptor_path = checkpoints_root / f"{batch_id}.csv"
         receipt_path = checkpoints_root / f"{batch_id}.json"
-        input_sha256 = _batch_input_sha256(batch_rows)
+        input_sha256 = _batch_input_sha256(
+            batch_rows,
+            duration_seconds=duration_seconds,
+            analysis_contract=repetition_config_overrides,
+        )
         resumed = None
         if resume:
             resumed = _load_resumable_batch(
@@ -393,6 +432,8 @@ def build_exact_snapshot_descriptors(
                 materialize_mode=materialize_mode,
                 codebook_path=codebook_path,
                 centers=centers,
+                duration_seconds=duration_seconds,
+                repetition_config_overrides=repetition_config_overrides,
             )
             write_csv_atomic(descriptor_path, descriptor_rows)
             write_json_atomic(
@@ -425,6 +466,8 @@ def build_exact_snapshot_descriptors(
     storage_report_path = output_path.with_name(f"{output_path.stem}_storage.json")
     report = {
         "schema_version": 1,
+        "duration_seconds": float(duration_seconds),
+        "repetition_config_overrides": dict(repetition_config_overrides or {}),
         "samples": len(output),
         "batches": batch_count,
         "resumed_batches": resumed_batches,

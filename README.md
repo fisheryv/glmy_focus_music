@@ -16,51 +16,36 @@ corrector 的统一发布仓库。生产目标为 Linux x86\_64、Python 3.12、
 冻结 `uv.lock` 安装。
 
 ```bash
-git clone https://github.com/fisheryv/glmy_focus_music.git
-cd glmy_focus_music
-
-bash scripts/bootstrap_linux_l40s.sh
-source ACE-Step-1.5/.venv/bin/activate
-
 python scripts/prepare_release_dataset.py
-python scripts/verify_linux_l40s.py --root .
-pytest -q
 ```
 
 `prepare_release_dataset.py` 从
 [`fisheryv/open-focus-classical-600`](https://huggingface.co/datasets/fisheryv/open-focus-classical-600)
-下载到 `dataset/open-focus-classical-600`，并逐个核对发布的 `SHA256SUMS`。预处理直接读取
-HF 的 `data/{focus,classical}/{discovery,validation,holdout}` 布局，不再要求额外重排到
-`data_raw/`。只有兼容旧流水线时才显式追加 `--data-root data_raw` 进行硬链接或校验后复制。
+下载到 `dataset/open-focus-classical-600`，并逐个核对发布的 `SHA256SUMS`。
 
-外部依赖均在 `reproducibility/release_manifest.toml` 冻结：
+外部依赖均在 `reproducibility/release_manifest.toml` 冻结；
 
-- `pyglmy`：`49bd5ea7617906f09940dcc9b9718bbfc1482d6f`；
-- ACE-Step 1.5：`de9a3dc7f7ca28c09e4d21822ceba02260b3162a`，上游已包含 sampler corrector hook；
-- ACE 生成模型：[ACE-Step/acestep-v15-xl-turbo](https://huggingface.co/ACE-Step/acestep-v15-xl-turbo)，运行时 checkpoint 名为 `acestep-v15-xl-turbo`；
-- exact scorer：Pitch 16 + Acoustic/Chroma phase `loop_score`，共 18 维；旧 51-D
-  运行时输入明确拒绝。
+ACE 生成模型：[ACE-Step/acestep-v15-xl-turbo](https://huggingface.co/ACE-Step/acestep-v15-xl-turbo)，运行时 checkpoint 名为 `acestep-v15-xl-turbo`；
+
+exact scorer：Pitch 16 + Acoustic/Chroma phase `loop_score`。
 
 ## 正式 LTSN 流水线
 
-先生成冻结的 512-prompt 清单（train/development/calibration/qualification 为
-320/64/64/64；每个 prompt 采集 4 个 seed，共 2048 条轨迹），计算 ACE 模型/VAE
-目录内容哈希，然后按阶段运行。字段与分区规则见
-`docs/ltsn-linux-training-and-evaluation.md`。
+先生成冻结的 512-prompt 清单（train/development/calibration/qualification 为 320/64/64/64；每个 prompt 采集 4 个 seed，共 2048 条轨迹），计算 ACE 模型/VAE 目录内容哈希，然后按阶段运行。
 
 ```bash
 python scripts/build_ltsn_prompt_manifest.py
 
 export ACE_MODEL_SHA256=<64-hex>
 export VAE_SHA256=<64-hex>
-export RUN_ROOT=$PWD/runs/ltsn_turbo_v3
+export RUN_ROOT=$PWD/runs/ltsn_turbo
 
 bash scripts/run_ltsn_pipeline.sh collect
 # 完成独立 reranking、质量、prompt 和多样性评价并签发通过的 gate 后：
 export RERANKING_GATE=$PWD/metadata/ace_reranking_effect_gate.json
 bash scripts/run_ltsn_pipeline.sh labels
 bash scripts/run_ltsn_pipeline.sh augment-training
-TRAIN_DEVICES=cuda:0,cuda:1,cuda:2 bash scripts/run_ltsn_pipeline.sh train
+TRAIN_DEVICES=cuda:1,cuda:2,cuda:3 bash scripts/run_ltsn_pipeline.sh train
 bash scripts/run_ltsn_pipeline.sh calibrate
 # 只用 development split 生成 64 prompt x 4 seed 的 baseline/guided 对并精确评分：
 DEVELOPMENT_DEVICE=cuda:0 bash scripts/run_ltsn_pipeline.sh development-generate
@@ -74,63 +59,28 @@ bash scripts/run_ltsn_pipeline.sh qualify
 PAIR_TABLE=<confirmation-pairs.csv> bash scripts/run_ltsn_pipeline.sh guidance-confirmation
 ```
 
-三个 LTSN seed 可通过 `TRAIN_DEVICES=cuda:0,cuda:1,cuda:2` 各占一张 L40S 并行训练；
-这是三个相互独立的进程，不是 DDP。未设置 `TRAIN_DEVICES` 时仍使用 `TRAIN_DEVICE`
-（默认 `cuda:0`）顺序训练，保持单卡兼容。完整门禁、存储峰值、断点续跑和最终
-32 prompt × 8 seed 配对评估见 [Linux/NVIDIA 指引](docs/ltsn-linux-training-and-evaluation.md)。
-V3 不改变 LTSN 网络结构；augmentation 会额外为 calibration/qualification prompt
-构造与训练变换不同的 OOD 样本，使 OOD AUROC 成为可计算的独立门禁。标准
-`development-evidence` 不读取盲评文件；盲评质量只能通过证据脚本的可选
-`--quality-table` 参数单独生成诊断报告，不参与 `latent_guidance_promotion_v2`。
-若已有完整且哈希有效的旧版 collection/labels，可将 `SOURCE_LTSN_MANIFEST` 和
-`SOURCE_LTSN_SPLIT_MANIFEST` 指向旧 labels 后从 `augment-training` 开始，不必重新采集。
+### V5.2b 尺度一致性与方向头诊断
 
-V3 的 development/qualification 未通过时，V4 直接复用原始 labels 和冻结的 V3
-ensemble 生成 on-policy exact pairs，不重新 collection：
+V5.2b 只复用 V5.2a 已解码并 exact-scored 的 1536 个样本，不生成新音频。它将
+`RMS=0.005` 冻结为 operational probe，将 `RMS=0.0025` 保留为尺度敏感性，并比较
+scalar、反对称 pair 和 direction-field 三种头。matched control 保持每个 latent
+端点对不变，只在 step 层内确定性置乱训练标签。所有产物均为 diagnostic-only，不能
+进入 calibration、qualification 或 generation guidance。
 
 ```bash
 export RUN_ROOT=$PWD/runs/ltsn_turbo
-bash scripts/run_ltsn_pipeline.sh augment-on-policy
-
-export LTSN_MANIFEST=$RUN_ROOT/training_augmentation_v4/ltsn_manifest_v4.csv
-export LTSN_SPLIT_MANIFEST=$RUN_ROOT/training_augmentation_v4/split_manifest_v4.json
-export LTSN_CONFIG=$PWD/configs/ltsn_training_v4.toml
-export LTSN_MODEL_DIR=$RUN_ROOT/models_v4
-export LTSN_CALIBRATION_PATH=$RUN_ROOT/calibration_v4.json
-export DEVELOPMENT_DIR=$RUN_ROOT/development_pairs_v4
-export LTSN_GUIDANCE_DEVELOPMENT_PATH=$RUN_ROOT/guidance_development_v4.json
-export LTSN_QUALIFICATION_PATH=$RUN_ROOT/qualification_v4.json
-
-TRAIN_DEVICES=cuda:0,cuda:1,cuda:2 bash scripts/run_ltsn_pipeline.sh train
-bash scripts/run_ltsn_pipeline.sh calibrate
+bash scripts/run_ltsn_pipeline.sh prepare-v52b
+V52B_DEVICES=cuda:1,cuda:2,cuda:3 bash scripts/run_ltsn_pipeline.sh train-v52b
+V52B_EVAL_DEVICE=cuda:0 bash scripts/run_ltsn_pipeline.sh report-v52b
 ```
 
-`augment-on-policy` 只选择 proxy out-of-band 的 train/development anchor，沿冻结 V3
-ensemble 的真实梯度生成 0.25%/0.5%/1.0% 三档候选，解码后以 exact band-loss
-improvement 训练和早停。OOD 在 train 的 step 4/5/6 及 calibration/qualification 的
-step 4/5/6/8 分层生成；qualification 使用最差 matched-step AUROC，而非混合 overall
-AUROC。V4 调参后必须使用全新 prompt families/seeds 建立 fresh qualification。
-
-## 发布内容与排除项
-
-Git 发布包含源代码、冻结配置/哈希、18-D scorer、ACE 上游版本、测试、论文与复现文档；
-不包含 `.env`、原始音频、Hugging Face 下载缓存、ACE checkpoint、运行日志、模型权重
-或资格结果。每条音频继续适用数据集 `metadata/licenses.csv` 中各自的许可，不存在单一
-数据集总许可。仓库软件代码按根目录 [MIT License](LICENSE) 发布；该软件许可不覆盖
-数据集、第三方模型、论文素材或各音频作品。
+`train-v52b` 顺序训练 3 个结构 × true/matched-control 两种目标；每一组的三个 seed
+会在 `V52B_DEVICES` 指定的三张卡上并行运行。预注册 primary 仅为
+`direction_field`；scalar/pair 只解释结构瓶颈，不能替代 primary 门禁。
 
 ***
 
 # Focus Topology API 与研究分析
-
-> **Canonical dataset (2026-08-02):** the study now uses a two-group corpus:
-> Jamendo Open Focus 300 + Classical 300, with auditable per-track licenses.
-> The former Pop comparison group is preserved under
-> `dataset_archive/pop_music_legacy_2026-08-02/`; the retired Brain.fm baseline remains under
-> `restricted_archive/brainfm_legacy_2026-08-02/` and is not part of current
-> metadata, preprocessing, feature fitting, or future confirmatory claims. See
-> [the two-group migration report](docs/two-group-dataset-migration.md) and
-> [results status](metadata/RESULTS_STATUS.md).
 
 本仓库分为两个层次：
 
@@ -177,7 +127,6 @@ python -m pip install -e ".[audio,tda]"
 ```bash
 python -m pip install -e packages/pyglmy[tda]
 python -m pip install -e ".[audio,stats,tda,repro,dev]"
-pytest
 ```
 
 ## Python 快速开始
@@ -282,23 +231,6 @@ focus-topology demo
 python -m focus_topology --version
 ```
 
-## API 稳定边界
-
-推荐从 `focus_topology` 顶层导入以下公开接口：
-
-- `AnalysisConfig`
-- `TopologyAnalyzer`
-- `TopologyAnalysis`
-- `analyze_states`
-- `analyze_audio`
-- `states_from_audio`
-- `TransitionGraph`、`WeightedEdge`、`build_transition_graph`
-- `compute_path_homology`、`persistent_path_homology`
-
-历史接口 `focus_topology.pipeline.analyze_state_sequence` 继续保留，但只返回固定阈值描述子。新集成建议使用 `analyze_states`。
-
-完整说明见 [docs/library-api.md](docs/library-api.md)，可运行示例见 [examples/library\_quickstart.py](examples/library_quickstart.py) 和 [examples/analyze\_audio.py](examples/analyze_audio.py)。
-
 ## 研究复现层
 
 Jamendo/FMA 开放 Focus 替代集使用 `focus-open` 构建。筛选规则、FMA 回退及 Jamendo
@@ -342,28 +274,4 @@ python scripts/run_phase_lifted_analysis.py
 python scripts/run_multiview_fusion_analysis.py
 python scripts/freeze_holdout_gate.py
 python scripts/run_holdout_confirmation.py
-
-# 汇总审计回执、Markdown 报告及 PNG/SVG 总览图。
-python scripts/build_fresh_open_dataset_report.py
 ```
-
-每个视角只有一个公开分析入口；单个 `run_*` 脚本会依次完成该视角需要的模型/表示变换、拓扑重算、统计检验和数值汇总。Rhythm 与 Structure 的统计阶段保留为 `src/topology/`
-`render_*` 脚本读取冻结数值产物生成。
-
-`focus-preprocess --data-root data_raw` 是明确的旧目录兼容模式。每个主分析脚本在计算前都会
-核对 HF 发布的三个冻结哈希、600 个 track ID，以及 1,200 条“原始曲目 → 预处理 WAV →
-特征”路径/哈希链；分析 summary 会写入 `input_provenance` 和
-`provenance_chain_sha256`。拓扑与统计阶段主要使用 CPU/内存/NVMe，L40S 不会显著加速
-这部分工作。
-
-当前新数据集的完整结果见
-[docs/open-focus-classical-600-fresh-analysis.md](docs/open-focus-classical-600-fresh-analysis.md)。工程关系见
-[docs/architecture.md](docs/architecture.md)，数据公开边界见 [docs/data-governance.md](docs/data-governance.md)。
-
-## 科研与数据边界
-
-- 本库输出拓扑描述，不构成 ADHD 或其他疾病的诊断、治疗或疗效声明。
-- `datasets/open-focus-classical-600/` 不进入版本控制；每首音频仍按数据集
-  `metadata/licenses.csv` 中对应的许可使用，不存在覆盖全部音频的单一许可。
-- 跨数据集比较应复用同一个状态模型、阈值集合和预处理配置。
-- 当前项目许可证仍是研究用途边界；公开发布到包索引前，应由项目所有者补充明确的软件许可证。

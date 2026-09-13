@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "experiment": "ltsn_duration_causality_v1",
+  "mode": "development_only_diagnostic",
+  "durations_seconds": [180, 60, 30],
+  "anchor_step": 5,
+  "anchors": 16,
+  "directions_per_anchor": 4,
+  "rms_ratios": [0.0025, 0.005, 0.0075],
+  "reference_rms_ratio": 0.005,
+  "phase_block_frames": 2,
+  "phase_min_raw_steps": 36,
+  "antithetic_signs": [-1, 1],
+  "bootstrap_resamples": 5000,
+  "gates": {
+    "cross_radius_sign_agreement": 0.8,
+    "wilson95_lower_strictly_above": 0.5,
+    "minimum_absolute_improvement_over_180s": 0.1,
+    "cluster_bootstrap_difference_lower_strictly_above": 0.0
+  },
+  "evidence": {
+    "diagnostic_only": true,
+    "scientific_evidence": false,
+    "qualification_eligible": false,
+    "guidance_promotion_eligible": false,
+    "production_authorization": false
+  }
+}

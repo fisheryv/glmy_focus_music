@@ -115,16 +115,14 @@ def collect_main(argv: list[str] | None = None) -> int:
         "--discard-generator-final-audio",
         action="store_true",
         help=(
-            "delete the unreferenced generator WAV after all signed step snapshots are decoded; "
-            "the per-snapshot WAVs and manifest remain unchanged"
+            "delete the unreferenced generator WAV after the signed latent snapshots are "
+            "committed; any explicitly decoded per-snapshot WAVs remain unchanged"
         ),
     )
     parser.add_argument("--engineering-smoke", action="store_true")
     args = parser.parse_args(argv)
-    if args.discard_generator_final_audio and (args.backend != "ace" or not args.decode_snapshots):
-        parser.error(
-            "--discard-generator-final-audio requires --backend ace and --decode-snapshots"
-        )
+    if args.discard_generator_final_audio and args.backend != "ace":
+        parser.error("--discard-generator-final-audio requires --backend ace")
     if (args.shard_index is None) != (args.shard_count is None):
         parser.error("--shard-index and --shard-count must be supplied together")
     root = args.root.resolve()

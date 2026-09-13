@@ -42,6 +42,10 @@ V52B_DIR="${V52B_DIR:-${RUN_ROOT}/training_augmentation_v52b}"
 V52B_MODEL_ROOT="${V52B_MODEL_ROOT:-${RUN_ROOT}/models_v52b}"
 V52B_REPORT="${V52B_REPORT:-${RUN_ROOT}/v52b_probe_report.json}"
 V52B_CONFIG="${V52B_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v52b_probe.toml}"
+V6_FINAL_TARGET_DIR="${V6_FINAL_TARGET_DIR:-${RUN_ROOT}/training_v6_final_target}"
+V6_FINAL_TARGET_MODEL_DIR="${V6_FINAL_TARGET_MODEL_DIR:-${RUN_ROOT}/models_v6_final_target}"
+V6_FINAL_TARGET_REPORT="${V6_FINAL_TARGET_REPORT:-${RUN_ROOT}/v6_final_target_report.json}"
+V6_FINAL_TARGET_CONFIG="${V6_FINAL_TARGET_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v6_final_target_screen.toml}"
 TAC_TARGET="${TAC_TARGET:-${PROJECT_ROOT}/metadata/tac_topology_target_v1.json}"
 V52C_DIR="${V52C_DIR:-${RUN_ROOT}/tac_v52c}"
 V52C_REPORT="${V52C_REPORT:-${V52C_DIR}/v52c_response_report.json}"
@@ -52,6 +56,12 @@ V52D_REPEAT_REPORT="${V52D_REPEAT_REPORT:-${V52D_REPEAT_DIR}/v52d_repeatability_
 V52D_ACTION_REPORT="${V52D_ACTION_REPORT:-${V52D_ACTION_DIR}/v52d_action_report.json}"
 V52E_DIR="${V52E_DIR:-${RUN_ROOT}/tac_v52e}"
 V52E_REPORT="${V52E_REPORT:-${V52E_DIR}/v52e_action_report.json}"
+DURATION_DIR="${DURATION_DIR:-${RUN_ROOT}/duration_causality}"
+DURATION_PROTOCOL="${DURATION_PROTOCOL:-${PROJECT_ROOT}/configs/ltsn_duration_causality.json}"
+DURATION_PROMPTS="${DURATION_PROMPTS:-${DURATION_DIR}/duration_prompts.csv}"
+DURATION_PLAN="${DURATION_PLAN:-${DURATION_DIR}/duration_causality_plan.json}"
+DURATION_REFERENCE_MANIFEST="${DURATION_REFERENCE_MANIFEST:-${DURATION_DIR}/reference/preprocessed_segments.csv}"
+DURATION_REPORT="${DURATION_REPORT:-${DURATION_DIR}/duration_causality_report.json}"
 SOURCE_LTSN_MANIFEST="${SOURCE_LTSN_MANIFEST:-${RUN_ROOT}/labels/ltsn_manifest.csv}"
 SOURCE_LTSN_SPLIT_MANIFEST="${SOURCE_LTSN_SPLIT_MANIFEST:-${RUN_ROOT}/labels/split_manifest.json}"
 LTSN_MANIFEST="${LTSN_MANIFEST:-${TRAINING_AUGMENTATION_DIR}/ltsn_manifest_v3.csv}"
@@ -582,6 +592,62 @@ report_v52b() {
     --device "${V52B_EVAL_DEVICE:-cuda:0}"
 }
 
+prepare_v6_final_target() {
+  [[ -f "${TAC_TARGET}" ]] || {
+    echo "TAC target is required: ${TAC_TARGET}" >&2
+    return 3
+  }
+  [[ -f "${SOURCE_LTSN_MANIFEST}" ]] || {
+    echo "Base LTSN label manifest is required: ${SOURCE_LTSN_MANIFEST}" >&2
+    return 3
+  }
+  [[ -f "${V52B_DIR}/v52b_pair_manifest.csv" ]] || {
+    echo "Run prepare-v52b first; V6 reuses its existing operational pairs" >&2
+    return 3
+  }
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_ltsn_v6_final_target_view.py" \
+    --root "${PROJECT_ROOT}" \
+    --fingerprint "${FINGERPRINT}" \
+    --tac-target "${TAC_TARGET}" \
+    --source-manifest "${SOURCE_LTSN_MANIFEST}" \
+    --pair-manifest "${V52B_DIR}/v52b_pair_manifest.csv" \
+    --config "${V6_FINAL_TARGET_CONFIG}" \
+    --output-dir "${V6_FINAL_TARGET_DIR}"
+}
+
+train_v6_final_target() {
+  [[ -f "${V6_FINAL_TARGET_DIR}/v6_preparation.json" ]] || {
+    echo "Run prepare-v6-final-target first" >&2
+    return 3
+  }
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/train_ltsn_v6_final_target.py" \
+    --fingerprint "${FINGERPRINT}" \
+    --tac-target "${TAC_TARGET}" \
+    --view "${V6_FINAL_TARGET_DIR}/v6_final_target_view.csv" \
+    --pair-manifest "${V52B_DIR}/v52b_pair_manifest.csv" \
+    --preparation "${V6_FINAL_TARGET_DIR}/v6_preparation.json" \
+    --config "${V6_FINAL_TARGET_CONFIG}" \
+    --output-dir "${V6_FINAL_TARGET_MODEL_DIR}" \
+    --device "${V6_FINAL_TARGET_DEVICE:-cuda:0}"
+}
+
+report_v6_final_target() {
+  [[ -f "${V6_FINAL_TARGET_MODEL_DIR}/v6_final_target.pt" ]] || {
+    echo "Run train-v6-final-target first" >&2
+    return 3
+  }
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/report_ltsn_v6_final_target.py" \
+    --fingerprint "${FINGERPRINT}" \
+    --tac-target "${TAC_TARGET}" \
+    --view "${V6_FINAL_TARGET_DIR}/v6_final_target_view.csv" \
+    --pair-manifest "${V52B_DIR}/v52b_pair_manifest.csv" \
+    --preparation "${V6_FINAL_TARGET_DIR}/v6_preparation.json" \
+    --config "${V6_FINAL_TARGET_CONFIG}" \
+    --checkpoint "${V6_FINAL_TARGET_MODEL_DIR}/v6_final_target.pt" \
+    --output "${V6_FINAL_TARGET_REPORT}" \
+    --device "${V6_FINAL_TARGET_EVAL_DEVICE:-${V6_FINAL_TARGET_DEVICE:-cuda:0}}"
+}
+
 build_tac_target() {
   PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
     "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_tac_topology_target.py" \
@@ -732,6 +798,187 @@ report_v52e() {
     --repeatability-report "${V52D_REPEAT_REPORT}" \
     --action-points "${V52E_DIR}/v52e_action_points.csv" \
     --output "${V52E_REPORT}"
+}
+
+duration_prepare() {
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/prepare_ltsn_duration_causality.py" \
+    --prompt-manifest "${PROMPT_MANIFEST}" \
+    --protocol "${DURATION_PROTOCOL}" \
+    --output-dir "${DURATION_DIR}" \
+    --seed-start "${DURATION_SEED_START:-2026091200}"
+}
+
+duration_reference_preprocess() {
+  : "${FOCUS_DATASET_ROOT:?Set FOCUS_DATASET_ROOT to the verified Open Focus/Classical release}"
+  PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${PYTHON_BIN}" -m data.preprocess \
+    --root "${PROJECT_ROOT}" \
+    --dataset-root "${FOCUS_DATASET_ROOT}" \
+    --metadata-dir "${PROJECT_ROOT}/metadata" \
+    --output-root "${DURATION_DIR}/reference/audio" \
+    --scales 60,30 \
+    --workers "${DURATION_REFERENCE_WORKERS:-8}" \
+    --manifest "${DURATION_REFERENCE_MANIFEST}" \
+    --summary "${DURATION_DIR}/reference/preprocessing_summary.json"
+}
+
+duration_build_contracts() {
+  [[ -f "${DURATION_REFERENCE_MANIFEST}" ]] || {
+    echo "Run duration-reference-preprocess first: ${DURATION_REFERENCE_MANIFEST}" >&2
+    return 3
+  }
+  local duration preprocess_manifest
+  for duration in 180 60 30; do
+    if [[ "${duration}" == "180" ]]; then
+      preprocess_manifest="${PROJECT_ROOT}/metadata/preprocessed_segments.csv"
+    else
+      preprocess_manifest="${DURATION_REFERENCE_MANIFEST}"
+    fi
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_duration_topology_contract.py" \
+      --root "${PROJECT_ROOT}" \
+      --preprocess-manifest "${preprocess_manifest}" \
+      --output-dir "${DURATION_DIR}/contracts/${duration}s" \
+      --duration-seconds "${duration}" \
+      --workers "${DURATION_REFERENCE_EXACT_WORKERS:-8}" \
+      --materialize-mode "${MATERIALIZE_MODE:-auto}"
+  done
+}
+
+duration_collect_anchor_one() {
+  local duration="$1"
+  local device="$2"
+  ACESTEP_DEVICE="${device}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/collect_ltsn_trajectories.py" \
+    --root "${PROJECT_ROOT}" \
+    --ace-config "${PROJECT_ROOT}/configs/ace_rerank_180s.toml" \
+    --prompt-manifest "${DURATION_PROMPTS}" \
+    --output-dir "${DURATION_DIR}/duration_${duration}s/anchors" \
+    --backend ace \
+    --ace-model-sha256 "${ACE_MODEL_SHA256}" \
+    --vae-sha256 "${VAE_SHA256}" \
+    --seed-start "${DURATION_SEED_START:-2026091200}" \
+    --seeds-per-prompt 1 \
+    --duration-seconds "${duration}" \
+    --discard-generator-final-audio \
+    --resume
+}
+
+duration_collect_anchors() {
+  : "${ACE_MODEL_SHA256:?Set ACE_MODEL_SHA256 to the 64-hex model tree digest}"
+  : "${VAE_SHA256:?Set VAE_SHA256 to the 64-hex VAE tree digest}"
+  [[ -f "${DURATION_PLAN}" && -f "${DURATION_PROMPTS}" ]] || {
+    echo "Run duration-prepare first" >&2
+    return 3
+  }
+  local -a durations=(180 60 30)
+  local -a devices
+  if [[ -n "${DURATION_DEVICES:-}" ]]; then
+    IFS=',' read -r -a devices <<< "${DURATION_DEVICES}"
+    (( ${#devices[@]} == 3 )) || {
+      echo "DURATION_DEVICES must contain exactly three devices for 180,60,30" >&2
+      return 2
+    }
+  else
+    devices=("${DURATION_DEVICE:-cuda:0}" "${DURATION_DEVICE:-cuda:0}" "${DURATION_DEVICE:-cuda:0}")
+  fi
+  if [[ -z "${DURATION_DEVICES:-}" ]]; then
+    local index
+    for index in 0 1 2; do
+      duration_collect_anchor_one "${durations[${index}]}" "${devices[${index}]}"
+    done
+    return
+  fi
+  mkdir -p "${DURATION_DIR}/logs"
+  local -a pids=()
+  local index
+  for index in 0 1 2; do
+    duration_collect_anchor_one "${durations[${index}]}" "${devices[${index}]}" \
+      >"${DURATION_DIR}/logs/anchors_${durations[${index}]}s.log" 2>&1 &
+    pids+=("$!")
+  done
+  local failed=0
+  for index in 0 1 2; do
+    if ! wait "${pids[${index}]}"; then
+      tail -n 80 "${DURATION_DIR}/logs/anchors_${durations[${index}]}s.log" >&2
+      failed=1
+    fi
+  done
+  [[ "${failed}" -eq 0 ]]
+}
+
+duration_collect_response_one() {
+  local duration="$1"
+  local device="$2"
+  local fingerprint="${DURATION_DIR}/contracts/${duration}s/fingerprint.json"
+  local target="${DURATION_DIR}/contracts/${duration}s/target.json"
+  [[ -f "${fingerprint}" && -f "${target}" ]] || {
+    echo "Missing ${duration}s fingerprint or target; run duration-build-contracts" >&2
+    return 3
+  }
+  ACESTEP_DEVICE="${device}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/collect_ltsn_duration_responses.py" \
+    --root "${PROJECT_ROOT}" \
+    --source-manifest "${DURATION_DIR}/duration_${duration}s/anchors/trajectory_manifest.csv" \
+    --duration-plan "${DURATION_PLAN}" \
+    --ace-config "${PROJECT_ROOT}/configs/ace_rerank_180s.toml" \
+    --fingerprint "${fingerprint}" \
+    --target "${target}" \
+    --output-dir "${DURATION_DIR}/duration_${duration}s/responses" \
+    --duration-seconds "${duration}" \
+    --ace-model-sha256 "${ACE_MODEL_SHA256}" \
+    --vae-sha256 "${VAE_SHA256}" \
+    --workers "${DURATION_EXACT_WORKERS:-8}" \
+    --batch-size "${DURATION_BATCH_SIZE:-64}" \
+    --materialize-mode "${MATERIALIZE_MODE:-auto}" \
+    --device "${device}"
+}
+
+duration_collect_responses() {
+  : "${ACE_MODEL_SHA256:?Set ACE_MODEL_SHA256 to the 64-hex model tree digest}"
+  : "${VAE_SHA256:?Set VAE_SHA256 to the 64-hex VAE tree digest}"
+  local -a durations=(180 60 30)
+  local -a devices
+  if [[ -n "${DURATION_RESPONSE_DEVICES:-}" ]]; then
+    IFS=',' read -r -a devices <<< "${DURATION_RESPONSE_DEVICES}"
+    (( ${#devices[@]} == 3 )) || {
+      echo "DURATION_RESPONSE_DEVICES must contain exactly three devices" >&2
+      return 2
+    }
+  else
+    devices=("${DURATION_RESPONSE_DEVICE:-cuda:0}" "${DURATION_RESPONSE_DEVICE:-cuda:0}" "${DURATION_RESPONSE_DEVICE:-cuda:0}")
+  fi
+  if [[ -z "${DURATION_RESPONSE_DEVICES:-}" ]]; then
+    local index
+    for index in 0 1 2; do
+      duration_collect_response_one "${durations[${index}]}" "${devices[${index}]}"
+    done
+    return
+  fi
+  mkdir -p "${DURATION_DIR}/logs"
+  local -a pids=()
+  local index
+  for index in 0 1 2; do
+    duration_collect_response_one "${durations[${index}]}" "${devices[${index}]}" \
+      >"${DURATION_DIR}/logs/responses_${durations[${index}]}s.log" 2>&1 &
+    pids+=("$!")
+  done
+  local failed=0
+  for index in 0 1 2; do
+    if ! wait "${pids[${index}]}"; then
+      tail -n 80 "${DURATION_DIR}/logs/responses_${durations[${index}]}s.log" >&2
+      failed=1
+    fi
+  done
+  [[ "${failed}" -eq 0 ]]
+}
+
+duration_report() {
+  "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/report_ltsn_duration_causality.py" \
+    --report-180 "${DURATION_DIR}/duration_180s/responses/duration_report.json" \
+    --report-60 "${DURATION_DIR}/duration_60s/responses/duration_report.json" \
+    --report-30 "${DURATION_DIR}/duration_30s/responses/duration_report.json" \
+    --output "${DURATION_REPORT}" \
+    --bootstrap-resamples "${DURATION_BOOTSTRAP_RESAMPLES:-5000}"
 }
 
 train() {
@@ -1017,6 +1264,9 @@ case "${STAGE}" in
   prepare-v52b) prepare_v52b ;;
   train-v52b) train_v52b ;;
   report-v52b) report_v52b ;;
+  prepare-v6-final-target) prepare_v6_final_target ;;
+  train-v6-final-target) train_v6_final_target ;;
+  report-v6-final-target) report_v6_final_target ;;
   build-tac-target) build_tac_target ;;
   collect-v52c) collect_v52c ;;
   report-v52c) report_v52c ;;
@@ -1025,6 +1275,12 @@ case "${STAGE}" in
   report-v52d) report_v52d ;;
   collect-v52e) collect_v52e ;;
   report-v52e) report_v52e ;;
+  duration-prepare) duration_prepare ;;
+  duration-reference-preprocess) duration_reference_preprocess ;;
+  duration-build-contracts) duration_build_contracts ;;
+  duration-collect-anchors) duration_collect_anchors ;;
+  duration-collect-responses) duration_collect_responses ;;
+  duration-report) duration_report ;;
   calibrate) calibrate ;;
   calibrate-v5) calibrate_v5 ;;
   calibrate-ood-ablation) calibrate_ood_ablation ;;
@@ -1046,5 +1302,5 @@ case "${STAGE}" in
   qualify) qualify ;;
   qualify-v5) qualify_v5 ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|prepare-v51c|train-v51c|report-v51c|collect-v52a|train-v52a|report-v52a|prepare-v52b|train-v52b|report-v52b|build-tac-target|collect-v52c|report-v52c|collect-v52d-repeatability|collect-v52d-actions|report-v52d|collect-v52e|report-v52e|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|prepare-v51c|train-v51c|report-v51c|collect-v52a|train-v52a|report-v52a|prepare-v52b|train-v52b|report-v52b|prepare-v6-final-target|train-v6-final-target|report-v6-final-target|build-tac-target|collect-v52c|report-v52c|collect-v52d-repeatability|collect-v52d-actions|report-v52d|collect-v52e|report-v52e|duration-prepare|duration-reference-preprocess|duration-build-contracts|duration-collect-anchors|duration-collect-responses|duration-report|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
 esac
