@@ -46,6 +46,12 @@ V6_FINAL_TARGET_DIR="${V6_FINAL_TARGET_DIR:-${RUN_ROOT}/training_v6_final_target
 V6_FINAL_TARGET_MODEL_DIR="${V6_FINAL_TARGET_MODEL_DIR:-${RUN_ROOT}/models_v6_final_target}"
 V6_FINAL_TARGET_REPORT="${V6_FINAL_TARGET_REPORT:-${RUN_ROOT}/v6_final_target_report.json}"
 V6_FINAL_TARGET_CONFIG="${V6_FINAL_TARGET_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v6_final_target_screen.toml}"
+V6_FINAL_TARGET_TAC_REPORT="${V6_FINAL_TARGET_TAC_REPORT:-${RUN_ROOT}/v6_final_target_report_tac.json}"
+V6_FINAL_TARGET_TAC_OUTCOMES="${V6_FINAL_TARGET_TAC_OUTCOMES:-${RUN_ROOT}/v6_final_target_pair_outcomes_tac.csv}"
+V61_DIR="${V61_DIR:-${RUN_ROOT}/training_v61_multitask}"
+V61_MODEL_DIR="${V61_MODEL_DIR:-${RUN_ROOT}/models_v61_multitask}"
+V61_REPORT="${V61_REPORT:-${RUN_ROOT}/v61_final_target_report.json}"
+V61_CONFIG="${V61_CONFIG:-${PROJECT_ROOT}/configs/ltsn_training_v61_multitask.toml}"
 TAC_TARGET="${TAC_TARGET:-${PROJECT_ROOT}/metadata/tac_topology_target_v1.json}"
 V52C_DIR="${V52C_DIR:-${RUN_ROOT}/tac_v52c}"
 V52C_REPORT="${V52C_REPORT:-${V52C_DIR}/v52c_response_report.json}"
@@ -649,6 +655,93 @@ report_v6_final_target() {
     --checkpoint "${V6_FINAL_TARGET_MODEL_DIR}/v6_final_target.pt" \
     --output "${V6_FINAL_TARGET_REPORT}" \
     --device "${V6_FINAL_TARGET_EVAL_DEVICE:-${V6_FINAL_TARGET_DEVICE:-cuda:0}}"
+}
+
+correct_v6_final_target_report() {
+  [[ -f "${V6_FINAL_TARGET_REPORT}" ]] || {
+    echo "Run report-v6-final-target first" >&2
+    return 3
+  }
+  [[ -f "${V52A_DIR}/ltsn_manifest_v52a_master.csv" ]] || {
+    echo "V5.2a coordinate manifest is required" >&2
+    return 3
+  }
+  PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/correct_ltsn_v6_tac_direction.py" \
+    --legacy-report "${V6_FINAL_TARGET_REPORT}" \
+    --legacy-outcomes "${RUN_ROOT}/v6_final_target_pair_outcomes.csv" \
+    --pair-manifest "${V52B_DIR}/v52b_pair_manifest.csv" \
+    --coordinate-manifest "${V52A_DIR}/ltsn_manifest_v52a_master.csv" \
+    --tac-target "${TAC_TARGET}" \
+    --output-report "${V6_FINAL_TARGET_TAC_REPORT}" \
+    --output-outcomes "${V6_FINAL_TARGET_TAC_OUTCOMES}"
+}
+
+prepare_v61() {
+  [[ -f "${V6_FINAL_TARGET_DIR}/v6_preparation.json" ]] || {
+    echo "Run prepare-v6-final-target first" >&2
+    return 3
+  }
+  [[ -f "${V6_FINAL_TARGET_MODEL_DIR}/v6_final_target.pt" ]] || {
+    echo "Run train-v6-final-target first" >&2
+    return 3
+  }
+  [[ -f "${V52A_DIR}/ltsn_manifest_v52a_master.csv" ]] || {
+    echo "V5.2a coordinate manifest is required" >&2
+    return 3
+  }
+  PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/prepare_ltsn_v61.py" \
+    --fingerprint "${FINGERPRINT}" \
+    --tac-target "${TAC_TARGET}" \
+    --v6-preparation "${V6_FINAL_TARGET_DIR}/v6_preparation.json" \
+    --v6-view "${V6_FINAL_TARGET_DIR}/v6_final_target_view.csv" \
+    --v6-checkpoint "${V6_FINAL_TARGET_MODEL_DIR}/v6_final_target.pt" \
+    --pair-manifest "${V52B_DIR}/v52b_pair_manifest.csv" \
+    --coordinate-manifest "${V52A_DIR}/ltsn_manifest_v52a_master.csv" \
+    --config "${V61_CONFIG}" \
+    --output-dir "${V61_DIR}" \
+    --validation-anchors-per-step 2 \
+    --split-seed 20260914
+}
+
+train_v61() {
+  [[ -f "${V61_DIR}/v61_preparation.json" ]] || {
+    echo "Run prepare-v61 first" >&2
+    return 3
+  }
+  PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/train_ltsn_v61.py" \
+    --fingerprint "${FINGERPRINT}" \
+    --tac-target "${TAC_TARGET}" \
+    --v6-preparation "${V6_FINAL_TARGET_DIR}/v6_preparation.json" \
+    --v6-view "${V6_FINAL_TARGET_DIR}/v6_final_target_view.csv" \
+    --v6-checkpoint "${V6_FINAL_TARGET_MODEL_DIR}/v6_final_target.pt" \
+    --pair-view "${V61_DIR}/v61_tac_pair_targets.csv" \
+    --preparation "${V61_DIR}/v61_preparation.json" \
+    --config "${V61_CONFIG}" \
+    --output-dir "${V61_MODEL_DIR}" \
+    --device "${V61_DEVICE:-cuda:0}"
+}
+
+report_v61() {
+  [[ -f "${V61_MODEL_DIR}/v61_final_target.pt" ]] || {
+    echo "Run train-v61 first" >&2
+    return 3
+  }
+  PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}" \
+    "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/report_ltsn_v61.py" \
+    --fingerprint "${FINGERPRINT}" \
+    --tac-target "${TAC_TARGET}" \
+    --v6-preparation "${V6_FINAL_TARGET_DIR}/v6_preparation.json" \
+    --v6-view "${V6_FINAL_TARGET_DIR}/v6_final_target_view.csv" \
+    --v6-checkpoint "${V6_FINAL_TARGET_MODEL_DIR}/v6_final_target.pt" \
+    --pair-view "${V61_DIR}/v61_tac_pair_targets.csv" \
+    --preparation "${V61_DIR}/v61_preparation.json" \
+    --config "${V61_CONFIG}" \
+    --checkpoint "${V61_MODEL_DIR}/v61_final_target.pt" \
+    --output "${V61_REPORT}" \
+    --device "${V61_EVAL_DEVICE:-${V61_DEVICE:-cuda:0}}"
 }
 
 build_tac_target() {
@@ -1270,6 +1363,10 @@ case "${STAGE}" in
   prepare-v6-final-target) prepare_v6_final_target ;;
   train-v6-final-target) train_v6_final_target ;;
   report-v6-final-target) report_v6_final_target ;;
+  correct-v6-final-target-report) correct_v6_final_target_report ;;
+  prepare-v61) prepare_v61 ;;
+  train-v61) train_v61 ;;
+  report-v61) report_v61 ;;
   build-tac-target) build_tac_target ;;
   collect-v52c) collect_v52c ;;
   report-v52c) report_v52c ;;
@@ -1305,5 +1402,5 @@ case "${STAGE}" in
   qualify) qualify ;;
   qualify-v5) qualify_v5 ;;
   guidance-confirmation) guidance_confirmation ;;
-  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|prepare-v51c|train-v51c|report-v51c|collect-v52a|train-v52a|report-v52a|prepare-v52b|train-v52b|report-v52b|prepare-v6-final-target|train-v6-final-target|report-v6-final-target|build-tac-target|collect-v52c|report-v52c|collect-v52d-repeatability|collect-v52d-actions|report-v52d|collect-v52e|report-v52e|duration-prepare|duration-reference-preprocess|duration-build-contracts|duration-collect-anchors|duration-collect-responses|duration-report|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
+  *) echo "Usage: $0 {collect|labels|augment-training|augment-on-policy|augment-v5|train|train-v5|train-v5-screen|prepare-v51|train-v51-screen|report-v51-screen|train-v51|prepare-v51a|train-v51a|report-v51a|prepare-v51b|train-v51b|report-v51b|prepare-v51c|train-v51c|report-v51c|collect-v52a|train-v52a|report-v52a|prepare-v52b|train-v52b|report-v52b|prepare-v6-final-target|train-v6-final-target|report-v6-final-target|correct-v6-final-target-report|prepare-v61|train-v61|report-v61|build-tac-target|collect-v52c|report-v52c|collect-v52d-repeatability|collect-v52d-actions|report-v52d|collect-v52e|report-v52e|duration-prepare|duration-reference-preprocess|duration-build-contracts|duration-collect-anchors|duration-collect-responses|duration-report|calibrate|calibrate-v5|calibrate-ood-ablation|calibrate-v5-ood-ablation|development-generate|development-generate-v5|development-generate-v5-ood-ablation|development-step4-diagnostic|development-step4-score|development-step4-report|development-score|development-score-v5|development-evidence|development-evidence-v5|development-finalize|development-finalize-v5|guidance-development|guidance-development-v5|qualify|qualify-v5|guidance-confirmation}" >&2; exit 2 ;;
 esac

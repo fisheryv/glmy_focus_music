@@ -1,0 +1,27 @@
+[training]
+learning_rate = 0.00005
+weight_decay = 0.0
+warmup_fraction = 0.05
+minimum_learning_rate = 0.000001
+micro_batch_size = 8
+direction_batch_size = 4
+max_epochs = 40
+minimum_epochs = 10
+early_stopping_patience = 8
+gradient_clip_norm = 5.0
+huber_delta = 1.0
+final_target_loss_weight = 1.0
+direction_huber_weight = 1.0
+direction_sign_weight = 0.25
+selection_final_weight = 0.25
+selection_direction_huber_weight = 1.0
+selection_direction_agreement_weight = 0.25
+num_workers = 4
+seed = 20260716
+
+[screen]
+minimum_train_final_distance_spearman = 0.70
+minimum_development_final_distance_spearman = 0.50
+minimum_heldout_direction_pairs = 128
+minimum_heldout_direction_agreement = 0.60
+minimum_heldout_derivative_spearman = 0.15
