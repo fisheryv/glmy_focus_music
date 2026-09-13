@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from generation.ace_adapter import AceStepAdapter
+from generation.ace_lora_native_entrypoint import VARIANT_DIRECTORY_ALIASES
 from generation.experiment import (
     AceConfig,
     CandidateRecord,
@@ -28,6 +29,7 @@ from generation.topology_lora import (
 from generation.topology_lora_training import (
     _freeze_native_stage_plan,
     _python_executable,
+    _validate_preprocess_outputs,
     build_native_command,
     check_native_training_environment,
 )
@@ -37,6 +39,12 @@ from generation.topology_lora_validation import (
 )
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_native_runtime_maps_all_official_xl_variants() -> None:
+    assert VARIANT_DIRECTORY_ALIASES["xl_turbo"] == "acestep-v15-xl-turbo"
+    assert VARIANT_DIRECTORY_ALIASES["xl_base"] == "acestep-v15-xl-base"
+    assert VARIANT_DIRECTORY_ALIASES["xl_sft"] == "acestep-v15-xl-sft"
 
 
 def _write_csv(path: Path, rows: list[dict[str, object]]) -> None:
@@ -325,7 +333,9 @@ def test_native_training_command_is_bound_to_teacher(tmp_path: Path) -> None:
     )
 
     assert "--target-modules" in command
+    assert command[2] == "generation.ace_lora_native_entrypoint"
     assert command[command.index("--base-model") + 1] == "xl_turbo"
+    assert plan["native_runtime_policy"]["attention_backend"] == "sdpa"
     assert plan["dataset_json_sha256"] == sha256_file(dataset)
 
 
@@ -382,6 +392,73 @@ def test_native_plan_change_is_rejected_after_output_exists(tmp_path: Path) -> N
             plan={"plan_sha256": "b" * 64},
             stage_output=output,
         )
+
+
+def test_safe_runtime_wrapper_transition_preserves_resumable_tensors(tmp_path: Path) -> None:
+    audit = tmp_path / "audit"
+    output = tmp_path / "tensors"
+    audit.mkdir()
+    output.mkdir()
+    shared = {"stage": "preprocess", "config_sha256": "c" * 64}
+    previous = {
+        **shared,
+        "command": ["/venv/python", "-m", "acestep.training_v2.cli.train_fixed", "--preprocess"],
+        "plan_sha256": "a" * 64,
+    }
+    current = {
+        **shared,
+        "command": [
+            "/venv/python",
+            "-m",
+            "generation.ace_lora_native_entrypoint",
+            "--preprocess",
+        ],
+        "native_runtime_policy": {"attention_backend": "sdpa"},
+        "plan_sha256": "b" * 64,
+    }
+    (audit / "preprocess_plan.json").write_text(json.dumps(previous), encoding="utf-8")
+    (output / "sample.tmp.pt").write_bytes(b"resumable")
+
+    archived = _freeze_native_stage_plan(
+        audit_dir=audit,
+        stage="preprocess",
+        plan=current,
+        stage_output=output,
+    )
+
+    assert archived is not None
+    assert (output / "sample.tmp.pt").read_bytes() == b"resumable"
+    assert json.loads((audit / "preprocess_plan.json").read_text(encoding="utf-8")) == current
+
+
+def test_preprocess_output_contract_rejects_partial_tensors(tmp_path: Path) -> None:
+    dataset = tmp_path / "dataset.json"
+    tensors = tmp_path / "tensors"
+    tensors.mkdir()
+    dataset.write_text(
+        json.dumps(
+            {
+                "samples": [
+                    {"audio_path": "/audio/winner.wav"},
+                    {"audio_path": "/audio/replay.wav"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    (tensors / "winner.pt").write_bytes(b"tensor")
+
+    with pytest.raises(LTSNContractError, match="expected=2, final=1, missing=1"):
+        _validate_preprocess_outputs(dataset, tensors)
+
+    (tensors / "replay.pt").write_bytes(b"tensor")
+    payload = _validate_preprocess_outputs(dataset, tensors)
+    assert payload == {
+        "expected_samples": 2,
+        "final_tensors": 2,
+        "temporary_tensors": 0,
+        "complete": True,
+    }
 
 
 def test_v2_native_training_plan_retains_v2_teacher_binding(tmp_path: Path) -> None:
