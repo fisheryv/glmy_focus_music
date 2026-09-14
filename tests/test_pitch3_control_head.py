@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from collections import Counter
 from dataclasses import asdict
 from pathlib import Path
 
@@ -20,10 +21,12 @@ from generation.ltsn_contract import sha256_file  # noqa: E402
 from generation.pitch3_contract import load_pitch3_contract  # noqa: E402
 from generation.pitch3_training import (  # noqa: E402
     Pitch3BalancedBatchSampler,
+    Pitch3GroupRobustBatchSampler,
     Pitch3LossWeights,
     Pitch3Snapshot,
     load_pitch3_training_config,
     pitch3_loss,
+    pitch3_prompt_family,
     read_pitch3_manifest,
     train_pitch3_control_head,
 )
@@ -77,8 +80,11 @@ def test_pitch3_control_head_shapes_gradients_and_parameter_budget() -> None:
         "ood",
         "band",
         "band_rank",
+        "local_band_rank",
         "band_region",
         "band_zero",
+        "coordinate2_rank",
+        "trajectory_delta",
         "ood_margin",
     }
     assert torch.isfinite(loss)
@@ -268,6 +274,69 @@ def test_pitch3_v25_preserves_v24r_boundary_weight_sum() -> None:
     assert v25_weights.band_region_positive_only is True
     assert v25_weights.band_region + v25_weights.band_zero == v24r_weights.band_region
     assert v25_weights.band_smooth_temperature_fraction == 0.0
+
+
+def test_pitch3_v26_gr_freezes_group_robust_contract() -> None:
+    v24r_model, _, _ = load_pitch3_training_config(
+        ROOT / "configs" / "pitch3_control_head_training_v24r.toml"
+    )
+    model, training, weights = load_pitch3_training_config(
+        ROOT / "configs" / "pitch3_control_head_training_v26_gr.toml"
+    )
+
+    assert asdict(model) == asdict(v24r_model)
+    assert training.seed == 20260918
+    assert training.group_robust_sampling is True
+    assert training.group_robust_selection is True
+    assert (training.id_samples_per_batch, training.ood_samples_per_batch) == (6, 2)
+    assert weights.band_rank == 0.05
+    assert weights.local_band_rank == 0.10
+    assert weights.coordinate2_rank == 0.10
+    assert weights.trajectory_delta == 0.10
+
+
+def test_pitch3_v26_group_losses_use_local_and_trajectory_pairs() -> None:
+    contract = load_pitch3_contract(PROFILE)
+    coordinates = torch.tensor(
+        [
+            [-0.5, -0.4, 0.2],
+            [-0.4, 0.2, 0.4],
+            [-0.3, 0.4, 0.8],
+            [-0.2, 0.6, 1.0],
+            [-0.5, 0.5, 0.2],
+            [-0.4, -0.3, 0.4],
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0],
+        ]
+    )
+    predicted = coordinates.detach().clone()
+    predicted[:6] = predicted[:6].flip(0)
+    predicted.requires_grad_(True)
+    output = _loss_output(predicted)
+    _, parts = pitch3_loss(
+        output,
+        coordinates,
+        torch.zeros(8),
+        torch.tensor([0.0] * 6 + [1.0] * 2),
+        Pitch3LossWeights(
+            local_band_rank=1.0,
+            coordinate2_rank=1.0,
+            trajectory_delta=1.0,
+        ),
+        target_lower=torch.tensor(contract.target_lower),
+        target_upper=torch.tensor(contract.target_upper),
+        distance_weights=torch.tensor(contract.distance_weights),
+        prompt_family=["family_a"] * 6 + ["ood"] * 2,
+        trajectory_id=["anchor"] * 4 + ["companion_a", "companion_b", "ood_a", "ood_b"],
+        step_number=torch.tensor([4, 5, 6, 8, 4, 5, 4, 5], dtype=torch.float32),
+    )
+    combined = parts["local_band_rank"] + parts["coordinate2_rank"] + parts["trajectory_delta"]
+    combined.backward()
+
+    assert parts["local_band_rank"] > 0.0
+    assert parts["coordinate2_rank"] > 0.0
+    assert parts["trajectory_delta"] > 0.0
+    assert predicted.grad is not None and torch.isfinite(predicted.grad).all()
 
 
 def test_pitch3_v23_raw_ood_statistics_preserve_scale_signal() -> None:
@@ -512,3 +581,77 @@ def test_pitch3_v23_sampler_stratifies_each_id_batch() -> None:
         assert sum(records[index].ood_label >= 0.5 for index in batch) == 2
         for indices in strata.values():
             assert sum(index in indices for index in batch) == 2
+
+
+def test_pitch3_v26_sampler_exposes_local_and_trajectory_pairs() -> None:
+    contract = load_pitch3_contract(PROFILE)
+    records = []
+    for family_index in range(3):
+        family = f"p{family_index:02d}_family"
+        for trajectory_index in range(3):
+            trajectory = f"{family}__v01__seed{trajectory_index}"
+            for step in (4, 5, 6, 8):
+                records.append(
+                    Pitch3Snapshot(
+                        sample_id=f"{trajectory}__step{step:02d}",
+                        prompt_id=f"{family}__v01",
+                        trajectory_id=trajectory,
+                        split="train",
+                        step_number=step,
+                        timestep=0.0,
+                        latent_path=Path("unused.npy"),
+                        latent_sha256="0" * 64,
+                        coordinates=(
+                            float(trajectory_index),
+                            float(step) / 10.0,
+                            float(family_index + trajectory_index),
+                        ),
+                        focus_logit=0.0,
+                        ood_label=0.0,
+                        is_final=step == 8,
+                        ood_kind="",
+                        ood_transform_version="",
+                        ood_label_source="",
+                    )
+                )
+    for index, kind in enumerate(("ood_scale_high", "ood_block_shuffle") * 3):
+        records.append(
+            Pitch3Snapshot(
+                sample_id=f"ood_{index}",
+                prompt_id=f"ood_prompt_{index}",
+                trajectory_id=f"ood_trajectory_{index}",
+                split="train",
+                step_number=4,
+                timestep=0.5,
+                latent_path=Path("unused.npy"),
+                latent_sha256="1" * 64,
+                coordinates=(0.0, 0.0, 0.0),
+                focus_logit=0.0,
+                ood_label=1.0,
+                is_final=False,
+                ood_kind=kind,
+                ood_transform_version="pitch3_latent_ood_v2",
+                ood_label_source="deterministic_latent_transform_v2",
+            )
+        )
+    sampler = Pitch3GroupRobustBatchSampler(
+        records,
+        id_per_batch=6,
+        ood_per_batch=2,
+        seed=20260918,
+        contract=contract,
+    )
+
+    assert pitch3_prompt_family("p27_neutral_ambient__v16") == "p27_neutral_ambient"
+    for batch in sampler:
+        id_records = [records[index] for index in batch if records[index].ood_label < 0.5]
+        ood_records = [records[index] for index in batch if records[index].ood_label >= 0.5]
+        families = {pitch3_prompt_family(record.prompt_id) for record in id_records}
+        trajectory_counts = Counter(record.trajectory_id for record in id_records)
+        step_counts = Counter(record.step_number for record in id_records)
+
+        assert len(id_records) == 6
+        assert len(ood_records) == 2
+        assert len(families) == 1
+        assert max(trajectory_counts.values()) == 4
+        assert sum(count >= 2 for count in step_counts.values()) == 2

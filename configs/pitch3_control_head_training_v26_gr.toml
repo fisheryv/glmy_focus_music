@@ -1,0 +1,49 @@
+[model]
+latent_dim = 64
+model_dim = 128
+condition_dim = 128
+transformer_heads = 4
+transformer_layers = 3
+feedforward_dim = 512
+temporal_stride = 4
+dropout = 0.1
+logvar_min = -8.0
+logvar_max = 4.0
+ood_stats_dim = 32
+
+[training]
+learning_rate = 0.0002
+weight_decay = 0.0001
+micro_batch_size = 8
+max_epochs = 40
+minimum_epochs = 8
+early_stopping_patience = 7
+gradient_clip_norm = 1.0
+num_workers = 0
+use_bf16 = true
+seed = 20260918
+require_ood_both_classes = true
+id_samples_per_batch = 6
+ood_samples_per_batch = 2
+gate_aligned_selection = true
+id_band_stratified = true
+group_robust_sampling = true
+group_robust_selection = true
+scale_high_training_target_scales = [2.5, 3.5, 4.0]
+
+[loss]
+coordinate = 1.0
+nll = 0.25
+focus = 0.25
+ood = 0.25
+band = 0.50
+band_rank = 0.05
+band_rank_min_delta = 0.0001
+local_band_rank = 0.10
+coordinate2_rank = 0.10
+coordinate2_rank_min_delta = 0.0001
+trajectory_delta = 0.10
+band_region = 0.25
+band_smooth_temperature_fraction = 0.0
+ood_margin = 0.10
+ood_margin_value = 1.0

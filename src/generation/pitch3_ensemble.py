@@ -131,6 +131,7 @@ def build_pitch3_ensemble_manifest(
     output_parent = output_path.resolve().parent
     frozen_members: list[dict[str, Any]] = []
     reference_config: dict[str, Any] | None = None
+    reference_group_contract: dict[str, Any] | None = None
     ood_versions: set[str] = set()
     ood_sources: set[str] = set()
     for name, raw_path, weight in members:
@@ -146,6 +147,13 @@ def build_pitch3_ensemble_manifest(
             reference_config = model_config
         elif model_config != reference_config:
             raise LTSNContractError("Pitch-3 ensemble members must share one model config")
+        group_contract = dict(metadata.get("group_robust_training", {}))
+        if reference_group_contract is None:
+            reference_group_contract = group_contract
+        elif group_contract != reference_group_contract:
+            raise LTSNContractError(
+                "Pitch-3 ensemble members must share one group-robust training contract"
+            )
         ood_versions.add(str(metadata.get("ood_transform_version", "")))
         ood_sources.add(str(metadata.get("ood_label_source", "")))
         relative_path = Path(os.path.relpath(checkpoint_path, output_parent)).as_posix()
@@ -158,6 +166,7 @@ def build_pitch3_ensemble_manifest(
                 "training_config_sha256": metadata["training_config_sha256"],
                 "architecture_revision": metadata.get("architecture_revision", ""),
                 "band_training_objective": metadata.get("band_training_objective", {}),
+                "group_robust_training": group_contract,
             }
         )
     if len(ood_versions) != 1 or len(ood_sources) != 1:
@@ -175,6 +184,7 @@ def build_pitch3_ensemble_manifest(
         "ood_transform_version": next(iter(ood_versions)),
         "ood_label_source": next(iter(ood_sources)),
         "aggregation": ENSEMBLE_AGGREGATION,
+        "group_robust_training": reference_group_contract or {},
         "members": frozen_members,
         "selection_scope": "development_only",
         "qualification_split_consumed": False,
@@ -269,6 +279,10 @@ def load_pitch3_ensemble(
             raise LTSNContractError("ensemble member architecture revision binding mismatch")
         if metadata.get("band_training_objective", {}) != raw.get("band_training_objective", {}):
             raise LTSNContractError("ensemble member band objective binding mismatch")
+        if metadata.get("group_robust_training", {}) != raw.get("group_robust_training", {}):
+            raise LTSNContractError("ensemble member group-robust contract binding mismatch")
+        if metadata.get("group_robust_training", {}) != payload.get("group_robust_training", {}):
+            raise LTSNContractError("ensemble group-robust training contracts differ")
         if metadata.get("ood_transform_version", "") != payload.get("ood_transform_version", ""):
             raise LTSNContractError("ensemble member OOD transform binding mismatch")
         if metadata.get("ood_label_source", "") != payload.get("ood_label_source", ""):

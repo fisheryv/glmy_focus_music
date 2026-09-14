@@ -10,7 +10,7 @@ import os
 import random
 import tomllib
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
@@ -32,6 +32,7 @@ from .pitch3_contract import PITCH3_DIMENSIONS, Pitch3Contract, load_pitch3_cont
 
 SPLITS = {"train", "development", "calibration", "qualification"}
 CORRECTION_STEPS = (4, 5, 6)
+FORMAL_STEPS = (4, 5, 6, 8)
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +52,8 @@ class Pitch3TrainingConfig:
     ood_samples_per_batch: int = 0
     gate_aligned_selection: bool = False
     id_band_stratified: bool = False
+    group_robust_sampling: bool = False
+    group_robust_selection: bool = False
     scale_high_training_target_scales: tuple[float, ...] = ()
 
 
@@ -63,6 +66,10 @@ class Pitch3LossWeights:
     band: float = 0.0
     band_rank: float = 0.0
     band_rank_min_delta: float = 1e-4
+    local_band_rank: float = 0.0
+    coordinate2_rank: float = 0.0
+    coordinate2_rank_min_delta: float = 1e-4
+    trajectory_delta: float = 0.0
     band_region: float = 0.0
     band_zero: float = 0.0
     band_region_positive_only: bool = False
@@ -118,6 +125,12 @@ def load_pitch3_training_config(
         training.id_samples_per_batch < 3 or training.id_samples_per_batch % 3
     ):
         raise ValueError("band-stratified ID batches require an ID count divisible by three")
+    if training.group_robust_sampling and (
+        training.id_samples_per_batch != 6 or training.ood_samples_per_batch != 2
+    ):
+        raise ValueError("group-robust Pitch-3 sampling requires a 6 ID / 2 OOD batch")
+    if training.group_robust_selection and not training.gate_aligned_selection:
+        raise ValueError("group-robust selection requires gate-aligned selection")
     if (
         any(not math.isfinite(value) or value < 0.0 for value in asdict(loss).values())
         or loss.coordinate <= 0.0
@@ -125,12 +138,21 @@ def load_pitch3_training_config(
         raise ValueError("loss settings must be finite and non-negative with coordinate > 0")
     if loss.ood_margin > 0.0 and loss.ood_margin_value <= 0.0:
         raise ValueError("positive OOD margin loss requires ood_margin_value > 0")
-    if loss.band_rank > 0.0 and loss.band_rank_min_delta <= 0.0:
+    if (loss.band_rank > 0.0 or loss.local_band_rank > 0.0) and (loss.band_rank_min_delta <= 0.0):
         raise ValueError("positive band ranking loss requires band_rank_min_delta > 0")
+    if loss.coordinate2_rank > 0.0 and loss.coordinate2_rank_min_delta <= 0.0:
+        raise ValueError("positive coordinate-2 ranking loss requires a positive minimum delta")
+    group_loss_enabled = (
+        loss.local_band_rank > 0.0 or loss.coordinate2_rank > 0.0 or loss.trajectory_delta > 0.0
+    )
+    if training.group_robust_sampling != group_loss_enabled:
+        raise ValueError("group-robust sampling and group-robust losses must be enabled together")
+    if training.group_robust_selection and not training.group_robust_sampling:
+        raise ValueError("group-robust selection requires group-robust sampling")
     if loss.band_smooth_temperature_fraction > 0.5:
         raise ValueError("band smoothing temperature fraction must be in [0,0.5]")
     if loss.band_smooth_temperature_fraction > 0.0 and not (
-        loss.band > 0.0 or loss.band_rank > 0.0
+        loss.band > 0.0 or loss.band_rank > 0.0 or loss.local_band_rank > 0.0
     ):
         raise ValueError("band smoothing requires a positive band or band-rank weight")
     if loss.band_region_positive_only and loss.band_region <= 0.0:
@@ -146,6 +168,15 @@ def load_pitch3_training_config(
 
 def _parse_bool(value: str) -> bool:
     return value.strip().lower() in {"1", "true", "yes"}
+
+
+def pitch3_prompt_family(prompt_id: str) -> str:
+    """Return the frozen base-family identifier without the prompt variant suffix."""
+
+    marker = prompt_id.rfind("__v")
+    if marker <= 0 or not prompt_id[marker + 3 :].isdigit():
+        return prompt_id
+    return prompt_id[:marker]
 
 
 def read_pitch3_manifest(path: Path, contract: Pitch3Contract) -> list[Pitch3Snapshot]:
@@ -293,6 +324,9 @@ class Pitch3Dataset(Dataset[dict[str, Any]]):
             latent = np.asarray(latent, dtype=np.float32) * np.float32(virtual_scale / 4.0)
         return {
             "sample_id": record.sample_id,
+            "prompt_id": record.prompt_id,
+            "prompt_family": pitch3_prompt_family(record.prompt_id),
+            "trajectory_id": record.trajectory_id,
             "latent": torch.from_numpy(np.asarray(latent, dtype=np.float32)),
             "timestep": torch.tensor(record.timestep, dtype=torch.float32),
             "step_number": torch.tensor(record.step_number, dtype=torch.float32),
@@ -316,6 +350,9 @@ def collate_pitch3(items: list[dict[str, Any]]) -> dict[str, Any]:
         mask[index, :frames] = True
     return {
         "sample_id": [item["sample_id"] for item in items],
+        "prompt_id": [item["prompt_id"] for item in items],
+        "prompt_family": [item["prompt_family"] for item in items],
+        "trajectory_id": [item["trajectory_id"] for item in items],
         "latent": latent,
         "attention_mask": mask,
         "timestep": torch.stack([item["timestep"] for item in items]),
@@ -468,6 +505,184 @@ class Pitch3BalancedBatchSampler(Sampler[list[int]]):
         return self.batch_count
 
 
+class Pitch3GroupRobustBatchSampler(Sampler[list[int]]):
+    """Build 6:2 batches around one prompt-family trajectory anchor.
+
+    Four ID rows are the complete formal trajectory. Two companion ID rows
+    come from other trajectories in the same prompt family at rotating steps.
+    This makes within-family/step ranking and within-trajectory delta losses
+    observable while retaining deterministic OOD-family rotation.
+    """
+
+    _COMPANION_STEP_PAIRS = ((4, 5), (6, 8), (4, 6), (5, 8))
+
+    def __init__(
+        self,
+        records: list[Pitch3Snapshot],
+        *,
+        id_per_batch: int,
+        ood_per_batch: int,
+        seed: int,
+        contract: Pitch3Contract,
+    ) -> None:
+        if id_per_batch != 6 or ood_per_batch != 2:
+            raise ValueError("Pitch-3 group-robust batches require exactly 6 ID and 2 OOD rows")
+        self.records = records
+        self.id_per_batch = id_per_batch
+        self.ood_per_batch = ood_per_batch
+        self.seed = seed
+        self.epoch = 0
+        by_trajectory: dict[str, list[int]] = {}
+        by_kind: dict[str, list[int]] = {}
+        for index, record in enumerate(records):
+            if record.ood_label < 0.5:
+                by_trajectory.setdefault(record.trajectory_id, []).append(index)
+            else:
+                by_kind.setdefault(record.ood_kind, []).append(index)
+        if not by_trajectory or not by_kind or any(not values for values in by_kind.values()):
+            raise LTSNContractError("group-robust batches require ID trajectories and OOD families")
+        self.ood_by_kind = dict(sorted(by_kind.items()))
+        self.trajectory_indices: dict[str, tuple[int, int, int, int]] = {}
+        self.trajectory_family: dict[str, str] = {}
+        for trajectory_id, indices in by_trajectory.items():
+            by_step = {records[index].step_number: index for index in indices}
+            families = {pitch3_prompt_family(records[index].prompt_id) for index in indices}
+            if set(by_step) != set(FORMAL_STEPS) or len(indices) != len(FORMAL_STEPS):
+                raise LTSNContractError(
+                    "group-robust training requires one ID row per formal step in every trajectory"
+                )
+            if len(families) != 1:
+                raise LTSNContractError("one trajectory cannot span multiple prompt families")
+            self.trajectory_indices[trajectory_id] = tuple(by_step[step] for step in FORMAL_STEPS)
+            self.trajectory_family[trajectory_id] = next(iter(families))
+        self.families = sorted(set(self.trajectory_family.values()))
+        self.companions: dict[tuple[str, int], list[int]] = {}
+        for trajectory_id, indices in self.trajectory_indices.items():
+            family = self.trajectory_family[trajectory_id]
+            for index in indices:
+                self.companions.setdefault((family, records[index].step_number), []).append(index)
+        for family in self.families:
+            for step in FORMAL_STEPS:
+                trajectories = {
+                    records[index].trajectory_id
+                    for index in self.companions.get((family, step), [])
+                }
+                if len(trajectories) < 2:
+                    raise LTSNContractError(
+                        "group-robust training needs two trajectories per family and formal step"
+                    )
+
+        lower = np.asarray(contract.target_lower, dtype=float)
+        upper = np.asarray(contract.target_upper, dtype=float)
+        weights = np.asarray(contract.distance_weights, dtype=float)
+
+        def trajectory_band_loss(trajectory_id: str) -> float:
+            values = []
+            for index in self.trajectory_indices[trajectory_id]:
+                coordinate = np.asarray(records[index].coordinates, dtype=float)
+                below = np.maximum(lower - coordinate, 0.0)
+                above = np.maximum(coordinate - upper, 0.0)
+                values.append(float(((np.square(below) + np.square(above)) * weights).sum()))
+            return float(np.mean(values))
+
+        ordered = sorted(
+            self.trajectory_indices,
+            key=lambda trajectory_id: (
+                trajectory_band_loss(trajectory_id),
+                hashlib.sha256(trajectory_id.encode("utf-8")).digest(),
+            ),
+        )
+        chunks = np.array_split(np.asarray(ordered, dtype=object), 3)
+        self.trajectory_stratum: dict[str, str] = {}
+        self.trajectories_by_family_stratum: dict[tuple[str, str], list[str]] = {}
+        self.trajectory_strata_summary: dict[str, Any] = {}
+        for name, chunk in zip(("low", "middle", "high"), chunks, strict=True):
+            trajectory_ids = [str(value) for value in chunk]
+            for trajectory_id in trajectory_ids:
+                self.trajectory_stratum[trajectory_id] = name
+                key = (self.trajectory_family[trajectory_id], name)
+                self.trajectories_by_family_stratum.setdefault(key, []).append(trajectory_id)
+            self.trajectory_strata_summary[name] = {
+                "trajectories": len(trajectory_ids),
+                "minimum_mean_band_loss": min(
+                    trajectory_band_loss(value) for value in trajectory_ids
+                ),
+                "maximum_mean_band_loss": max(
+                    trajectory_band_loss(value) for value in trajectory_ids
+                ),
+            }
+        self.batch_count = max(
+            math.ceil(len(by_trajectory) * len(FORMAL_STEPS) / id_per_batch),
+            math.ceil(sum(len(values) for values in by_kind.values()) / ood_per_batch),
+        )
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    @staticmethod
+    def _take(pools: dict[Any, list[Any]], key: Any, values: list[Any], rng: random.Random) -> Any:
+        if not pools.get(key):
+            pools[key] = values.copy()
+            rng.shuffle(pools[key])
+        return pools[key].pop()
+
+    def __iter__(self) -> Iterator[list[int]]:
+        rng = random.Random(self.seed + self.epoch * 1_000_003)
+        pools: dict[Any, list[Any]] = {}
+        family_stream = Pitch3BalancedBatchSampler._cycle(
+            list(range(len(self.families))), self.batch_count, rng
+        )
+        family_counts = Counter()
+        kind_names = list(self.ood_by_kind)
+        ood_assignments = [
+            kind_names[index % len(kind_names)]
+            for index in range(self.batch_count * self.ood_per_batch)
+        ]
+        rng.shuffle(ood_assignments)
+        for batch_index, family_index in enumerate(family_stream):
+            family = self.families[family_index]
+            family_count = family_counts[family]
+            family_counts[family] += 1
+            desired_stratum = ("low", "middle", "high")[family_count % 3]
+            available_strata = [
+                name
+                for name in (desired_stratum, "low", "middle", "high")
+                if self.trajectories_by_family_stratum.get((family, name))
+            ]
+            stratum = available_strata[0]
+            trajectory_values = self.trajectories_by_family_stratum[(family, stratum)]
+            trajectory_id = self._take(
+                pools, ("trajectory", family, stratum), trajectory_values, rng
+            )
+            batch = list(self.trajectory_indices[trajectory_id])
+            steps = self._COMPANION_STEP_PAIRS[family_count % len(self._COMPANION_STEP_PAIRS)]
+            for step in steps:
+                candidates = [
+                    index
+                    for index in self.companions[(family, step)]
+                    if self.records[index].trajectory_id != trajectory_id
+                ]
+                batch.append(
+                    self._take(pools, ("companion", family, step, trajectory_id), candidates, rng)
+                )
+            for offset in range(self.ood_per_batch):
+                kind = ood_assignments[batch_index * self.ood_per_batch + offset]
+                batch.append(self._take(pools, ("ood", kind), self.ood_by_kind[kind], rng))
+            rng.shuffle(batch)
+            yield batch
+
+    def __len__(self) -> int:
+        return self.batch_count
+
+
+def _same_group_mask(values: Sequence[str], reference: Tensor) -> Tensor:
+    return torch.tensor(
+        [[first == second for second in values] for first in values],
+        device=reference.device,
+        dtype=torch.bool,
+    )
+
+
 def pitch3_loss(
     output: Pitch3ControlOutput,
     coordinates: Tensor,
@@ -479,6 +694,9 @@ def pitch3_loss(
     target_lower: Tensor | None = None,
     target_upper: Tensor | None = None,
     distance_weights: Tensor | None = None,
+    prompt_family: Sequence[str] | None = None,
+    trajectory_id: Sequence[str] | None = None,
+    step_number: Tensor | None = None,
 ) -> tuple[Tensor, dict[str, Tensor]]:
     if coordinates.ndim != 2 or coordinates.shape[1] != PITCH3_DIMENSIONS:
         raise ValueError("Pitch-3 targets must have shape [B,3]")
@@ -494,9 +712,55 @@ def pitch3_loss(
             ).mean()
         )
         focus = F.smooth_l1_loss(output.focus_logit[id_mask], focus_logit[id_mask])
+        group_losses_enabled = (
+            weights.local_band_rank > 0.0
+            or weights.coordinate2_rank > 0.0
+            or weights.trajectory_delta > 0.0
+        )
+        if group_losses_enabled:
+            batch_size = len(ood_label)
+            if (
+                prompt_family is None
+                or trajectory_id is None
+                or step_number is None
+                or len(prompt_family) != batch_size
+                or len(trajectory_id) != batch_size
+                or step_number.shape != ood_label.shape
+            ):
+                raise ValueError("group-robust losses require batch-aligned family/trajectory/step")
+            id_keep = id_mask.detach().cpu().tolist()
+            id_families = [
+                value for value, keep in zip(prompt_family, id_keep, strict=True) if keep
+            ]
+            id_trajectories = [
+                value for value, keep in zip(trajectory_id, id_keep, strict=True) if keep
+            ]
+            id_steps = step_number[id_mask]
+            upper_triangle = torch.triu(
+                torch.ones(
+                    (len(id_families), len(id_families)),
+                    device=coordinates.device,
+                    dtype=torch.bool,
+                ),
+                diagonal=1,
+            )
+            local_pair_mask = (
+                upper_triangle
+                & _same_group_mask(id_families, coordinates)
+                & (id_steps[:, None] == id_steps[None, :])
+            )
+            trajectory_pair_mask = (
+                upper_triangle
+                & _same_group_mask(id_trajectories, coordinates)
+                & (id_steps[:, None] != id_steps[None, :])
+            )
+        else:
+            local_pair_mask = None
+            trajectory_pair_mask = None
         if (
             weights.band > 0.0
             or weights.band_rank > 0.0
+            or weights.local_band_rank > 0.0
             or weights.band_region > 0.0
             or weights.band_zero > 0.0
         ):
@@ -555,6 +819,17 @@ def pitch3_loss(
                     band_rank = output.coordinate_mean.sum() * 0.0
             else:
                 band_rank = output.coordinate_mean.sum() * 0.0
+            if weights.local_band_rank > 0.0 and local_pair_mask is not None:
+                exact_delta = exact_log_band[:, None] - exact_log_band[None, :]
+                predicted_delta = predicted_log_band[:, None] - predicted_log_band[None, :]
+                informative = local_pair_mask & (exact_delta.abs() >= weights.band_rank_min_delta)
+                if informative.any():
+                    signs = torch.sign(exact_delta[informative])
+                    local_band_rank = F.softplus(-signs * predicted_delta[informative]).mean()
+                else:
+                    local_band_rank = output.coordinate_mean.sum() * 0.0
+            else:
+                local_band_rank = output.coordinate_mean.sum() * 0.0
             if weights.band_region > 0.0:
                 exact_is_below = exact_coordinates < target_lower
                 exact_is_above = exact_coordinates > target_upper
@@ -592,8 +867,40 @@ def pitch3_loss(
         else:
             band = output.coordinate_mean.sum() * 0.0
             band_rank = output.coordinate_mean.sum() * 0.0
+            local_band_rank = output.coordinate_mean.sum() * 0.0
             band_region = output.coordinate_mean.sum() * 0.0
             band_zero = output.coordinate_mean.sum() * 0.0
+        if weights.coordinate2_rank > 0.0 and local_pair_mask is not None:
+            exact_coordinate2 = coordinates[id_mask, 1]
+            predicted_coordinate2 = output.coordinate_mean[id_mask, 1]
+            exact_delta = exact_coordinate2[:, None] - exact_coordinate2[None, :]
+            predicted_delta = predicted_coordinate2[:, None] - predicted_coordinate2[None, :]
+            informative = local_pair_mask & (
+                exact_delta.abs() >= weights.coordinate2_rank_min_delta
+            )
+            if informative.any():
+                signs = torch.sign(exact_delta[informative])
+                coordinate2_rank = F.softplus(-signs * predicted_delta[informative]).mean()
+            else:
+                coordinate2_rank = output.coordinate_mean.sum() * 0.0
+        else:
+            coordinate2_rank = output.coordinate_mean.sum() * 0.0
+        if weights.trajectory_delta > 0.0 and trajectory_pair_mask is not None:
+            exact_id_coordinates = coordinates[id_mask]
+            predicted_id_coordinates = output.coordinate_mean[id_mask]
+            exact_delta = exact_id_coordinates[:, None, :] - exact_id_coordinates[None, :, :]
+            predicted_delta = (
+                predicted_id_coordinates[:, None, :] - predicted_id_coordinates[None, :, :]
+            )
+            if trajectory_pair_mask.any():
+                trajectory_delta = F.smooth_l1_loss(
+                    predicted_delta[trajectory_pair_mask],
+                    exact_delta[trajectory_pair_mask],
+                )
+            else:
+                trajectory_delta = output.coordinate_mean.sum() * 0.0
+        else:
+            trajectory_delta = output.coordinate_mean.sum() * 0.0
     else:
         zero = output.coordinate_mean.sum() * 0.0
         coordinate = zero
@@ -601,8 +908,11 @@ def pitch3_loss(
         focus = zero
         band = zero
         band_rank = zero
+        local_band_rank = zero
         band_region = zero
         band_zero = zero
+        coordinate2_rank = zero
+        trajectory_delta = zero
     positive_weight = torch.tensor(
         ood_positive_weight, device=ood_label.device, dtype=ood_label.dtype
     )
@@ -624,8 +934,11 @@ def pitch3_loss(
         + weights.ood * ood
         + weights.band * band
         + weights.band_rank * band_rank
+        + weights.local_band_rank * local_band_rank
         + weights.band_region * band_region
         + weights.band_zero * band_zero
+        + weights.coordinate2_rank * coordinate2_rank
+        + weights.trajectory_delta * trajectory_delta
         + weights.ood_margin * ood_margin
     )
     return total, {
@@ -635,8 +948,11 @@ def pitch3_loss(
         "ood": ood,
         "band": band,
         "band_rank": band_rank,
+        "local_band_rank": local_band_rank,
         "band_region": band_region,
         "band_zero": band_zero,
+        "coordinate2_rank": coordinate2_rank,
+        "trajectory_delta": trajectory_delta,
         "ood_margin": ood_margin,
     }
 
@@ -680,8 +996,11 @@ def _epoch(
         "ood": 0.0,
         "band": 0.0,
         "band_rank": 0.0,
+        "local_band_rank": 0.0,
         "band_region": 0.0,
         "band_zero": 0.0,
+        "coordinate2_rank": 0.0,
+        "trajectory_delta": 0.0,
         "ood_margin": 0.0,
     }
     samples = 0
@@ -712,6 +1031,9 @@ def _epoch(
                     target_lower=target_lower,
                     target_upper=target_upper,
                     distance_weights=distance_weights,
+                    prompt_family=batch["prompt_family"],
+                    trajectory_id=batch["trajectory_id"],
+                    step_number=batch["step_number"],
                 )
             if optimizer is not None:
                 loss.backward()
@@ -775,6 +1097,44 @@ def _band_loss_numpy(coordinates: np.ndarray, contract: Pitch3Contract) -> np.nd
     return ((np.square(below) + np.square(above)) * weights).sum(axis=1)
 
 
+def _regression_gate_metrics(
+    exact: np.ndarray,
+    mean: np.ndarray,
+    exact_focus: np.ndarray,
+    predicted_focus: np.ndarray,
+    contract: Pitch3Contract,
+) -> dict[str, Any]:
+    coordinate_rhos = [
+        _spearman(mean[:, index], exact[:, index]) for index in range(PITCH3_DIMENSIONS)
+    ]
+    return {
+        "samples": int(len(exact)),
+        "focus_logit_spearman": _spearman(predicted_focus, exact_focus),
+        "coordinate_spearman": coordinate_rhos,
+        "coordinate_median_spearman": float(np.median(coordinate_rhos)),
+        "target_band_distance_spearman": _spearman(
+            _band_loss_numpy(mean, contract), _band_loss_numpy(exact, contract)
+        ),
+        "quartile_ranking_accuracy": _quartile_accuracy(exact_focus, predicted_focus),
+    }
+
+
+def _regression_gate_deficits(metrics: dict[str, Any]) -> dict[str, float]:
+    thresholds = {
+        "focus_logit_spearman": 0.70,
+        "coordinate_median_spearman": 0.50,
+        "target_band_distance_spearman": 0.50,
+        "quartile_ranking_accuracy": 0.65,
+    }
+    deficits = {
+        name: max(0.0, threshold - float(metrics[name])) for name, threshold in thresholds.items()
+    }
+    deficits["each_coordinate_spearman"] = sum(
+        max(0.0, 0.50 - value) for value in metrics["coordinate_spearman"]
+    )
+    return deficits
+
+
 @torch.no_grad()
 def _development_gate_screen(
     model: LatentTopologyControlHead,
@@ -783,6 +1143,7 @@ def _development_gate_screen(
     contract: Pitch3Contract,
     device: torch.device,
     use_bf16: bool,
+    group_robust: bool = False,
 ) -> dict[str, Any]:
     model.eval()
     collected: dict[str, list[np.ndarray]] = {
@@ -794,6 +1155,7 @@ def _development_gate_screen(
         "ood_label": [],
         "step": [],
     }
+    prompt_families: list[str] = []
     for raw in loader:
         batch = _device_batch(raw, device)
         with torch.autocast(
@@ -818,6 +1180,7 @@ def _development_gate_screen(
         }
         for name, tensor in tensors.items():
             collected[name].append(tensor.detach().float().cpu().numpy())
+        prompt_families.extend(batch["prompt_family"])
     values = {name: np.concatenate(items, axis=0) for name, items in collected.items()}
     labels = values["ood_label"]
     id_mask = labels < 0.5
@@ -840,19 +1203,14 @@ def _development_gate_screen(
     mean = values["mean"][id_mask]
     exact_focus = values["focus"][id_mask]
     predicted_focus = values["predicted_focus"][id_mask]
-    coordinate_rhos = [
-        _spearman(mean[:, index], exact[:, index]) for index in range(PITCH3_DIMENSIONS)
-    ]
-    band_rho = _spearman(_band_loss_numpy(mean, contract), _band_loss_numpy(exact, contract))
+    regression_metrics = _regression_gate_metrics(
+        exact, mean, exact_focus, predicted_focus, contract
+    )
     screen_labels = labels[correction_mask]
     screen_probabilities = probabilities[correction_mask]
     sensitivity = float(np.mean(screen_probabilities[screen_labels >= 0.5] > threshold))
     metrics = {
-        "focus_logit_spearman": _spearman(predicted_focus, exact_focus),
-        "coordinate_spearman": coordinate_rhos,
-        "coordinate_median_spearman": float(np.median(coordinate_rhos)),
-        "target_band_distance_spearman": band_rho,
-        "quartile_ranking_accuracy": _quartile_accuracy(exact_focus, predicted_focus),
+        **regression_metrics,
         "minimum_correction_step_id_acceptance": min(id_acceptance_by_step.values()),
         "ood_auroc": _auc(screen_labels, screen_probabilities),
         "ood_sensitivity": sensitivity,
@@ -868,17 +1226,71 @@ def _development_gate_screen(
         "ood_auroc": 0.80,
         "ood_sensitivity": 0.80,
     }
-    deficits = {
+    deficits: dict[str, float] = {
         name: max(0.0, threshold_value - float(metrics[name]))
         for name, threshold_value in thresholds.items()
     }
-    deficits["each_coordinate_spearman"] = sum(max(0.0, 0.50 - value) for value in coordinate_rhos)
+    deficits["each_coordinate_spearman"] = sum(
+        max(0.0, 0.50 - value) for value in metrics["coordinate_spearman"]
+    )
     total_deficit = float(sum(deficits.values()))
+    group_screen: dict[str, Any] = {
+        "enabled": group_robust,
+        "prompt_family_metrics": {},
+        "step_metrics": {},
+        "prompt_family_deficits": {},
+        "step_deficits": {},
+        "worst_prompt_family_deficit": 0.0,
+        "worst_step_deficit": 0.0,
+        "total_deficit": 0.0,
+        "all_group_gates_passed": True,
+    }
+    if group_robust:
+        family_array = np.asarray(prompt_families, dtype=object)[id_mask]
+        id_steps = values["step"][id_mask].astype(int)
+        groups = {
+            "prompt_family": (family_array, sorted(set(family_array))),
+            "step": (id_steps, list(FORMAL_STEPS)),
+        }
+        for group_name, (group_values, names) in groups.items():
+            metric_output = group_screen[f"{group_name}_metrics"]
+            deficit_output = group_screen[f"{group_name}_deficits"]
+            for name in names:
+                mask = group_values == name
+                if np.count_nonzero(mask) < 2:
+                    raise LTSNContractError(
+                        f"group-robust development screen lacks {group_name} samples: {name}"
+                    )
+                group_metrics = _regression_gate_metrics(
+                    exact[mask],
+                    mean[mask],
+                    exact_focus[mask],
+                    predicted_focus[mask],
+                    contract,
+                )
+                group_deficits = _regression_gate_deficits(group_metrics)
+                key = str(name)
+                metric_output[key] = group_metrics
+                deficit_output[key] = {
+                    **group_deficits,
+                    "total_deficit": float(sum(group_deficits.values())),
+                }
+        group_screen["worst_prompt_family_deficit"] = max(
+            value["total_deficit"] for value in group_screen["prompt_family_deficits"].values()
+        )
+        group_screen["worst_step_deficit"] = max(
+            value["total_deficit"] for value in group_screen["step_deficits"].values()
+        )
+        group_screen["total_deficit"] = (
+            group_screen["worst_prompt_family_deficit"] + group_screen["worst_step_deficit"]
+        )
+        group_screen["all_group_gates_passed"] = group_screen["total_deficit"] <= 1e-12
     return {
         "metrics": metrics,
         "deficits": deficits,
         "total_deficit": total_deficit,
         "all_gates_passed": total_deficit <= 1e-12,
+        "group_robust": group_screen,
     }
 
 
@@ -933,16 +1345,25 @@ def train_pitch3_control_head(
         train_records,
         scale_high_training_target_scales=training.scale_high_training_target_scales,
     )
-    train_batch_sampler: Pitch3BalancedBatchSampler | None = None
+    train_batch_sampler: Pitch3BalancedBatchSampler | Pitch3GroupRobustBatchSampler | None = None
     if training.id_samples_per_batch and training.ood_samples_per_batch:
-        train_batch_sampler = Pitch3BalancedBatchSampler(
-            train_records,
-            id_per_batch=training.id_samples_per_batch,
-            ood_per_batch=training.ood_samples_per_batch,
-            seed=training.seed,
-            contract=contract,
-            id_band_stratified=training.id_band_stratified,
-        )
+        if training.group_robust_sampling:
+            train_batch_sampler = Pitch3GroupRobustBatchSampler(
+                train_records,
+                id_per_batch=training.id_samples_per_batch,
+                ood_per_batch=training.ood_samples_per_batch,
+                seed=training.seed,
+                contract=contract,
+            )
+        else:
+            train_batch_sampler = Pitch3BalancedBatchSampler(
+                train_records,
+                id_per_batch=training.id_samples_per_batch,
+                ood_per_batch=training.ood_samples_per_batch,
+                seed=training.seed,
+                contract=contract,
+                id_band_stratified=training.id_band_stratified,
+            )
         train_loader = DataLoader(
             train_dataset,
             batch_sampler=train_batch_sampler,
@@ -975,6 +1396,7 @@ def train_pitch3_control_head(
     history: list[dict[str, Any]] = []
     best_loss = float("inf")
     best_gate_deficit = float("inf")
+    best_group_gate_deficit = float("inf")
     best_gate_screen: dict[str, Any] | None = None
     best_state: dict[str, Tensor] | None = None
     stale = 0
@@ -1014,6 +1436,7 @@ def train_pitch3_control_head(
                 contract=contract,
                 device=device,
                 use_bf16=use_bf16,
+                group_robust=training.group_robust_selection,
             )
             if training.gate_aligned_selection
             else None
@@ -1027,13 +1450,20 @@ def train_pitch3_control_head(
             }
         )
         gate_deficit = 0.0 if gate_screen is None else float(gate_screen["total_deficit"])
-        improved = gate_deficit < best_gate_deficit - 1e-12 or (
-            math.isclose(gate_deficit, best_gate_deficit, rel_tol=0.0, abs_tol=1e-12)
-            and development_metrics["loss"] < best_loss
+        group_gate_deficit = (
+            0.0 if gate_screen is None else float(gate_screen["group_robust"]["total_deficit"])
         )
+        if training.group_robust_selection:
+            current_key = (group_gate_deficit, gate_deficit, development_metrics["loss"])
+            best_key = (best_group_gate_deficit, best_gate_deficit, best_loss)
+        else:
+            current_key = (gate_deficit, development_metrics["loss"])
+            best_key = (best_gate_deficit, best_loss)
+        improved = current_key < best_key
         if improved:
             best_loss = development_metrics["loss"]
             best_gate_deficit = gate_deficit
+            best_group_gate_deficit = group_gate_deficit
             best_gate_screen = gate_screen
             best_state = {
                 name: value.detach().cpu().clone() for name, value in model.state_dict().items()
@@ -1098,8 +1528,23 @@ def train_pitch3_control_head(
             "smooth_temperature_fraction_of_band_width": (weights.band_smooth_temperature_fraction),
             "evaluation_band_formula_changed": False,
         },
+        "group_robust_training": {
+            "enabled": training.group_robust_sampling and training.group_robust_selection,
+            "sampler": (
+                "prompt_family_trajectory_anchor_band_rotation"
+                if training.group_robust_sampling
+                else "disabled"
+            ),
+            "local_band_rank_weight": weights.local_band_rank,
+            "coordinate2_rank_weight": weights.coordinate2_rank,
+            "trajectory_delta_weight": weights.trajectory_delta,
+            "same_prompt_family_and_step_pairs": True,
+            "development_screen_required": training.group_robust_selection,
+            "qualification_split_used_for_training_or_selection": False,
+        },
         "best_development_loss": best_loss,
         "best_development_gate_deficit": best_gate_deficit,
+        "best_development_group_gate_deficit": best_group_gate_deficit,
         "best_development_gate_screen": best_gate_screen,
         "epochs_completed": len(history),
         "ood_class_counts": {
@@ -1112,21 +1557,38 @@ def train_pitch3_control_head(
         "ood_transform_version": ood_versions[0],
         "ood_label_source": ood_label_sources[0],
         "batch_policy": {
-            "kind": "balanced_id_ood_family_rotation"
-            if train_batch_sampler is not None
-            else "random_shuffle",
+            "kind": (
+                "prompt_family_trajectory_anchor_band_rotation"
+                if isinstance(train_batch_sampler, Pitch3GroupRobustBatchSampler)
+                else (
+                    "balanced_id_ood_family_rotation"
+                    if train_batch_sampler is not None
+                    else "random_shuffle"
+                )
+            ),
             "id_samples_per_batch": training.id_samples_per_batch,
             "ood_samples_per_batch": training.ood_samples_per_batch,
             "ood_positive_weight": positive_weight,
             "id_band_stratified": training.id_band_stratified,
             "id_strata": (
-                train_batch_sampler.id_strata_summary if train_batch_sampler is not None else {}
+                train_batch_sampler.id_strata_summary
+                if isinstance(train_batch_sampler, Pitch3BalancedBatchSampler)
+                else {}
+            ),
+            "trajectory_strata": (
+                train_batch_sampler.trajectory_strata_summary
+                if isinstance(train_batch_sampler, Pitch3GroupRobustBatchSampler)
+                else {}
             ),
         },
         "checkpoint_selection": (
-            "development_gate_deficit_then_loss"
-            if training.gate_aligned_selection
-            else "development_loss"
+            "development_worst_group_then_pooled_gate_deficit_then_loss"
+            if training.group_robust_selection
+            else (
+                "development_gate_deficit_then_loss"
+                if training.gate_aligned_selection
+                else "development_loss"
+            )
         ),
         "training_virtual_ood_augmentation": virtual_scale_augmentation,
         "guidance_promotion_eligible": False,

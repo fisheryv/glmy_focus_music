@@ -28,9 +28,11 @@ from .pitch3_contract import (
 )
 from .pitch3_ensemble import load_pitch3_ensemble
 from .pitch3_training import (
+    FORMAL_STEPS,
     Pitch3Dataset,
     Pitch3Snapshot,
     collate_pitch3,
+    pitch3_prompt_family,
     read_pitch3_manifest,
 )
 
@@ -415,6 +417,30 @@ def _development_gates(
     return gates
 
 
+def _group_regression_gates(metrics: Mapping[str, Any]) -> dict[str, bool]:
+    return {
+        "focus_logit_spearman": metrics["focus_logit_spearman"] >= MINIMUM_FOCUS_SPEARMAN,
+        "each_coordinate_spearman": all(
+            value >= MINIMUM_COORDINATE_SPEARMAN for value in metrics["coordinate_spearman"]
+        ),
+        "coordinate_median_spearman": metrics["coordinate_median_spearman"]
+        >= MINIMUM_COORDINATE_SPEARMAN,
+        "target_band_distance_spearman": metrics["target_band_distance_spearman"]
+        >= MINIMUM_COORDINATE_SPEARMAN,
+        "quartile_ranking_accuracy": metrics["quartile_ranking_accuracy"]
+        >= MINIMUM_RANKING_ACCURACY,
+    }
+
+
+def _subset_prediction(prediction: Mapping[str, Any], mask: np.ndarray) -> dict[str, Any]:
+    return {
+        name: value[mask]
+        if isinstance(value, np.ndarray)
+        else [item for item, keep in zip(value, mask, strict=True) if keep]
+        for name, value in prediction.items()
+    }
+
+
 def screen_pitch3_development(
     *,
     fingerprint_path: Path,
@@ -493,12 +519,7 @@ def screen_pitch3_development(
     by_step: dict[str, Any] = {}
     for step in CORRECTION_STEPS:
         mask = prediction["step_number"] == step
-        subset = {
-            name: value[mask]
-            if isinstance(value, np.ndarray)
-            else [item for item, keep in zip(value, mask, strict=True) if keep]
-            for name, value in prediction.items()
-        }
+        subset = _subset_prediction(prediction, mask)
         by_step[str(step)] = _metrics(
             subset,
             contract=contract,
@@ -509,7 +530,47 @@ def screen_pitch3_development(
             "id_probability_q95"
         ]
     gates = _development_gates(overall, by_step)
-    passed = all(gates.values())
+    raw_group_contract = metadata.get("group_robust_training", {})
+    group_robust_required = isinstance(raw_group_contract, Mapping) and bool(
+        raw_group_contract.get("development_screen_required", False)
+    )
+    family_values = np.asarray(
+        [pitch3_prompt_family(value) for value in prediction["prompt_id"]], dtype=object
+    )
+    group_metrics_by_family: dict[str, Any] = {}
+    group_gates_by_family: dict[str, Any] = {}
+    for family in sorted(set(family_values)):
+        family_mask = family_values == family
+        if not np.any((labels < 0.5) & family_mask):
+            continue
+        family_metrics = _metrics(
+            _subset_prediction(prediction, family_mask),
+            contract=contract,
+            variance_scale=variance_scale,
+            ood_threshold=threshold,
+        )
+        group_metrics_by_family[str(family)] = family_metrics
+        group_gates_by_family[str(family)] = _group_regression_gates(family_metrics)
+    group_metrics_by_step: dict[str, Any] = {}
+    group_gates_by_step: dict[str, Any] = {}
+    for step in FORMAL_STEPS:
+        step_mask = prediction["step_number"] == step
+        if not np.any((labels < 0.5) & step_mask):
+            continue
+        step_metrics = _metrics(
+            _subset_prediction(prediction, step_mask),
+            contract=contract,
+            variance_scale=variance_scale,
+            ood_threshold=threshold,
+        )
+        group_metrics_by_step[str(step)] = step_metrics
+        group_gates_by_step[str(step)] = _group_regression_gates(step_metrics)
+    group_robust_passed = all(
+        all(values.values())
+        for collection in (group_gates_by_family, group_gates_by_step)
+        for values in collection.values()
+    )
+    passed = all(gates.values()) and (not group_robust_required or group_robust_passed)
     output_dir.mkdir(parents=True, exist_ok=True)
     prediction_path = output_dir / "pitch3_development_predictions.csv"
     write_csv_atomic(prediction_path, _prediction_rows(prediction))
@@ -530,6 +591,15 @@ def screen_pitch3_development(
         "metrics_by_step": by_step,
         "ood_metrics_by_kind": ood_by_kind,
         "gates": gates,
+        "group_robust_screen": {
+            "required": group_robust_required,
+            "passed": group_robust_passed,
+            "metrics_by_prompt_family": group_metrics_by_family,
+            "gates_by_prompt_family": group_gates_by_family,
+            "metrics_by_step": group_metrics_by_step,
+            "gates_by_step": group_gates_by_step,
+            "thresholds_changed": False,
+        },
         "selection_scope": "development_only",
         "qualification_split_consumed": False,
         "guidance_promotion_eligible": False,
