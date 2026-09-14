@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import importlib
 import json
 import math
 import os
@@ -28,6 +29,22 @@ EVALUATION_OOD_KINDS = ("ood_time_reverse", "ood_channel_roll")
 CORRECTION_STEPS = (4, 5, 6)
 EVALUATION_STEPS = (4, 5, 6, 8)
 SPLITS = ("train", "development", "calibration", "qualification")
+
+
+def _require_exact_audio_runtime() -> None:
+    required = ("imageio_ffmpeg", "pyloudnorm", "soundfile")
+    missing = []
+    for name in required:
+        try:
+            importlib.import_module(name)
+        except ImportError:
+            missing.append(name)
+    if missing:
+        raise RuntimeError(
+            "Pitch-3 exact OOD preprocessing is missing audio dependencies "
+            f"{missing}; install the repository audio extras into the same Python "
+            "environment used to run this script: python -m pip install -e '.[audio,stats,tda]'"
+        )
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -387,6 +404,7 @@ def build_pitch3_ood_augmentation(
     fingerprint_path = _rooted(fingerprint_path, root)
     output_dir = _rooted(output_dir, root)
     contract = load_pitch3_contract(fingerprint_path)
+    _require_exact_audio_runtime()
     source_rows = _read_csv(source_manifest_path)
     _validate_source_manifest(source_manifest_path, source_rows, contract)
     if any(float(row.get("ood_label", 0.0)) >= 0.5 for row in source_rows):

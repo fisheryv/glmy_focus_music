@@ -5,6 +5,7 @@ import hashlib
 import os
 import shutil
 import tomllib
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -118,6 +119,35 @@ def _preprocess_one(
     return process_plan(plan, root=run_root, config=config, previous_row=previous)
 
 
+def _raise_stage_failures(
+    stage: str,
+    failures: list[dict[str, Any]],
+    manifest_path: Path,
+    *,
+    preview_limit: int = 5,
+) -> None:
+    """Raise an actionable batch error without discarding per-row diagnostics."""
+
+    error_counts = Counter(
+        str(row.get("error") or "unspecified error").strip() for row in failures
+    )
+    previews = []
+    for error, count in error_counts.most_common(preview_limit):
+        compact = " ".join(error.split())
+        if len(compact) > 500:
+            compact = compact[:497] + "..."
+        previews.append(f"{count}x {compact}")
+    sample_ids = ", ".join(
+        str(row.get("segment_id") or row.get("track_id") or "unknown")
+        for row in failures[:preview_limit]
+    )
+    raise RuntimeError(
+        f"{stage} failed for {len(failures)} candidate(s); "
+        f"manifest={manifest_path.as_posix()}; sample_ids=[{sample_ids}]; "
+        f"distinct_errors=[{' | '.join(previews)}]"
+    )
+
+
 def preprocess_candidates(
     project_root: Path,
     run_root: Path,
@@ -165,7 +195,7 @@ def preprocess_candidates(
     write_manifest(manifest_path, rows)
     failures = [row for row in rows if row.get("status") == "failed"]
     if failures:
-        raise RuntimeError(f"preprocessing failed for {len(failures)} candidate(s)")
+        _raise_stage_failures("preprocessing", failures, manifest_path)
     return rows
 
 
@@ -198,7 +228,11 @@ def extract_candidate_features(
     )
     failures = [row for row in rows if row.get("status") == "failed"]
     if failures:
-        raise RuntimeError(f"feature extraction failed for {len(failures)} candidate(s)")
+        _raise_stage_failures(
+            "feature extraction",
+            failures,
+            run_root / "manifests" / "feature_candidates.csv",
+        )
     return rows
 
 
