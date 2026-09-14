@@ -725,16 +725,17 @@ def _merged_dataset_items_sha256(
 def _publish_merged_dataset_plan(
     path: Path,
     plan: Mapping[str, Any],
-    *,
-    compatibility_fields: Sequence[str],
 ) -> str | None:
-    """Publish a canonical merged plan and preserve a compatible legacy plan.
+    """Publish a canonical merged plan and preserve any legacy root plan.
 
     Early V3-LTE multi-GPU plans included shard hashes and shard counts in the
     final dataset identity.  That made a scientifically identical resume fail
     when users switched from one GPU to several GPUs, or changed only the
     number of execution shards.  The final plan is now layout-independent;
-    shard provenance remains in the dataset summary.
+    shard provenance remains in the dataset summary.  A legacy root plan is
+    only a stale publication artifact: the shard plans are independently hash
+    verified before this function is called, so archive and replace it instead
+    of trying to reuse its incompatible identity.
     """
 
     if not path.is_file():
@@ -743,13 +744,15 @@ def _publish_merged_dataset_plan(
     existing = json.loads(path.read_text(encoding="utf-8"))
     if existing == plan:
         return None
-    if any(existing.get(name) != plan.get(name) for name in compatibility_fields):
-        raise LTSNContractError(
-            "merged V3-LTE scientific plan changed; use a new output directory"
-        )
     if existing.get("publication_kind") == "canonical_merged_dataset":
+        changed = sorted(
+            name
+            for name in set(existing) | set(plan)
+            if existing.get(name) != plan.get(name)
+        )
         raise LTSNContractError(
-            "merged V3-LTE dataset content changed; use a new output directory"
+            "canonical merged V3-LTE dataset changed in fields "
+            f"{', '.join(changed)}; use a new output directory"
         )
     previous_sha256 = sha256_file(path)
     archived = path.with_name(f"{path.stem}_superseded_{previous_sha256[:12]}.json")
@@ -846,15 +849,6 @@ def merge_pitch3_lte_dataset_shards(
     replaced_plan_sha256 = _publish_merged_dataset_plan(
         merged_plan_path,
         merged_plan,
-        compatibility_fields=(
-            "schema_version",
-            "stage",
-            "model_family",
-            *common_fields,
-            "planned_local_samples",
-            "prompt_ids",
-            "wav_policy",
-        ),
     )
     merged_plan_sha256 = sha256_file(merged_plan_path)
 
@@ -914,7 +908,7 @@ def merge_pitch3_lte_dataset_shards(
             sha256_file(shard_dir / "pitch3_lte_dataset_summary.json") for shard_dir in shard_dirs
         ],
         "shard_plan_sha256": shard_plan_hashes,
-        "replaced_compatible_plan_sha256": replaced_plan_sha256,
+        "replaced_legacy_plan_sha256": replaced_plan_sha256,
         "retained_wav_files": retained_wav,
     }
     if retained_wav:

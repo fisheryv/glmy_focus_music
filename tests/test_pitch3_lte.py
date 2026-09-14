@@ -7,7 +7,7 @@ import json
 import numpy as np
 import pytest
 
-from generation.ltsn_contract import sha256_file
+from generation.ltsn_contract import LTSNContractError, sha256_file
 from generation.ltsn_pipeline import write_csv_atomic
 from generation.pitch3_lte_data import (
     _anchor_index,
@@ -128,6 +128,7 @@ def test_lte_multi_gpu_merge_keeps_prompt_groups_disjoint(tmp_path) -> None:
         "stage": "pitch3_lte_exact_local_dataset",
         "model_family": "pitch3_prompt_conditioned_local_energy_v3",
         **common,
+        "source_manifest_sha256": "f" * 64,
         "sharded": True,
         "shard_count": shard_count,
         "prompt_assignment": "sha256(v3-lte-data-shard|prompt_id)-mod-shard_count",
@@ -148,7 +149,7 @@ def test_lte_multi_gpu_merge_keeps_prompt_groups_disjoint(tmp_path) -> None:
     assert result["multi_gpu"] is True
     assert result["base_samples"] == 1536
     assert result["local_samples"] == 1536
-    assert result["replaced_compatible_plan_sha256"] == legacy_sha256
+    assert result["replaced_legacy_plan_sha256"] == legacy_sha256
     assert (tmp_path / f"pitch3_lte_dataset_plan_superseded_{legacy_sha256[:12]}.json").is_file()
     published = json.loads(legacy_path.read_text(encoding="utf-8"))
     assert published["publication_kind"] == "canonical_merged_dataset"
@@ -159,7 +160,15 @@ def test_lte_multi_gpu_merge_keeps_prompt_groups_disjoint(tmp_path) -> None:
         devices=("cuda:1", "cuda:0"),
     )
     assert rerun["dataset_plan_sha256"] == result["dataset_plan_sha256"]
-    assert rerun["replaced_compatible_plan_sha256"] is None
+    assert rerun["replaced_legacy_plan_sha256"] is None
+    published["items_sha256"] = "d" * 64
+    legacy_path.write_text(json.dumps(published), encoding="utf-8")
+    with pytest.raises(LTSNContractError, match="changed in fields items_sha256"):
+        merge_pitch3_lte_dataset_shards(
+            output_dir=tmp_path,
+            shard_dirs=shard_dirs,
+            devices=("cuda:0", "cuda:1"),
+        )
 
 
 @pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")
