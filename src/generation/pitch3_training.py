@@ -22,6 +22,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader, Dataset, Sampler
 
 from .latent_topology_control_head import (
+    PITCH3_OOD_STAT_FEATURES,
     LatentTopologyControlHead,
     Pitch3ControlHeadConfig,
     Pitch3ControlOutput,
@@ -49,6 +50,7 @@ class Pitch3TrainingConfig:
     id_samples_per_batch: int = 0
     ood_samples_per_batch: int = 0
     gate_aligned_selection: bool = False
+    id_band_stratified: bool = False
     scale_high_training_target_scales: tuple[float, ...] = ()
 
 
@@ -108,6 +110,10 @@ def load_pitch3_training_config(
         raise ValueError("balanced Pitch-3 batch counts must sum to micro_batch_size")
     if (training.id_samples_per_batch == 0) != (training.ood_samples_per_batch == 0):
         raise ValueError("balanced Pitch-3 batches require positive ID and OOD counts")
+    if training.id_band_stratified and (
+        training.id_samples_per_batch < 3 or training.id_samples_per_batch % 3
+    ):
+        raise ValueError("band-stratified ID batches require an ID count divisible by three")
     if any(value < 0.0 for value in asdict(loss).values()) or loss.coordinate <= 0.0:
         raise ValueError("loss weights must be non-negative with coordinate > 0")
     if loss.ood_margin > 0.0 and loss.ood_margin_value <= 0.0:
@@ -317,6 +323,8 @@ class Pitch3BalancedBatchSampler(Sampler[list[int]]):
         id_per_batch: int,
         ood_per_batch: int,
         seed: int,
+        contract: Pitch3Contract | None = None,
+        id_band_stratified: bool = False,
     ) -> None:
         if id_per_batch < 1 or ood_per_batch < 1:
             raise ValueError("balanced batch counts must be positive")
@@ -332,6 +340,44 @@ class Pitch3BalancedBatchSampler(Sampler[list[int]]):
         self.ood_per_batch = ood_per_batch
         self.seed = seed
         self.epoch = 0
+        self.id_by_stratum: dict[str, list[int]] = {}
+        self.id_strata_summary: dict[str, Any] = {}
+        if id_band_stratified:
+            if contract is None or id_per_batch % 3:
+                raise ValueError("band-stratified batches require a contract and 3-way ID count")
+            if len(self.id_indices) < 3:
+                raise LTSNContractError("band-stratified batches require at least three ID samples")
+            lower = np.asarray(contract.target_lower, dtype=float)
+            upper = np.asarray(contract.target_upper, dtype=float)
+            weights = np.asarray(contract.distance_weights, dtype=float)
+
+            def band_loss(index: int) -> float:
+                coordinate = np.asarray(records[index].coordinates, dtype=float)
+                below = np.maximum(lower - coordinate, 0.0)
+                above = np.maximum(coordinate - upper, 0.0)
+                return float(((np.square(below) + np.square(above)) * weights).sum())
+
+            ordered = sorted(
+                self.id_indices,
+                key=lambda index: (
+                    band_loss(index),
+                    hashlib.sha256(records[index].sample_id.encode("utf-8")).digest(),
+                ),
+            )
+            chunks = np.array_split(np.asarray(ordered, dtype=int), 3)
+            names = ("low", "middle", "high")
+            self.id_by_stratum = {
+                name: [int(value) for value in chunk]
+                for name, chunk in zip(names, chunks, strict=True)
+            }
+            self.id_strata_summary = {
+                name: {
+                    "samples": len(indices),
+                    "minimum_band_loss": min(band_loss(index) for index in indices),
+                    "maximum_band_loss": max(band_loss(index) for index in indices),
+                }
+                for name, indices in self.id_by_stratum.items()
+            }
         self.batch_count = max(
             math.ceil(len(self.id_indices) / id_per_batch),
             math.ceil(sum(len(values) for values in by_kind.values()) / ood_per_batch),
@@ -355,7 +401,23 @@ class Pitch3BalancedBatchSampler(Sampler[list[int]]):
 
     def __iter__(self) -> Iterator[list[int]]:
         rng = random.Random(self.seed + self.epoch * 1_000_003)
-        id_stream = self._cycle(self.id_indices, self.batch_count * self.id_per_batch, rng)
+        id_stream = (
+            self._cycle(self.id_indices, self.batch_count * self.id_per_batch, rng)
+            if not self.id_by_stratum
+            else []
+        )
+        id_streams = (
+            {
+                name: self._cycle(
+                    indices,
+                    self.batch_count * (self.id_per_batch // len(self.id_by_stratum)),
+                    rng,
+                )
+                for name, indices in self.id_by_stratum.items()
+            }
+            if self.id_by_stratum
+            else {}
+        )
         kind_names = list(self.ood_by_kind)
         needed_by_kind = {name: 0 for name in kind_names}
         assignments: list[str] = []
@@ -370,7 +432,16 @@ class Pitch3BalancedBatchSampler(Sampler[list[int]]):
         ood_cursors = {name: 0 for name in kind_names}
         for batch_index in range(self.batch_count):
             start = batch_index * self.id_per_batch
-            batch = id_stream[start : start + self.id_per_batch]
+            if id_streams:
+                per_stratum = self.id_per_batch // len(id_streams)
+                stratum_start = batch_index * per_stratum
+                batch = [
+                    index
+                    for stream in id_streams.values()
+                    for index in stream[stratum_start : stratum_start + per_stratum]
+                ]
+            else:
+                batch = id_stream[start : start + self.id_per_batch]
             for offset in range(self.ood_per_batch):
                 name = assignments[batch_index * self.ood_per_batch + offset]
                 batch.append(ood_streams[name][ood_cursors[name]])
@@ -779,6 +850,8 @@ def train_pitch3_control_head(
             id_per_batch=training.id_samples_per_batch,
             ood_per_batch=training.ood_samples_per_batch,
             seed=training.seed,
+            contract=contract,
+            id_band_stratified=training.id_band_stratified,
         )
         train_loader = DataLoader(
             train_dataset,
@@ -900,6 +973,16 @@ def train_pitch3_control_head(
         "device": str(device),
         "precision": "bf16_forward_fp32_loss" if use_bf16 else "fp32",
         "trainable_parameters": model.trainable_parameters,
+        "architecture_revision": (
+            "pitch3_ltch_v23_raw_ood_stats" if model_config.ood_stats_dim else "pitch3_ltch_legacy"
+        ),
+        "ood_stats_projection_dim": model_config.ood_stats_dim,
+        "ood_stats_feature_order": (
+            list(PITCH3_OOD_STAT_FEATURES) if model_config.ood_stats_dim else []
+        ),
+        "ood_stats_source": (
+            "pre_input_layernorm_masked_latent" if model_config.ood_stats_dim else ""
+        ),
         "best_development_loss": best_loss,
         "best_development_gate_deficit": best_gate_deficit,
         "best_development_gate_screen": best_gate_screen,
@@ -920,6 +1003,10 @@ def train_pitch3_control_head(
             "id_samples_per_batch": training.id_samples_per_batch,
             "ood_samples_per_batch": training.ood_samples_per_batch,
             "ood_positive_weight": positive_weight,
+            "id_band_stratified": training.id_band_stratified,
+            "id_strata": (
+                train_batch_sampler.id_strata_summary if train_batch_sampler is not None else {}
+            ),
         },
         "checkpoint_selection": (
             "development_gate_deficit_then_loss"

@@ -10,6 +10,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from generation.latent_topology_control_head import (  # noqa: E402
+    PITCH3_OOD_STAT_FEATURES,
     LatentTopologyControlHead,
     Pitch3ControlHeadConfig,
 )
@@ -18,6 +19,7 @@ from generation.pitch3_contract import load_pitch3_contract  # noqa: E402
 from generation.pitch3_training import (  # noqa: E402
     Pitch3BalancedBatchSampler,
     Pitch3LossWeights,
+    Pitch3Snapshot,
     pitch3_loss,
     read_pitch3_manifest,
     train_pitch3_control_head,
@@ -77,6 +79,51 @@ def test_pitch3_control_head_shapes_gradients_and_parameter_budget() -> None:
     assert torch.isfinite(loss)
     assert latent.grad is not None and torch.isfinite(latent.grad).all()
     assert model.trainable_parameters < 7_000_000
+
+
+def test_pitch3_v23_raw_ood_statistics_preserve_scale_signal() -> None:
+    latent = torch.randn(2, 17, 64)
+    mask = torch.ones(2, 17, dtype=torch.bool)
+    mask[1, 13:] = False
+    scale = 2.5
+
+    original = LatentTopologyControlHead.raw_ood_statistics(latent, mask)
+    scaled = LatentTopologyControlHead.raw_ood_statistics(latent * scale, mask)
+    delta = scaled - original
+    expected_shift = torch.full((2,), float(np.log(scale)))
+
+    for index in (0, 1, 3, 4, 5, 6):
+        assert torch.allclose(delta[:, index], expected_shift, atol=1e-5, rtol=1e-5)
+    for index in (2, 7):
+        assert torch.allclose(delta[:, index], torch.zeros(2), atol=1e-5, rtol=1e-5)
+
+
+def test_pitch3_v23_ood_branch_and_legacy_shape_compatibility() -> None:
+    contract = load_pitch3_contract(PROFILE)
+    shared = {
+        "model_dim": 32,
+        "condition_dim": 32,
+        "transformer_heads": 4,
+        "transformer_layers": 1,
+        "feedforward_dim": 64,
+        "temporal_stride": 2,
+        "dropout": 0.0,
+    }
+    legacy = LatentTopologyControlHead(contract, Pitch3ControlHeadConfig(**shared))
+    legacy_reloaded = LatentTopologyControlHead(contract, Pitch3ControlHeadConfig(**shared))
+    legacy_reloaded.load_state_dict(legacy.state_dict(), strict=True)
+    v23 = LatentTopologyControlHead(contract, Pitch3ControlHeadConfig(**shared, ood_stats_dim=32))
+    latent = torch.randn(2, 19, 64)
+
+    output = v23(latent, torch.tensor([0.5, 0.25]), torch.tensor([4, 6]))
+
+    assert output.ood_logit.shape == (2,)
+    assert legacy.ood_stats_projection is None
+    assert legacy.ood_head.in_features == 32
+    assert v23.ood_stats_projection is not None
+    assert v23.ood_head.in_features == 64
+    assert legacy.state_dict()["ood_head.weight"].shape == (1, 32)
+    assert len(PITCH3_OOD_STAT_FEATURES) == 8
 
 
 def _write_smoke_manifest(tmp_path: Path) -> Path:
@@ -205,3 +252,65 @@ def test_pitch3_balanced_batch_sampler_has_fixed_class_counts(tmp_path: Path) ->
     assert all(
         sorted(records[index].ood_label for index in batch) == [0.0, 1.0] for batch in batches
     )
+
+
+def test_pitch3_v23_sampler_stratifies_each_id_batch() -> None:
+    contract = load_pitch3_contract(PROFILE)
+    records = []
+    for index in range(9):
+        records.append(
+            Pitch3Snapshot(
+                sample_id=f"id_{index}",
+                prompt_id=f"prompt_id_{index}",
+                trajectory_id=f"trajectory_id_{index}",
+                split="train",
+                step_number=4,
+                timestep=0.5,
+                latent_path=Path(f"id_{index}.npy"),
+                latent_sha256="0" * 64,
+                coordinates=(float(index), float(index) / 2.0, float(index) / 3.0),
+                focus_logit=0.0,
+                ood_label=0.0,
+                is_final=False,
+                ood_kind="",
+                ood_transform_version="",
+                ood_label_source="",
+            )
+        )
+    for index, kind in enumerate(("ood_scale_high", "ood_block_shuffle")):
+        records.append(
+            Pitch3Snapshot(
+                sample_id=f"ood_{index}",
+                prompt_id=f"prompt_ood_{index}",
+                trajectory_id=f"trajectory_ood_{index}",
+                split="train",
+                step_number=4,
+                timestep=0.5,
+                latent_path=Path(f"ood_{index}.npy"),
+                latent_sha256="1" * 64,
+                coordinates=(0.0, 0.0, 0.0),
+                focus_logit=0.0,
+                ood_label=1.0,
+                is_final=False,
+                ood_kind=kind,
+                ood_transform_version="pitch3_latent_ood_v2",
+                ood_label_source="deterministic_latent_transform_v2",
+            )
+        )
+    sampler = Pitch3BalancedBatchSampler(
+        records,
+        id_per_batch=6,
+        ood_per_batch=2,
+        seed=20260917,
+        contract=contract,
+        id_band_stratified=True,
+    )
+    strata = {name: set(indices) for name, indices in sampler.id_by_stratum.items()}
+
+    assert set(strata) == {"low", "middle", "high"}
+    assert all(summary["samples"] == 3 for summary in sampler.id_strata_summary.values())
+    for batch in sampler:
+        assert sum(records[index].ood_label < 0.5 for index in batch) == 6
+        assert sum(records[index].ood_label >= 0.5 for index in batch) == 2
+        for indices in strata.values():
+            assert sum(index in indices for index in batch) == 2
