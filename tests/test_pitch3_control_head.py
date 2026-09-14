@@ -148,6 +148,10 @@ ood = 0.1
     assert checkpoint.is_file()
     assert result["checkpoint_sha256"] == sha256_file(checkpoint)
     assert result["guidance_promotion_eligible"] is False
+    assert result["ood_class_counts"] == {
+        "train": {"id": 1, "ood": 1},
+        "development": {"id": 1, "ood": 1},
+    }
     assert result["production_authorization"] is False
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     assert payload["metadata"]["fingerprint_json_sha256"] == load_pitch3_contract(

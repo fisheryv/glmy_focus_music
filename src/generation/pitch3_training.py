@@ -320,8 +320,16 @@ def train_pitch3_control_head(
     train_ood = np.asarray([record.ood_label for record in train_records], dtype=float)
     positives = int(np.count_nonzero(train_ood >= 0.5))
     negatives = int(len(train_ood) - positives)
-    if training.require_ood_both_classes and (not positives or not negatives):
-        raise LTSNContractError("Pitch-3 training requires ID and OOD train samples")
+    development_ood = np.asarray([record.ood_label for record in development], dtype=float)
+    development_positives = int(np.count_nonzero(development_ood >= 0.5))
+    development_negatives = int(len(development_ood) - development_positives)
+    if training.require_ood_both_classes:
+        if not positives or not negatives:
+            raise LTSNContractError("Pitch-3 training requires ID and OOD train samples")
+        if not development_positives or not development_negatives:
+            raise LTSNContractError(
+                "Pitch-3 training requires ID and OOD development samples"
+            )
     positive_weight = 1.0 if not positives else max(1.0, negatives / positives)
     _set_seed(training.seed)
     device = torch.device(device_name)
@@ -412,6 +420,13 @@ def train_pitch3_control_head(
         "trainable_parameters": model.trainable_parameters,
         "best_development_loss": best_loss,
         "epochs_completed": len(history),
+        "ood_class_counts": {
+            "train": {"id": negatives, "ood": positives},
+            "development": {
+                "id": development_negatives,
+                "ood": development_positives,
+            },
+        },
         "guidance_promotion_eligible": False,
         "production_authorization": False,
     }

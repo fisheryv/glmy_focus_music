@@ -2,9 +2,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
-from generation.pitch3_training import train_pitch3_control_head
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from generation.pitch3_training import train_pitch3_control_head  # noqa: E402
 
 
 def main() -> None:

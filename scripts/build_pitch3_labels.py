@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
-from generation.pitch3_exact_scorer import ExactPitch3Scorer
-from generation.pitch3_labeling import build_pitch3_label_tables
+ROOT = Path(__file__).resolve().parents[1]
+SRC = ROOT / "src"
+if str(SRC) not in sys.path:
+    sys.path.insert(0, str(SRC))
+
+from generation.pitch3_exact_scorer import ExactPitch3Scorer  # noqa: E402
+from generation.pitch3_labeling import build_pitch3_label_tables  # noqa: E402
 
 
 def main() -> None:
