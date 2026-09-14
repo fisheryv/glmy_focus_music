@@ -1,0 +1,43 @@
+[fingerprint]
+fingerprint_id = "focus_pitch3_fingerprint_v1"
+spec_revision = "2026-09-13-post-validation-pitch3"
+dimensions = 3
+reference_split = "discovery"
+reference_scale_seconds = 180.0
+input_features = [
+  "h0_observed_persistence",
+  "self_transition_ratio",
+  "directed_recurrence",
+]
+feature_order = [
+  "pitch3_h0_observed_persistence_z",
+  "pitch3_self_transition_ratio_z",
+  "pitch3_directed_recurrence_z",
+]
+expected_focus_direction = ["less", "greater", "greater"]
+distance_weights = [0.3333333333333333, 0.3333333333333333, 0.3333333333333333]
+
+[transform]
+kind = "discovery_robust_standardization"
+iqr_normalizer = 1.349
+mad_normalizer = 1.4826
+minimum_scale = 1.0e-8
+
+[focus_target]
+lower_quantile = 0.10
+upper_quantile = 0.90
+
+[classifier]
+kind = "l2_logistic_regression"
+c = 10.0
+class_weight = "balanced"
+max_iter = 5000
+decision_threshold = 0.5
+focus_target_logit_quantile = 0.10
+
+[evidence]
+primary = "validation/180s"
+duration_sensitivity = "validation/300s same-track sensitivity only"
+selection_status = "post-validation downstream refreeze"
+intended_use = "exact teacher and latent topology control development"
+guidance_authorization = false

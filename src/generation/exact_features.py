@@ -37,6 +37,7 @@ from .experiment import CandidateRecord
 
 if TYPE_CHECKING:
     from .path_homology_exact_scorer import ExactPathHomologyScorer
+    from .pitch3_exact_scorer import ExactPitch3Scorer
 
 
 def _sha256(path: Path) -> str:
@@ -317,6 +318,61 @@ def compute_frozen_18d_descriptors(
                 "pitch_v2_codebook_sha256": _sha256(codebook_path),
                 "label_source": "decoded_candidate_exact_18d_v1",
                 **technical,
+            }
+        )
+    return sorted(output, key=lambda item: (item["prompt_id"], item["candidate_index"]))
+
+
+def compute_frozen_pitch3_descriptors(
+    project_root: Path,
+    run_root: Path,
+    records: list[CandidateRecord],
+    feature_rows: list[dict[str, Any]],
+    scorer: ExactPitch3Scorer,
+) -> list[dict[str, Any]]:
+    """Compute the local-only Pitch-3 teacher without any phase extraction."""
+
+    import json
+
+    codebook_path = project_root / "features" / "models" / "pitch_v2_codebook.npz"
+    if not codebook_path.is_file():
+        raise FileNotFoundError(codebook_path)
+    with np.load(codebook_path, allow_pickle=False) as archive:
+        centers = np.asarray(archive["centers"], dtype=np.float64)
+    record_by_id = {record.candidate_id: record for record in records}
+    output: list[dict[str, Any]] = []
+    for feature_row in feature_rows:
+        candidate_id = str(feature_row["segment_id"])
+        if candidate_id not in record_by_id:
+            raise ValueError(f"feature row has no candidate record: {candidate_id}")
+        pitch = _pitch_path_homology_descriptors(project_root, run_root, feature_row, centers)
+        score = scorer.score(pitch)
+        record = record_by_id[candidate_id]
+        audio_path = run_root / record.audio_relative_path
+        if _sha256(audio_path) != record.audio_sha256:
+            raise ValueError(f"candidate audio hash changed before exact scoring: {candidate_id}")
+        output.append(
+            {
+                "candidate_id": candidate_id,
+                "prompt_id": record.prompt_id,
+                "candidate_index": record.candidate_index,
+                "seed": record.seed,
+                "audio_sha256": record.audio_sha256,
+                "fingerprint_json_sha256": scorer.contract.artifact_sha256,
+                "feature_order_json": json.dumps(
+                    list(scorer.contract.feature_order), separators=(",", ":")
+                ),
+                "pitch_descriptors_json": json.dumps(pitch, separators=(",", ":")),
+                "coordinates_json": json.dumps(
+                    score.coordinates[0].tolist(), separators=(",", ":")
+                ),
+                "focus_logit": float(score.focus_logit[0]),
+                "focus_probability": float(score.focus_probability[0]),
+                "focus_target_band_loss": float(score.target_band_loss[0]),
+                "target_center_distance": float(score.target_center_distance[0]),
+                "pitch_v2_codebook_sha256": _sha256(codebook_path),
+                "label_source": "decoded_candidate_exact_pitch3_v1",
+                **_technical_audio_metrics(audio_path),
             }
         )
     return sorted(output, key=lambda item: (item["prompt_id"], item["candidate_index"]))

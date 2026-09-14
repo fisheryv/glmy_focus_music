@@ -49,6 +49,10 @@ metadata/
 !metadata/
 metadata/*
 !metadata/ltsn_prompts.csv
+!metadata/focus_pitch3_fingerprint_v1.json
+!metadata/focus_pitch3_fingerprint_v1_scores.csv
+!metadata/focus_pitch3_fingerprint_v1_summary.json
+!metadata/focus_pitch3_fingerprint_v1_release.json
 
 # Local archive for the retired, non-redistributable Brain.fm baseline.
 restricted_archive/**

@@ -81,6 +81,8 @@ focus-ltsn-labels = "generation.ltsn_cli:labels_main"
 focus-ltsn-train = "generation.ltsn_cli:train_main"
 focus-ltsn-qualify = "generation.ltsn_cli:qualification_main"
 focus-ltsn-guidance-eval = "generation.ltsn_cli:guidance_main"
+focus-pitch3-labels = "generation.pitch3_cli:labels_main"
+focus-pitch3-train = "generation.pitch3_cli:train_main"
 focus-prepare-data = "data.hf_release:main"
 
 [tool.uv.sources]

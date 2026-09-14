@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "fingerprint_id": "focus_pitch3_fingerprint_v1",
+  "spec_revision": "2026-09-13-post-validation-pitch3",
+  "dimensions": 3,
+  "scope": "three complementary local Pitch path-topology controls",
+  "input_features": [
+    "h0_observed_persistence",
+    "self_transition_ratio",
+    "directed_recurrence"
+  ],
+  "feature_order": [
+    "pitch3_h0_observed_persistence_z",
+    "pitch3_self_transition_ratio_z",
+    "pitch3_directed_recurrence_z"
+  ],
+  "expected_focus_direction": [
+    "less",
+    "greater",
+    "greater"
+  ],
+  "distance_weights": [
+    0.3333333333333333,
+    0.3333333333333333,
+    0.3333333333333333
+  ],
+  "reference_split": "discovery",
+  "reference_scale_seconds": 180.0,
+  "reference_sample_count": 390,
+  "transform": {
+    "kind": "discovery_robust_standardization",
+    "center": [
+      4.199999999999999,
+      0.46003762299826356,
+      0.05685455635935485
+    ],
+    "scale": [
+      2.36286137879911,
+      0.28004704671871317,
+      0.08077377807959642
+    ]
+  },
+  "focus_target": {
+    "lower_quantile": 0.1,
+    "upper_quantile": 0.9,
+    "coordinate_lower": [
+      -1.265414901960784,
+      0.040998909488645215,
+      0.11669086558746891
+    ],
+    "coordinate_upper": [
+      -0.04232156862745084,
+      1.1840803951227092,
+      3.1333906608457447
+    ],
+    "coordinate_center": [
+      -0.65598431372549,
+      0.7153788545162881,
+      0.9553138629429081
+    ],
+    "focus_band_logit_threshold": 2.206483518532511
+  },
+  "classifier": {
+    "kind": "l2_logistic_regression",
+    "coef": [
+      -5.882133904099835,
+      4.216280211182077,
+      -0.513873587690703
+    ],
+    "intercept": 0.7426335215372657,
+    "decision_threshold": 0.5,
+    "sha256": "1a4da790a0715932cd1a8af12efba9f3605946c38f3835d571ab4315af578a13"
+  },
+  "evidence": {
+    "primary": "validation/180s",
+    "duration_sensitivity": "validation/300s same-track sensitivity only",
+    "selection_status": "post-validation downstream refreeze",
+    "intended_use": "exact teacher and latent topology control development",
+    "guidance_authorization": false
+  },
+  "source_sha256": {
+    "metadata/pitch_v2_topology_segments.csv": "e4d0516610534ff1889a0cb934d80d1132bcb0ee9adf167f6fc05de9329b3945",
+    "metadata/pitch_v2_pairwise_tests.csv": "9d423fc9597dfd2877469bfe4a6ea9036e80eb448e30e7d7cf2e603f9b47d2fd"
+  },
+  "input_sha256": "7bb1e5e78bb6f35e535a766dc994c04a8b3a4cab7d5197db3a003cc200ceb050",
+  "config_sha256": "1fc51999dcc6a54546625dbbb6d4ddfd00224bcacedc79b4a898a54d389af94c",
+  "code_sha256": "56517751f7b96e32388e4dcfbf22609a7c35f07e0b702f0ee3c68a8d705cc9c5",
+  "runtime_status": {
+    "exact_scoring": "enabled",
+    "latent_control_training": "enabled_for_development",
+    "sampling_guidance": "disabled_until_new_qualification_passes",
+    "legacy_18d_contract": "preserved_separately"
+  }
+}
