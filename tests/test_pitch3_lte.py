@@ -230,6 +230,28 @@ def test_lte_model_losses_and_one_shot_guidance() -> None:
     )
     assert set(robust) == {"value", "prompt_rank", "local_robust"}
     assert all(torch.isfinite(value) and value >= 0 for value in robust.values())
+    v32_batch = {**batch, "prompt_id": ["p1", "p1", "p2", "p2", "p1", "p1", "p2", "p2"]}
+    decomposed = pitch3_lte_raw_losses(
+        predicted,
+        v32_batch,
+        huber_delta=1.0,
+        rank_min_delta=1e-6,
+        local_objective="decomposed_direction_v32",
+        local_derivative_scale=0.5,
+        local_delta_scale=0.1,
+        include_cross_prompt_rank=True,
+        energy_strata_thresholds=(0.0, 0.4),
+        energy_strata_weights=(1.0, 1.5, 2.0),
+    )
+    assert set(decomposed) == {
+        "value",
+        "prompt_rank",
+        "cross_prompt_rank",
+        "local_direction",
+        "local_shape",
+        "local_flat",
+    }
+    assert all(torch.isfinite(value) and value >= 0 for value in decomposed.values())
 
     residual_model = PromptConditionedTopologyEnergy(
         Pitch3LTEConfig(
@@ -245,6 +267,20 @@ def test_lte_model_losses_and_one_shot_guidance() -> None:
     residual_first = residual_model(latent, latent_mask, text, text_mask).energy
     residual_second = residual_model(latent, latent_mask, text.flip(1), text_mask).energy
     assert torch.allclose(residual_first, residual_second)
+
+    dual_model = PromptConditionedTopologyEnergy(
+        Pitch3LTEConfig(
+            model_dim=16,
+            transformer_heads=4,
+            transformer_layers=1,
+            feedforward_dim=32,
+            temporal_stride=2,
+            dropout=0.0,
+            fusion_mode="latent_primary_residual_v31",
+            latent_stem_mode="dual_rms_v32",
+        )
+    )
+    assert dual_model(latent, latent_mask, text, text_mask).energy.shape == (8,)
 
     corrector = Pitch3LTECorrector(
         model,

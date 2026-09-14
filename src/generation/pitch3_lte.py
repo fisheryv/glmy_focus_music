@@ -33,6 +33,7 @@ class Pitch3LTEConfig:
     dropout: float = 0.1
     fusion_mode: str = "joint_v3"
     prompt_residual_scale: float = 0.25
+    latent_stem_mode: str = "normalized_v3"
 
     def validate(self) -> None:
         if self.model_dim % self.transformer_heads:
@@ -45,6 +46,8 @@ class Pitch3LTEConfig:
             raise ValueError("unknown V3-LTE fusion mode")
         if self.prompt_residual_scale <= 0:
             raise ValueError("V3-LTE prompt residual scale must be positive")
+        if self.latent_stem_mode not in {"normalized_v3", "dual_rms_v32"}:
+            raise ValueError("unknown V3-LTE latent stem mode")
 
 
 class PromptConditionedTopologyEnergy(nn.Module):
@@ -63,6 +66,9 @@ class PromptConditionedTopologyEnergy(nn.Module):
         cfg = self.config
         self.latent_norm = nn.LayerNorm(cfg.latent_dim)
         self.latent_projection = nn.Linear(cfg.latent_dim, cfg.model_dim)
+        if cfg.latent_stem_mode == "dual_rms_v32":
+            self.raw_latent_projection = nn.Linear(cfg.latent_dim, cfg.model_dim, bias=False)
+            nn.init.zeros_(self.raw_latent_projection.weight)
         self.temporal_downsample = nn.Conv1d(
             cfg.model_dim,
             cfg.model_dim,
@@ -136,6 +142,12 @@ class PromptConditionedTopologyEnergy(nn.Module):
             raise ValueError(f"latent must have shape [B,T,{cfg.latent_dim}]")
         mask = self._validate_mask(latent, attention_mask, "attention_mask")
         sequence = self.latent_projection(self.latent_norm(latent))
+        if self.config.latent_stem_mode == "dual_rms_v32":
+            weights = mask.to(latent.dtype).unsqueeze(-1)
+            count = weights.sum(dim=(1, 2)).clamp_min(1.0) * latent.shape[-1]
+            rms = torch.sqrt((latent.square() * weights).sum(dim=(1, 2)) / count)
+            raw = latent / rms.clamp_min(1e-8)[:, None, None]
+            sequence = sequence + self.raw_latent_projection(raw)
         sequence = self.temporal_downsample(sequence.transpose(1, 2)).transpose(1, 2)
         mask = _resize_mask(mask, sequence.shape[1])
         sequence = sequence + _sinusoidal_positions(
