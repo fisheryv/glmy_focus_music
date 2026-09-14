@@ -64,6 +64,8 @@ class Pitch3LossWeights:
     band_rank: float = 0.0
     band_rank_min_delta: float = 1e-4
     band_region: float = 0.0
+    band_zero: float = 0.0
+    band_region_positive_only: bool = False
     band_smooth_temperature_fraction: float = 0.0
     ood_margin: float = 0.0
     ood_margin_value: float = 1.0
@@ -131,6 +133,8 @@ def load_pitch3_training_config(
         loss.band > 0.0 or loss.band_rank > 0.0
     ):
         raise ValueError("band smoothing requires a positive band or band-rank weight")
+    if loss.band_region_positive_only and loss.band_region <= 0.0:
+        raise ValueError("positive-only band regions require a positive band-region weight")
     scales = training.scale_high_training_target_scales
     if scales and (
         len(set(scales)) != len(scales)
@@ -490,11 +494,18 @@ def pitch3_loss(
             ).mean()
         )
         focus = F.smooth_l1_loss(output.focus_logit[id_mask], focus_logit[id_mask])
-        if weights.band > 0.0 or weights.band_rank > 0.0 or weights.band_region > 0.0:
+        if (
+            weights.band > 0.0
+            or weights.band_rank > 0.0
+            or weights.band_region > 0.0
+            or weights.band_zero > 0.0
+        ):
             if target_lower is None or target_upper is None or distance_weights is None:
                 raise ValueError("Pitch-3 band loss requires frozen target tensors")
             predicted_coordinates = output.coordinate_mean[id_mask]
             exact_coordinates = coordinates[id_mask]
+            hard_predicted_below = torch.relu(target_lower - predicted_coordinates)
+            hard_predicted_above = torch.relu(predicted_coordinates - target_upper)
             if weights.band_smooth_temperature_fraction > 0.0:
                 temperature = (target_upper - target_lower) * float(
                     weights.band_smooth_temperature_fraction
@@ -506,8 +517,8 @@ def pitch3_loss(
                     (predicted_coordinates - target_upper) / temperature
                 )
             else:
-                predicted_below = torch.relu(target_lower - predicted_coordinates)
-                predicted_above = torch.relu(predicted_coordinates - target_upper)
+                predicted_below = hard_predicted_below
+                predicted_above = hard_predicted_above
             exact_below = torch.relu(target_lower - exact_coordinates)
             exact_above = torch.relu(exact_coordinates - target_upper)
             predicted_band = (
@@ -516,6 +527,17 @@ def pitch3_loss(
             exact_band = ((exact_below.square() + exact_above.square()) * distance_weights).sum(
                 dim=1
             )
+            if weights.band_zero > 0.0:
+                exact_zero_band = exact_band == 0.0
+                if exact_zero_band.any():
+                    hard_linear_excursion = (
+                        (hard_predicted_below + hard_predicted_above) * distance_weights
+                    ).sum(dim=1)
+                    band_zero = hard_linear_excursion[exact_zero_band].mean()
+                else:
+                    band_zero = output.coordinate_mean.sum() * 0.0
+            else:
+                band_zero = output.coordinate_mean.sum() * 0.0
             predicted_log_band = torch.log1p(predicted_band)
             exact_log_band = torch.log1p(exact_band)
             band = F.smooth_l1_loss(predicted_log_band, exact_log_band)
@@ -541,18 +563,37 @@ def pitch3_loss(
                 inside_region_error = torch.relu(target_lower - predicted_coordinates) + torch.relu(
                     predicted_coordinates - target_upper
                 )
-                region_error = torch.where(
-                    exact_is_below,
-                    below_region_error,
-                    torch.where(exact_is_above, above_region_error, inside_region_error),
-                )
-                band_region = (region_error * distance_weights).sum(dim=1).mean()
+                if weights.band_region_positive_only:
+                    region_error = torch.where(
+                        exact_is_below,
+                        below_region_error,
+                        torch.where(
+                            exact_is_above,
+                            above_region_error,
+                            torch.zeros_like(inside_region_error),
+                        ),
+                    )
+                    exact_positive_band = exact_band > 0.0
+                    if exact_positive_band.any():
+                        band_region = (
+                            (region_error * distance_weights).sum(dim=1)[exact_positive_band].mean()
+                        )
+                    else:
+                        band_region = output.coordinate_mean.sum() * 0.0
+                else:
+                    region_error = torch.where(
+                        exact_is_below,
+                        below_region_error,
+                        torch.where(exact_is_above, above_region_error, inside_region_error),
+                    )
+                    band_region = (region_error * distance_weights).sum(dim=1).mean()
             else:
                 band_region = output.coordinate_mean.sum() * 0.0
         else:
             band = output.coordinate_mean.sum() * 0.0
             band_rank = output.coordinate_mean.sum() * 0.0
             band_region = output.coordinate_mean.sum() * 0.0
+            band_zero = output.coordinate_mean.sum() * 0.0
     else:
         zero = output.coordinate_mean.sum() * 0.0
         coordinate = zero
@@ -561,6 +602,7 @@ def pitch3_loss(
         band = zero
         band_rank = zero
         band_region = zero
+        band_zero = zero
     positive_weight = torch.tensor(
         ood_positive_weight, device=ood_label.device, dtype=ood_label.dtype
     )
@@ -583,6 +625,7 @@ def pitch3_loss(
         + weights.band * band
         + weights.band_rank * band_rank
         + weights.band_region * band_region
+        + weights.band_zero * band_zero
         + weights.ood_margin * ood_margin
     )
     return total, {
@@ -593,6 +636,7 @@ def pitch3_loss(
         "band": band,
         "band_rank": band_rank,
         "band_region": band_region,
+        "band_zero": band_zero,
         "ood_margin": ood_margin,
     }
 
@@ -637,6 +681,7 @@ def _epoch(
         "band": 0.0,
         "band_rank": 0.0,
         "band_region": 0.0,
+        "band_zero": 0.0,
         "ood_margin": 0.0,
     }
     samples = 0
@@ -1030,19 +1075,26 @@ def train_pitch3_control_head(
         ),
         "band_training_objective": {
             "kind": (
-                "region_consistency_smooth_excursion_v24"
-                if weights.band_region > 0.0 and weights.band_smooth_temperature_fraction > 0.0
+                "balanced_zero_positive_region_v25"
+                if weights.band_zero > 0.0 and weights.band_region_positive_only
                 else (
-                    "region_consistency_v24"
-                    if weights.band_region > 0.0
+                    "region_consistency_smooth_excursion_v24"
+                    if weights.band_region > 0.0 and weights.band_smooth_temperature_fraction > 0.0
                     else (
-                        "smooth_excursion_v24"
-                        if weights.band_smooth_temperature_fraction > 0.0
-                        else "hard_excursion_v23_compatible"
+                        "region_consistency_v24"
+                        if weights.band_region > 0.0
+                        else (
+                            "smooth_excursion_v24"
+                            if weights.band_smooth_temperature_fraction > 0.0
+                            else "hard_excursion_v23_compatible"
+                        )
                     )
                 )
             ),
             "region_consistency_weight": weights.band_region,
+            "zero_distance_suppression_weight": weights.band_zero,
+            "region_positive_samples_only": weights.band_region_positive_only,
+            "boundary_auxiliary_weight_sum": weights.band_region + weights.band_zero,
             "smooth_temperature_fraction_of_band_width": (weights.band_smooth_temperature_fraction),
             "evaluation_band_formula_changed": False,
         },

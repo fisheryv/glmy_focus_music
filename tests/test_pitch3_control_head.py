@@ -78,6 +78,7 @@ def test_pitch3_control_head_shapes_gradients_and_parameter_budget() -> None:
         "band",
         "band_rank",
         "band_region",
+        "band_zero",
         "ood_margin",
     }
     assert torch.isfinite(loss)
@@ -193,6 +194,80 @@ def test_pitch3_v24r_only_disables_smooth_band_training() -> None:
     assert changed == {"band_smooth_temperature_fraction"}
     assert v24r_weights.band_region == 0.25
     assert v24r_weights.band_smooth_temperature_fraction == 0.0
+
+
+def test_pitch3_v25_zero_band_loss_has_linear_boundary_gradient() -> None:
+    contract = load_pitch3_contract(PROFILE)
+    lower = torch.tensor(contract.target_lower)
+    upper = torch.tensor(contract.target_upper)
+    distance_weights = torch.tensor(contract.distance_weights)
+    exact = ((lower + upper) / 2.0).unsqueeze(0)
+    predicted = exact.clone()
+    predicted[0, 0] = lower[0] - 0.01
+    predicted.requires_grad_(True)
+
+    _, parts = pitch3_loss(
+        _loss_output(predicted),
+        exact,
+        torch.zeros(1),
+        torch.zeros(1),
+        Pitch3LossWeights(band_zero=1.0),
+        target_lower=lower,
+        target_upper=upper,
+        distance_weights=distance_weights,
+    )
+    parts["band_zero"].backward()
+
+    assert parts["band_zero"] > 0.0
+    assert predicted.grad is not None
+    assert predicted.grad[0, 0] < 0.0
+    assert torch.equal(predicted.grad[0, 1:], torch.zeros(2))
+
+
+def test_pitch3_v25_positive_region_ignores_exact_inside_coordinates() -> None:
+    contract = load_pitch3_contract(PROFILE)
+    lower = torch.tensor(contract.target_lower)
+    upper = torch.tensor(contract.target_upper)
+    distance_weights = torch.tensor(contract.distance_weights)
+    exact = ((lower + upper) / 2.0).unsqueeze(0)
+    exact[0, 2] = upper[2] + 1.0
+    predicted = ((lower + upper) / 2.0).unsqueeze(0)
+    predicted[0, 0] = lower[0] - 0.5
+    predicted.requires_grad_(True)
+
+    _, parts = pitch3_loss(
+        _loss_output(predicted),
+        exact,
+        torch.zeros(1),
+        torch.zeros(1),
+        Pitch3LossWeights(band_region=1.0, band_region_positive_only=True),
+        target_lower=lower,
+        target_upper=upper,
+        distance_weights=distance_weights,
+    )
+    parts["band_region"].backward()
+
+    assert parts["band_region"] > 0.0
+    assert predicted.grad is not None
+    assert predicted.grad[0, 0] == 0.0
+    assert predicted.grad[0, 2] < 0.0
+
+
+def test_pitch3_v25_preserves_v24r_boundary_weight_sum() -> None:
+    v24r_model, v24r_training, v24r_weights = load_pitch3_training_config(
+        ROOT / "configs" / "pitch3_control_head_training_v24r.toml"
+    )
+    v25_model, v25_training, v25_weights = load_pitch3_training_config(
+        ROOT / "configs" / "pitch3_control_head_training_v25.toml"
+    )
+
+    assert asdict(v25_model) == asdict(v24r_model)
+    assert asdict(v25_training) == asdict(v24r_training)
+    assert v25_weights.band_region == 0.125
+    assert v25_weights.band_zero == 0.125
+    assert v25_weights.band_region_positive_only is True
+    assert v25_weights.band_region + v25_weights.band_zero == v24r_weights.band_region
+    assert v25_weights.band_smooth_temperature_fraction == 0.0
 
 
 def test_pitch3_v23_raw_ood_statistics_preserve_scale_signal() -> None:
@@ -339,6 +414,9 @@ ood = 0.1
     assert result["band_training_objective"] == {
         "kind": "hard_excursion_v23_compatible",
         "region_consistency_weight": 0.0,
+        "zero_distance_suppression_weight": 0.0,
+        "region_positive_samples_only": False,
+        "boundary_auxiliary_weight_sum": 0.0,
         "smooth_temperature_fraction_of_band_width": 0.0,
         "evaluation_band_formula_changed": False,
     }
