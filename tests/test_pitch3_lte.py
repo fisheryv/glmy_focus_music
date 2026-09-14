@@ -14,6 +14,7 @@ from generation.pitch3_lte_data import (
     _direction,
     merge_pitch3_lte_dataset_shards,
     pitch3_lte_prompt_shard,
+    validate_pitch3_lte_dataset_preflight,
 )
 
 
@@ -161,6 +162,13 @@ def test_lte_multi_gpu_merge_keeps_prompt_groups_disjoint(tmp_path) -> None:
     )
     assert rerun["dataset_plan_sha256"] == result["dataset_plan_sha256"]
     assert rerun["replaced_legacy_plan_sha256"] is None
+    (tmp_path / "pitch3_lte_dataset_summary.json").unlink()
+    recovered = validate_pitch3_lte_dataset_preflight(
+        tmp_path / "pitch3_lte_examples.csv"
+    )
+    assert recovered["local_preflight_passed"] is True
+    assert recovered["dataset_manifest_sha256"] == result["dataset_manifest_sha256"]
+    assert recovered["preflight_source"] == "recomputed_from_canonical_plan_and_manifest"
     published["items_sha256"] = "d" * 64
     legacy_path.write_text(json.dumps(published), encoding="utf-8")
     with pytest.raises(LTSNContractError, match="changed in fields items_sha256"):

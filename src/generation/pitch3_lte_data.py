@@ -722,6 +722,44 @@ def _merged_dataset_items_sha256(
     return canonical_json_sha256(items)
 
 
+def validate_pitch3_lte_dataset_preflight(dataset_manifest: Path) -> dict[str, Any]:
+    """Recompute merged-data preflight when the redundant summary is absent."""
+
+    dataset_manifest = dataset_manifest.resolve()
+    if not dataset_manifest.is_file():
+        raise LTSNContractError(f"V3-LTE dataset manifest is missing: {dataset_manifest}")
+    plan_path = dataset_manifest.parent / "pitch3_lte_dataset_plan.json"
+    if not plan_path.is_file():
+        raise LTSNContractError("V3-LTE dataset plan is missing")
+    plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    if plan.get("publication_kind") != "canonical_merged_dataset":
+        raise LTSNContractError(
+            "V3-LTE summary recovery requires a canonical merged dataset plan"
+        )
+    rows = _read_csv(dataset_manifest)
+    if not rows:
+        raise LTSNContractError("V3-LTE dataset manifest is empty")
+    plan_sha256 = sha256_file(plan_path)
+    if any(row.get("dataset_plan_sha256") != plan_sha256 for row in rows):
+        raise LTSNContractError("V3-LTE dataset rows are detached from the canonical plan")
+    items_sha256 = _merged_dataset_items_sha256(((dataset_manifest.parent, rows),))
+    if plan.get("items_sha256") != items_sha256:
+        raise LTSNContractError("V3-LTE dataset content hash differs from the canonical plan")
+    preflight = _merged_dataset_preflight(rows)
+    if preflight["local_preflight_passed"] is not True:
+        raise LTSNContractError("V3-LTE recomputed dataset preflight failed")
+    return {
+        "schema_version": LTE_SCHEMA_VERSION,
+        "stage": "pitch3_lte_exact_local_dataset",
+        "status": "complete",
+        "local_preflight_passed": True,
+        **preflight,
+        "dataset_manifest_sha256": sha256_file(dataset_manifest),
+        "dataset_plan_sha256": plan_sha256,
+        "preflight_source": "recomputed_from_canonical_plan_and_manifest",
+    }
+
+
 def _publish_merged_dataset_plan(
     path: Path,
     plan: Mapping[str, Any],

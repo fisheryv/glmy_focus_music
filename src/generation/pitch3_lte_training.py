@@ -23,7 +23,11 @@ from .ltsn_contract import LTSNContractError, sha256_file
 from .ltsn_pipeline import write_json_atomic
 from .pitch3_contract import load_pitch3_contract
 from .pitch3_lte import Pitch3LTEConfig, PromptConditionedTopologyEnergy
-from .pitch3_lte_data import LTE_MODEL_FAMILY, LTE_RADIUS_RATIO
+from .pitch3_lte_data import (
+    LTE_MODEL_FAMILY,
+    LTE_RADIUS_RATIO,
+    validate_pitch3_lte_dataset_preflight,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -565,12 +569,16 @@ def train_pitch3_lte(
     output_dir: Path,
     device_name: str = "cpu",
 ) -> dict[str, Any]:
+    dataset_manifest = dataset_manifest.resolve()
     contract = load_pitch3_contract(fingerprint_path)
     model_config, training = load_pitch3_lte_config(config_path)
     dataset_summary_path = dataset_manifest.parent / "pitch3_lte_dataset_summary.json"
-    if not dataset_summary_path.is_file():
-        raise LTSNContractError("V3-LTE dataset preflight summary is missing")
-    dataset_summary = json.loads(dataset_summary_path.read_text(encoding="utf-8"))
+    if dataset_summary_path.is_file():
+        dataset_summary = json.loads(dataset_summary_path.read_text(encoding="utf-8"))
+        dataset_preflight_source = "published_dataset_summary"
+    else:
+        dataset_summary = validate_pitch3_lte_dataset_preflight(dataset_manifest)
+        dataset_preflight_source = str(dataset_summary["preflight_source"])
     if dataset_summary.get("local_preflight_passed") is not True or dataset_summary.get(
         "dataset_manifest_sha256"
     ) != sha256_file(dataset_manifest):
@@ -630,6 +638,8 @@ def train_pitch3_lte(
         "fingerprint_json_sha256": contract.artifact_sha256,
         "training_config_sha256": sha256_file(config_path),
         "training_manifest_sha256": sha256_file(dataset_manifest),
+        "dataset_plan_sha256": dataset_summary.get("dataset_plan_sha256"),
+        "dataset_preflight_source": dataset_preflight_source,
         "seed": training.seed,
         "device": device_name,
         "precision": "bf16_forward_fp32_loss" if training.use_bf16 else "fp32",
