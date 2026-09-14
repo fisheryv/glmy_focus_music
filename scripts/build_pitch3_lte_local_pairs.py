@@ -10,7 +10,10 @@ SRC = ROOT / "src"
 if str(SRC) not in sys.path:
     sys.path.insert(0, str(SRC))
 
-from generation.pitch3_lte_data import build_pitch3_lte_dataset  # noqa: E402
+from generation.pitch3_lte_data import (  # noqa: E402
+    build_pitch3_lte_dataset,
+    build_pitch3_lte_dataset_multigpu,
+)
 
 
 def main() -> None:
@@ -35,27 +38,45 @@ def main() -> None:
         choices=("train", "development"),
         default=("train", "development"),
     )
-    parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument("--workers", type=int, default=8, help="single-GPU exact workers")
+    parser.add_argument(
+        "--workers-per-device",
+        type=int,
+        default=4,
+        help="multi-GPU exact workers started inside each isolated shard process",
+    )
     parser.add_argument("--exact-batch-size", type=int, default=64)
     parser.add_argument("--materialize-mode", default="auto")
-    parser.add_argument("--device", default="cuda:0")
+    devices = parser.add_mutually_exclusive_group()
+    devices.add_argument("--device", default=None)
+    devices.add_argument("--devices", nargs="+", help="e.g. cuda:0 cuda:1 cuda:2")
     parser.add_argument("--no-resume", action="store_true")
     args = parser.parse_args()
-    result = build_pitch3_lte_dataset(
-        root=args.root,
-        source_manifest_path=args.source_manifest,
-        prompt_embedding_manifest_path=args.prompt_embeddings,
-        ace_config_path=args.ace_config,
-        fingerprint_path=args.fingerprint,
-        output_dir=args.output_dir,
-        include_splits=args.include_splits,
-        local_splits=args.local_splits,
-        workers=args.workers,
-        exact_batch_size=args.exact_batch_size,
-        materialize_mode=args.materialize_mode,
-        device_name=args.device,
-        resume=not args.no_resume,
-    )
+    common = {
+        "root": args.root,
+        "source_manifest_path": args.source_manifest,
+        "prompt_embedding_manifest_path": args.prompt_embeddings,
+        "ace_config_path": args.ace_config,
+        "fingerprint_path": args.fingerprint,
+        "output_dir": args.output_dir,
+        "include_splits": args.include_splits,
+        "local_splits": args.local_splits,
+        "exact_batch_size": args.exact_batch_size,
+        "materialize_mode": args.materialize_mode,
+        "resume": not args.no_resume,
+    }
+    if args.devices:
+        result = build_pitch3_lte_dataset_multigpu(
+            **common,
+            devices=args.devices,
+            workers_per_device=args.workers_per_device,
+        )
+    else:
+        result = build_pitch3_lte_dataset(
+            **common,
+            workers=args.workers,
+            device_name=args.device or "cuda:0",
+        )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

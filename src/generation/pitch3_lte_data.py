@@ -6,9 +6,11 @@ import csv
 import hashlib
 import json
 import math
+import multiprocessing as mp
 import os
 from collections import Counter, defaultdict
 from collections.abc import Mapping, Sequence
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,15 @@ LTE_SCHEMA_VERSION = 1
 LTE_MODEL_FAMILY = "pitch3_prompt_conditioned_local_energy_v3"
 LTE_RADIUS_RATIO = 0.05
 LTE_DIRECTIONS_PER_PROMPT = 2
+
+
+def pitch3_lte_prompt_shard(prompt_id: str, shard_count: int) -> int:
+    """Assign one complete prompt group to a deterministic process shard."""
+
+    if shard_count < 1:
+        raise ValueError("V3-LTE shard_count must be positive")
+    digest = hashlib.sha256(f"v3-lte-data-shard|{prompt_id}".encode()).digest()
+    return int.from_bytes(digest[:8], "big") % shard_count
 
 
 def _rooted(path: Path, root: Path) -> Path:
@@ -310,6 +321,8 @@ def build_pitch3_lte_dataset(
     materialize_mode: str = "auto",
     device_name: str = "cuda:0",
     resume: bool = True,
+    shard_index: int = 0,
+    shard_count: int = 1,
 ) -> dict[str, Any]:
     """Build base values plus exact ``z +/- epsilon*d`` finite differences."""
 
@@ -319,6 +332,8 @@ def build_pitch3_lte_dataset(
     ace_config_path = _rooted(ace_config_path, root)
     fingerprint_path = _rooted(fingerprint_path, root)
     output_dir = _rooted(output_dir, root)
+    if shard_count < 1 or not 0 <= shard_index < shard_count:
+        raise ValueError("V3-LTE shard index/count is invalid")
     include = set(include_splits)
     local = set(local_splits)
     if not include or not local.issubset(include) or not include.issubset({"train", "development"}):
@@ -345,7 +360,14 @@ def build_pitch3_lte_dataset(
         if not path.is_file() or sha256_file(path) != row["latent_sha256"]:
             raise LTSNContractError("V3-LTE source latent is missing or hash-mismatched")
         row["_latent_path"] = str(path)
-    groups = _step4_id_groups(source_rows, include)
+    all_groups = _step4_id_groups(source_rows, include)
+    groups = {
+        prompt_id: values
+        for prompt_id, values in all_groups.items()
+        if pitch3_lte_prompt_shard(prompt_id, shard_count) == shard_index
+    }
+    if not groups:
+        raise LTSNContractError(f"V3-LTE data shard {shard_index}/{shard_count} is empty")
     embeddings = _validate_prompt_embeddings(
         prompt_embedding_manifest_path, set(groups), ace_model_sha256
     )
@@ -373,6 +395,10 @@ def build_pitch3_lte_dataset(
         "vae_sha256": vae_sha256,
         "include_splits": sorted(include),
         "local_splits": sorted(local),
+        "shard_index": shard_index,
+        "shard_count": shard_count,
+        "prompt_assignment": "sha256(v3-lte-data-shard|prompt_id)-mod-shard_count",
+        "prompt_ids": sorted(groups),
         "anchor_rule": "sha256(v3-lte-anchor|prompt_id)-mod-4",
         "direction_rule": ["normalize_rms(z1-z0)", "normalize_rms(z3-z2)"],
         "directions_per_prompt": LTE_DIRECTIONS_PER_PROMPT,
@@ -631,9 +657,273 @@ def build_pitch3_lte_dataset(
         "dataset_manifest": str(manifest_path),
         "dataset_manifest_sha256": sha256_file(manifest_path),
         "dataset_plan_sha256": plan_sha256,
+        "shard_index": shard_index,
+        "shard_count": shard_count,
+        "device": device_name,
         "retained_wav_files": len(list(output_dir.rglob("*.wav"))),
     }
     if summary["retained_wav_files"]:
         raise LTSNContractError("V3-LTE ephemeral WAV cleanup failed")
     write_json_atomic(output_dir / "pitch3_lte_dataset_summary.json", summary)
     return summary
+
+
+def _merged_dataset_preflight(examples: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    direction_ids = {str(row["direction_id"]) for row in examples if row["direction_id"]}
+    nontrivial = 0
+    for direction_id in direction_ids:
+        pair = [row for row in examples if row["direction_id"] == direction_id]
+        if (
+            len(pair) == 2
+            and {int(float(row["direction_sign"])) for row in pair} == {-1, 1}
+            and abs(float(pair[0]["energy_target"]) - float(pair[1]["energy_target"])) > 1e-6
+        ):
+            nontrivial += 1
+    base_by_prompt: dict[str, list[float]] = defaultdict(list)
+    for row in examples:
+        if row["source_kind"] == "base_step4_seed":
+            base_by_prompt[str(row["prompt_id"])].append(float(row["energy_target"]))
+    if any(len(values) != 4 for values in base_by_prompt.values()):
+        raise LTSNContractError("merged V3-LTE prompts do not contain four base seeds")
+    sortable = sum(
+        any(
+            abs(left - right) > 1e-6
+            for offset, left in enumerate(values)
+            for right in values[offset + 1 :]
+        )
+        for values in base_by_prompt.values()
+    )
+    local_fraction = nontrivial / len(direction_ids) if direction_ids else 0.0
+    sortable_fraction = sortable / len(base_by_prompt) if base_by_prompt else 0.0
+    return {
+        "local_pairs": len(direction_ids),
+        "nontrivial_local_pairs": nontrivial,
+        "nontrivial_local_pair_fraction": local_fraction,
+        "sortable_prompts": sortable,
+        "same_prompt_sortable_fraction": sortable_fraction,
+        "local_preflight_passed": bool(
+            direction_ids and local_fraction >= 0.5 and sortable_fraction >= 0.5
+        ),
+    }
+
+
+def merge_pitch3_lte_dataset_shards(
+    *,
+    output_dir: Path,
+    shard_dirs: Sequence[Path],
+    devices: Sequence[str],
+) -> dict[str, Any]:
+    """Hash-verify disjoint GPU shards and publish one formal dataset manifest."""
+
+    output_dir = output_dir.resolve()
+    shard_dirs = tuple(path.resolve() for path in shard_dirs)
+    shard_count = len(shard_dirs)
+    if shard_count < 2 or len(devices) != shard_count:
+        raise ValueError("multi-GPU V3-LTE merge requires one device per shard")
+    plans: list[dict[str, Any]] = []
+    summaries: list[dict[str, Any]] = []
+    shard_rows: list[tuple[Path, list[dict[str, str]]]] = []
+    common_fields = (
+        "source_manifest_sha256",
+        "prompt_embedding_manifest_sha256",
+        "ace_config_sha256",
+        "fingerprint_json_sha256",
+        "ace_model_sha256",
+        "vae_sha256",
+        "include_splits",
+        "local_splits",
+        "radius_ratio",
+        "anchor_rule",
+        "direction_rule",
+        "directions_per_prompt",
+    )
+    for expected_index, shard_dir in enumerate(shard_dirs):
+        plan_path = shard_dir / "pitch3_lte_dataset_plan.json"
+        summary_path = shard_dir / "pitch3_lte_dataset_summary.json"
+        manifest_path = shard_dir / "pitch3_lte_examples.csv"
+        if not all(path.is_file() for path in (plan_path, summary_path, manifest_path)):
+            raise LTSNContractError(f"V3-LTE shard is incomplete: {shard_dir}")
+        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        if (
+            plan.get("shard_index") != expected_index
+            or plan.get("shard_count") != shard_count
+            or summary.get("shard_index") != expected_index
+            or summary.get("shard_count") != shard_count
+            or summary.get("dataset_manifest_sha256") != sha256_file(manifest_path)
+            or summary.get("local_preflight_passed") is not True
+        ):
+            raise LTSNContractError(f"V3-LTE shard contract failed: {shard_dir}")
+        if plans and any(plan.get(name) != plans[0].get(name) for name in common_fields):
+            raise LTSNContractError("V3-LTE shards were built from different frozen inputs")
+        rows = _read_csv(manifest_path)
+        if any(
+            pitch3_lte_prompt_shard(row["prompt_id"], shard_count) != expected_index for row in rows
+        ):
+            raise LTSNContractError("V3-LTE shard contains a foreign prompt group")
+        plans.append(plan)
+        summaries.append(summary)
+        shard_rows.append((shard_dir, rows))
+
+    prompt_sets = [set(plan["prompt_ids"]) for plan in plans]
+    if any(
+        prompt_sets[left] & prompt_sets[right]
+        for left in range(shard_count)
+        for right in range(left + 1, shard_count)
+    ):
+        raise LTSNContractError("V3-LTE prompt groups overlap across GPU shards")
+    shard_plan_hashes = [
+        sha256_file(shard_dir / "pitch3_lte_dataset_plan.json") for shard_dir in shard_dirs
+    ]
+    merged_plan = {
+        "schema_version": LTE_SCHEMA_VERSION,
+        "stage": "pitch3_lte_exact_local_dataset",
+        "model_family": LTE_MODEL_FAMILY,
+        **{name: plans[0][name] for name in common_fields},
+        "sharded": True,
+        "shard_count": shard_count,
+        "prompt_assignment": "sha256(v3-lte-data-shard|prompt_id)-mod-shard_count",
+        "shard_plan_sha256": shard_plan_hashes,
+        "planned_local_samples": sum(int(plan["planned_local_samples"]) for plan in plans),
+        "items_sha256": canonical_json_sha256(shard_plan_hashes),
+        "prompt_ids": sorted(set().union(*prompt_sets)),
+        "wav_policy": "ephemeral_delete_after_each_exact_batch",
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    merged_plan_path = output_dir / "pitch3_lte_dataset_plan.json"
+    if merged_plan_path.is_file():
+        if json.loads(merged_plan_path.read_text(encoding="utf-8")) != merged_plan:
+            raise LTSNContractError("merged V3-LTE plan changed; use a new output directory")
+    else:
+        write_json_atomic(merged_plan_path, merged_plan)
+    merged_plan_sha256 = sha256_file(merged_plan_path)
+
+    examples: list[dict[str, Any]] = []
+    sample_ids: set[str] = set()
+    for shard_dir, rows in shard_rows:
+        for raw in rows:
+            if raw["sample_id"] in sample_ids:
+                raise LTSNContractError("V3-LTE shard merge found a duplicate sample")
+            sample_ids.add(raw["sample_id"])
+            row: dict[str, Any] = dict(raw)
+            for name in ("latent_path", "prompt_embedding_path"):
+                artifact = (shard_dir / raw[name]).resolve()
+                if not artifact.is_file():
+                    raise LTSNContractError(f"V3-LTE merged artifact is missing: {artifact}")
+                row[name] = _relative(artifact, output_dir)
+            row["dataset_plan_sha256"] = merged_plan_sha256
+            examples.append(row)
+    examples.sort(
+        key=lambda row: (row["split"], row["prompt_id"], row["source_kind"], row["sample_id"])
+    )
+    prompt_counts = Counter(
+        row["split"] for row in examples if row["source_kind"] == "base_step4_seed"
+    )
+    if prompt_counts != {"train": 1280, "development": 256}:
+        raise LTSNContractError(
+            "formal merged V3-LTE data requires 1280 train and 256 development base rows"
+        )
+    local_counts = Counter(
+        row["split"] for row in examples if row["source_kind"] == "local_finite_difference"
+    )
+    if local_counts != {"train": 1280, "development": 256}:
+        raise LTSNContractError(
+            "formal merged V3-LTE data requires 1280 train and 256 development local rows"
+        )
+    preflight = _merged_dataset_preflight(examples)
+    manifest_path = output_dir / "pitch3_lte_examples.csv"
+    write_csv_atomic(manifest_path, examples)
+    retained_wav = len(list((output_dir / "shards").rglob("*.wav")))
+    summary = {
+        "schema_version": LTE_SCHEMA_VERSION,
+        "stage": "pitch3_lte_exact_local_dataset",
+        "status": "complete" if preflight["local_preflight_passed"] else "failed",
+        "qualification_eligible": False,
+        "guidance_promotion_eligible": False,
+        "production_authorization": False,
+        "multi_gpu": True,
+        "devices": list(devices),
+        "shard_count": shard_count,
+        "base_samples": sum(row["source_kind"] == "base_step4_seed" for row in examples),
+        "local_samples": sum(row["source_kind"] == "local_finite_difference" for row in examples),
+        **preflight,
+        "dataset_manifest": str(manifest_path),
+        "dataset_manifest_sha256": sha256_file(manifest_path),
+        "dataset_plan_sha256": merged_plan_sha256,
+        "shard_summary_sha256": [
+            sha256_file(shard_dir / "pitch3_lte_dataset_summary.json") for shard_dir in shard_dirs
+        ],
+        "retained_wav_files": retained_wav,
+    }
+    if retained_wav:
+        raise LTSNContractError("multi-GPU V3-LTE shards retained ephemeral WAV files")
+    write_json_atomic(output_dir / "pitch3_lte_dataset_summary.json", summary)
+    return summary
+
+
+def _build_pitch3_lte_shard(kwargs: Mapping[str, Any]) -> dict[str, Any]:
+    return build_pitch3_lte_dataset(**dict(kwargs))
+
+
+def build_pitch3_lte_dataset_multigpu(
+    *,
+    root: Path,
+    source_manifest_path: Path,
+    prompt_embedding_manifest_path: Path,
+    ace_config_path: Path,
+    fingerprint_path: Path,
+    output_dir: Path,
+    devices: Sequence[str],
+    include_splits: Sequence[str] = ("train", "development"),
+    local_splits: Sequence[str] = ("train", "development"),
+    workers_per_device: int = 4,
+    exact_batch_size: int = 64,
+    materialize_mode: str = "auto",
+    resume: bool = True,
+) -> dict[str, Any]:
+    """Run deterministic, process-isolated VAE/exact shards on several GPUs."""
+
+    devices = tuple(str(device).strip() for device in devices if str(device).strip())
+    if len(devices) < 2 or len(set(devices)) != len(devices):
+        raise ValueError("V3-LTE multi-GPU mode requires at least two unique devices")
+    if workers_per_device < 1:
+        raise ValueError("workers_per_device must be positive")
+    if set(include_splits) != {"train", "development"} or set(local_splits) != {
+        "train",
+        "development",
+    }:
+        raise ValueError("formal V3-LTE multi-GPU mode requires train+development local data")
+    root = root.resolve()
+    output_dir = _rooted(output_dir, root)
+    shard_root = output_dir / "shards"
+    shard_dirs = tuple(shard_root / f"shard_{index:02d}" for index in range(len(devices)))
+    payloads = [
+        {
+            "root": root,
+            "source_manifest_path": source_manifest_path,
+            "prompt_embedding_manifest_path": prompt_embedding_manifest_path,
+            "ace_config_path": ace_config_path,
+            "fingerprint_path": fingerprint_path,
+            "output_dir": shard_dirs[index],
+            "include_splits": tuple(include_splits),
+            "local_splits": tuple(local_splits),
+            "workers": workers_per_device,
+            "exact_batch_size": exact_batch_size,
+            "materialize_mode": materialize_mode,
+            "device_name": device,
+            "resume": resume,
+            "shard_index": index,
+            "shard_count": len(devices),
+        }
+        for index, device in enumerate(devices)
+    ]
+    context = mp.get_context("spawn")
+    with ProcessPoolExecutor(max_workers=len(devices), mp_context=context) as executor:
+        shard_summaries = list(executor.map(_build_pitch3_lte_shard, payloads))
+    if any(summary.get("local_preflight_passed") is not True for summary in shard_summaries):
+        raise LTSNContractError("at least one V3-LTE GPU shard failed its local preflight")
+    return merge_pitch3_lte_dataset_shards(
+        output_dir=output_dir,
+        shard_dirs=shard_dirs,
+        devices=devices,
+    )

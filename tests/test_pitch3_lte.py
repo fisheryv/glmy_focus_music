@@ -2,11 +2,19 @@ from __future__ import annotations
 
 import csv
 import importlib.util
+import json
 
 import numpy as np
 import pytest
 
-from generation.pitch3_lte_data import _anchor_index, _direction
+from generation.ltsn_contract import sha256_file
+from generation.ltsn_pipeline import write_csv_atomic
+from generation.pitch3_lte_data import (
+    _anchor_index,
+    _direction,
+    merge_pitch3_lte_dataset_shards,
+    pitch3_lte_prompt_shard,
+)
 
 
 def test_lte_seed_difference_direction_has_unit_rms() -> None:
@@ -16,6 +24,113 @@ def test_lte_seed_difference_direction_has_unit_rms() -> None:
     assert np.sqrt(np.mean(np.square(direction), dtype=np.float64)) == pytest.approx(1.0)
     assert _anchor_index("p01__v01") == _anchor_index("p01__v01")
     assert 0 <= _anchor_index("p01__v01") < 4
+
+
+def test_lte_multi_gpu_merge_keeps_prompt_groups_disjoint(tmp_path) -> None:
+    shard_count = 2
+    shard_dirs = [tmp_path / "shards" / f"shard_{index:02d}" for index in range(shard_count)]
+    common = {
+        "source_manifest_sha256": "1" * 64,
+        "prompt_embedding_manifest_sha256": "2" * 64,
+        "ace_config_sha256": "3" * 64,
+        "fingerprint_json_sha256": "4" * 64,
+        "ace_model_sha256": "5" * 64,
+        "vae_sha256": "6" * 64,
+        "include_splits": ["development", "train"],
+        "local_splits": ["development", "train"],
+        "radius_ratio": 0.05,
+        "anchor_rule": "sha256(v3-lte-anchor|prompt_id)-mod-4",
+        "direction_rule": ["normalize_rms(z1-z0)", "normalize_rms(z3-z2)"],
+        "directions_per_prompt": 2,
+    }
+    prompts = [
+        (f"p{index:03d}__v01", "train" if index < 320 else "development") for index in range(384)
+    ]
+    for shard_index, shard_dir in enumerate(shard_dirs):
+        shard_dir.mkdir(parents=True)
+        np.save(shard_dir / "latent.npy", np.zeros((2, 64), dtype=np.float32))
+        np.savez(
+            shard_dir / "prompt.npz",
+            hidden=np.zeros((2, 1024), dtype=np.float32),
+            mask=np.ones(2, dtype=np.bool_),
+        )
+        assigned = [
+            (prompt_id, split)
+            for prompt_id, split in prompts
+            if pitch3_lte_prompt_shard(prompt_id, shard_count) == shard_index
+        ]
+        rows = []
+        for prompt_id, split in assigned:
+            for seed in range(4):
+                rows.append(
+                    {
+                        "sample_id": f"{prompt_id}__base{seed}",
+                        "prompt_id": prompt_id,
+                        "prompt_family": prompt_id.rsplit("__v", 1)[0],
+                        "trajectory_id": f"{prompt_id}__seed{seed}",
+                        "split": split,
+                        "source_kind": "base_step4_seed",
+                        "latent_path": "latent.npy",
+                        "latent_sha256": "7" * 64,
+                        "prompt_embedding_path": "prompt.npz",
+                        "prompt_embedding_sha256": "8" * 64,
+                        "exact_band": seed,
+                        "energy_target": seed,
+                        "coordinates_json": "[0,0,0]",
+                        "direction_id": "",
+                        "direction_sign": 0,
+                        "epsilon": 0,
+                        "radius_ratio": 0,
+                        "step_number": 4,
+                        "timestep": 0.8333333,
+                        "fingerprint_json_sha256": "4" * 64,
+                        "ace_model_sha256": "5" * 64,
+                        "vae_sha256": "6" * 64,
+                        "dataset_plan_sha256": "9" * 64,
+                    }
+                )
+            for direction in range(2):
+                for sign, target in ((-1, 0.1), (1, 0.2)):
+                    rows.append(
+                        {
+                            **rows[-1],
+                            "sample_id": f"{prompt_id}__d{direction}__{sign}",
+                            "source_kind": "local_finite_difference",
+                            "direction_id": f"{prompt_id}__d{direction}",
+                            "direction_sign": sign,
+                            "epsilon": 0.05,
+                            "radius_ratio": 0.05,
+                            "energy_target": target + direction,
+                        }
+                    )
+        manifest_path = shard_dir / "pitch3_lte_examples.csv"
+        write_csv_atomic(manifest_path, rows)
+        plan = {
+            "schema_version": 1,
+            "shard_index": shard_index,
+            "shard_count": shard_count,
+            "prompt_ids": [prompt_id for prompt_id, _ in assigned],
+            "planned_local_samples": len(assigned) * 4,
+            **common,
+        }
+        (shard_dir / "pitch3_lte_dataset_plan.json").write_text(json.dumps(plan), encoding="utf-8")
+        summary = {
+            "shard_index": shard_index,
+            "shard_count": shard_count,
+            "dataset_manifest_sha256": sha256_file(manifest_path),
+            "local_preflight_passed": True,
+        }
+        (shard_dir / "pitch3_lte_dataset_summary.json").write_text(
+            json.dumps(summary), encoding="utf-8"
+        )
+    result = merge_pitch3_lte_dataset_shards(
+        output_dir=tmp_path,
+        shard_dirs=shard_dirs,
+        devices=("cuda:0", "cuda:1"),
+    )
+    assert result["multi_gpu"] is True
+    assert result["base_samples"] == 1536
+    assert result["local_samples"] == 1536
 
 
 @pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")

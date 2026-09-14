@@ -4,7 +4,14 @@ set -euo pipefail
 PROJECT_ROOT="${PROJECT_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 PYTHON_BIN="${PYTHON_BIN:-python}"
 export PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
-DEVICE="${LTE_DEVICE:-cuda:1}"
+DEVICES="${LTE_DEVICES:-}"
+DEVICE="${LTE_DEVICE:-}"
+if [[ -z "${DEVICE}" ]]; then
+  DEVICE="${DEVICES%% *}"
+  DEVICE="${DEVICE:-cuda:1}"
+fi
+WORKERS_PER_DEVICE="${LTE_WORKERS_PER_DEVICE:-4}"
+EXACT_BATCH_SIZE="${LTE_EXACT_BATCH_SIZE:-32}"
 STAGE="${1:-all}"
 RUN_ROOT="${LTE_RUN_ROOT:-${PROJECT_ROOT}/runs/pitch3_lte_v3}"
 SOURCE_MANIFEST="${LTE_SOURCE_MANIFEST:-${PROJECT_ROOT}/runs/pitch3_ltch/ood_v2/pitch3_training_manifest_augmented.csv}"
@@ -26,6 +33,17 @@ prompt_embeddings() {
 }
 
 local_dataset() {
+  local -a device_args device_list
+  if [[ -n "${DEVICES}" ]]; then
+    read -r -a device_list <<< "${DEVICES}"
+    if (( ${#device_list[@]} < 2 )); then
+      echo "LTE_DEVICES must contain at least two devices" >&2
+      exit 2
+    fi
+    device_args=(--devices "${device_list[@]}" --workers-per-device "${WORKERS_PER_DEVICE}")
+  else
+    device_args=(--device "${DEVICE}")
+  fi
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/build_pitch3_lte_local_pairs.py" \
     --root "${PROJECT_ROOT}" \
     --source-manifest "${SOURCE_MANIFEST}" \
@@ -33,7 +51,8 @@ local_dataset() {
     --output-dir "${DATA_DIR}" \
     --include-splits train development \
     --local-splits train development \
-    --device "${DEVICE}"
+    --exact-batch-size "${EXACT_BATCH_SIZE}" \
+    "${device_args[@]}"
 }
 
 train_model() {
