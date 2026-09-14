@@ -6,9 +6,10 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = ROOT / "src"
-if str(SRC) not in sys.path:
-    sys.path.insert(0, str(SRC))
+LOCAL_IMPORT_ROOTS = (ROOT / "src", ROOT / "packages" / "pyglmy" / "src")
+for local_root in reversed(LOCAL_IMPORT_ROOTS):
+    if local_root.is_dir() and str(local_root) not in sys.path:
+        sys.path.insert(0, str(local_root))
 
 from generation.pitch3_ood import build_pitch3_ood_augmentation  # noqa: E402
 
