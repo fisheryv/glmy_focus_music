@@ -9,7 +9,7 @@ import random
 import tomllib
 from collections import defaultdict
 from collections.abc import Iterator, Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -60,6 +60,15 @@ class Pitch3LTETrainingConfig:
     energy_strata_weight_cap: float = 1.0
     local_flat_normalizer: float = 0.0
     maximum_initial_component_contribution: float = 0.0
+    batch_pairing_mode: str = "random_prompt_v32"
+    cross_prompt_family_only: bool = False
+    training_schedule: str = "joint_v3"
+    global_stage_epochs: int = 0
+    local_stage_minimum_epochs: int = 0
+    local_anchor_weight: float = 0.0
+    local_anchor_normalizer: float = 1.0
+    ema_decay: float = 0.0
+    global_value_base_only: bool = False
 
     def validate(self) -> None:
         if self.max_epochs < 1 or not 1 <= self.minimum_epochs <= self.max_epochs:
@@ -99,6 +108,29 @@ class Pitch3LTETrainingConfig:
             raise ValueError("V3-LTE local flat normalizer must be non-negative")
         if self.maximum_initial_component_contribution < 0:
             raise ValueError("V3-LTE component contribution limit must be non-negative")
+        if self.batch_pairing_mode not in {"random_prompt_v32", "family_round_robin_v33"}:
+            raise ValueError("unknown V3-LTE batch pairing mode")
+        if self.batch_pairing_mode == "family_round_robin_v33" and (
+            self.prompt_groups_per_batch != 2 or not self.cross_prompt_family_only
+        ):
+            raise ValueError("V3.3 family round-robin requires two same-family prompt groups")
+        if self.training_schedule not in {"joint_v3", "global_then_local_v33"}:
+            raise ValueError("unknown V3-LTE training schedule")
+        if self.training_schedule == "global_then_local_v33":
+            if not 1 <= self.global_stage_epochs < self.max_epochs:
+                raise ValueError("V3.3 global stage must end before max_epochs")
+            if not 1 <= self.local_stage_minimum_epochs <= (
+                self.max_epochs - self.global_stage_epochs
+            ):
+                raise ValueError("V3.3 local-stage minimum is invalid")
+            if self.prompt_frozen_epochs != 0:
+                raise ValueError("V3.3 uses stage freezing, not prompt-only freezing")
+            if self.local_anchor_weight <= 0 or self.local_anchor_normalizer < 0:
+                raise ValueError("V3.3 local residual anchor is invalid")
+            if not self.global_value_base_only:
+                raise ValueError("V3.3 global value loss must be restricted to base latents")
+        if not 0.0 <= self.ema_decay < 1.0:
+            raise ValueError("V3-LTE EMA decay must lie in [0,1)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -277,11 +309,17 @@ class PromptBatchSampler(Sampler[list[int]]):
         seed: int,
         shuffle: bool,
         groups_per_batch: int = 1,
+        pairing_mode: str = "random_prompt_v32",
     ) -> None:
         grouped: dict[str, list[int]] = defaultdict(list)
+        prompt_families: dict[str, str] = {}
         for index, record in enumerate(records):
             grouped[record.prompt_id].append(index)
+            prompt_families.setdefault(record.prompt_id, record.prompt_family)
+            if prompt_families[record.prompt_id] != record.prompt_family:
+                raise LTSNContractError("V3-LTE prompt spans multiple prompt families")
         self.groups = []
+        self.group_families = []
         for prompt_id, indices in sorted(grouped.items()):
             base = [index for index in indices if records[index].source_kind == "base_step4_seed"]
             local = [
@@ -300,23 +338,52 @@ class PromptBatchSampler(Sampler[list[int]]):
             ):
                 raise LTSNContractError(f"V3-LTE prompt has incomplete local pairs: {prompt_id}")
             self.groups.append(base + local)
+            self.group_families.append(prompt_families[prompt_id])
         self.seed = seed
         self.shuffle = shuffle
         if groups_per_batch < 1:
             raise ValueError("groups_per_batch must be positive")
         self.groups_per_batch = groups_per_batch
+        if pairing_mode not in {"random_prompt_v32", "family_round_robin_v33"}:
+            raise ValueError("unknown V3-LTE prompt pairing mode")
+        if pairing_mode == "family_round_robin_v33" and groups_per_batch != 2:
+            raise ValueError("V3.3 family round-robin requires two groups per batch")
+        self.pairing_mode = pairing_mode
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
 
     def __iter__(self) -> Iterator[list[int]]:
+        if self.pairing_mode == "family_round_robin_v33":
+            yield from self._family_round_robin_batches()
+            return
         groups = [values.copy() for values in self.groups]
         if self.shuffle:
             random.Random(self.seed + 1_000_003 * self.epoch).shuffle(groups)
         for start in range(0, len(groups), self.groups_per_batch):
             selected = groups[start : start + self.groups_per_batch]
             yield [index for group in selected for index in group]
+
+    def _family_round_robin_batches(self) -> Iterator[list[int]]:
+        by_family: dict[str, list[list[int]]] = defaultdict(list)
+        for family, group in zip(self.group_families, self.groups, strict=True):
+            by_family[family].append(group.copy())
+        batches: list[list[int]] = []
+        for family, groups in sorted(by_family.items()):
+            if len(groups) < 2 or len(groups) % 2:
+                raise LTSNContractError(
+                    f"V3.3 family requires an even prompt count of at least two: {family}"
+                )
+            rotation = (max(self.epoch, 1) - 1) % (len(groups) - 1)
+            arranged = groups.copy()
+            for _ in range(rotation):
+                arranged = [arranged[0], arranged[-1], *arranged[1:-1]]
+            for index in range(len(arranged) // 2):
+                batches.append(arranged[index] + arranged[-1 - index])
+        if self.shuffle:
+            random.Random(self.seed + 1_000_003 * self.epoch).shuffle(batches)
+        yield from batches
 
     def __len__(self) -> int:
         return math.ceil(len(self.groups) / self.groups_per_batch)
@@ -349,7 +416,9 @@ def _pair_indices(batch: Mapping[str, Any]) -> tuple[list[tuple[int, int]], list
     return rank_pairs, fd_pairs
 
 
-def _cross_prompt_rank_pairs(batch: Mapping[str, Any]) -> list[tuple[int, int]]:
+def _cross_prompt_rank_pairs(
+    batch: Mapping[str, Any], *, within_family_only: bool = False
+) -> list[tuple[int, int]]:
     base_by_prompt: dict[str, list[int]] = defaultdict(list)
     for index, (kind, prompt_id) in enumerate(
         zip(batch["source_kind"], batch["prompt_id"], strict=True)
@@ -361,6 +430,9 @@ def _cross_prompt_rank_pairs(batch: Mapping[str, Any]) -> list[tuple[int, int]]:
         (left, right)
         for group_index, left_group in enumerate(prompt_groups)
         for right_group in prompt_groups[group_index + 1 :]
+        if not within_family_only
+        or str(batch["prompt_family"][left_group[0]])
+        == str(batch["prompt_family"][right_group[0]])
         for left in left_group
         for right in right_group
     ]
@@ -378,22 +450,34 @@ def pitch3_lte_raw_losses(
     local_shape_weight: float = 0.25,
     local_flat_weight: float = 0.25,
     include_cross_prompt_rank: bool = False,
+    cross_prompt_family_only: bool = False,
     energy_strata_thresholds: Sequence[float] = (),
     energy_strata_weights: Sequence[float] = (),
+    value_base_only: bool = False,
 ) -> dict[str, Tensor]:
     target = batch["energy_target"].float()
     value_terms = F.huber_loss(
         predicted.float(), target, delta=huber_delta, reduction="none"
     )
+    value_mask = target.new_tensor(
+        [kind == "base_step4_seed" for kind in batch["source_kind"]],
+        dtype=torch.bool,
+    )
+    if not value_base_only:
+        value_mask = torch.ones_like(value_mask)
+    if not bool(value_mask.any()):
+        raise LTSNContractError("V3-LTE value loss has no eligible samples")
     if energy_strata_thresholds:
         if len(energy_strata_weights) != len(energy_strata_thresholds) + 1:
             raise ValueError("V3-LTE energy strata weights do not match thresholds")
         boundaries = target.new_tensor(tuple(energy_strata_thresholds))
         strata = torch.bucketize(target, boundaries, right=False)
         weights = target.new_tensor(tuple(energy_strata_weights))[strata]
-        value = (value_terms * weights).sum() / weights.sum().clamp_min(1e-8)
+        value = (value_terms[value_mask] * weights[value_mask]).sum() / weights[
+            value_mask
+        ].sum().clamp_min(1e-8)
     else:
-        value = value_terms.mean()
+        value = value_terms[value_mask].mean()
     rank_terms = []
     cross_rank_terms = []
     fd_terms = []
@@ -409,7 +493,9 @@ def pitch3_lte_raw_losses(
                 F.softplus(-torch.sign(exact_delta) * (predicted[left] - predicted[right]))
             )
     if include_cross_prompt_rank:
-        for left, right in _cross_prompt_rank_pairs(batch):
+        for left, right in _cross_prompt_rank_pairs(
+            batch, within_family_only=cross_prompt_family_only
+        ):
             exact_delta = target[left] - target[right]
             if exact_delta.abs() >= rank_min_delta:
                 cross_rank_terms.append(
@@ -540,8 +626,10 @@ def _raw_loss_kwargs(
         "local_shape_weight": training.local_shape_weight,
         "local_flat_weight": training.local_flat_weight,
         "include_cross_prompt_rank": training.cross_prompt_rank_weight > 0,
+        "cross_prompt_family_only": training.cross_prompt_family_only,
         "energy_strata_thresholds": tuple(energy_strata["thresholds"]),
         "energy_strata_weights": tuple(energy_strata["weights"]),
+        "value_base_only": training.global_value_base_only,
     }
 
 
@@ -620,6 +708,23 @@ def _training_forward(
     return predicted, consistency
 
 
+def _local_residual_anchor(
+    local_energy: Tensor,
+    batch: Mapping[str, Any],
+    scale: float,
+) -> Tensor:
+    """Keep the V3.3 local potential near zero on every base Step-4 latent."""
+
+    base_indices = []
+    for index, kind in enumerate(batch["source_kind"]):
+        if kind == "base_step4_seed":
+            base_indices.append(index)
+    if not base_indices:
+        return local_energy.sum() * 0.0
+    anchored = local_energy[base_indices] / scale
+    return F.smooth_l1_loss(anchored, torch.zeros_like(anchored))
+
+
 def _set_prompt_interaction_trainable(
     model: PromptConditionedTopologyEnergy,
     enabled: bool,
@@ -638,6 +743,50 @@ def _set_prompt_interaction_trainable(
     )
     for module in modules:
         module.requires_grad_(enabled)
+
+
+def _training_stage(training: Pitch3LTETrainingConfig, epoch: int) -> str:
+    if training.training_schedule != "global_then_local_v33":
+        return "joint"
+    return "global" if epoch <= training.global_stage_epochs else "local"
+
+
+def _set_training_stage_trainable(
+    model: PromptConditionedTopologyEnergy,
+    training: Pitch3LTETrainingConfig,
+    stage: str,
+) -> None:
+    if training.training_schedule != "global_then_local_v33":
+        _set_prompt_interaction_trainable(model, stage != "prompt_frozen")
+        model.train()
+        return
+    if model.config.potential_mode != "global_local_v33":
+        raise LTSNContractError("V3.3 schedule requires decomposed scalar potentials")
+    if stage == "global":
+        model.requires_grad_(True)
+        model.local_energy_head.requires_grad_(False)
+        model.train()
+        return
+    if stage != "local":
+        raise ValueError(f"unknown V3.3 training stage: {stage}")
+    model.requires_grad_(False)
+    model.local_energy_head.requires_grad_(True)
+    model.eval()
+    model.local_energy_head.train()
+
+
+def _update_ema_model(
+    ema_model: PromptConditionedTopologyEnergy,
+    model: PromptConditionedTopologyEnergy,
+    decay: float,
+) -> None:
+    with torch.no_grad():
+        for ema_parameter, parameter in zip(
+            ema_model.parameters(), model.parameters(), strict=True
+        ):
+            ema_parameter.lerp_(parameter.detach(), 1.0 - decay)
+        for ema_buffer, buffer in zip(ema_model.buffers(), model.buffers(), strict=True):
+            ema_buffer.copy_(buffer.detach())
 
 
 def _to_device(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
@@ -937,10 +1086,32 @@ def train_pitch3_lte(
     config_path: Path,
     output_dir: Path,
     device_name: str = "cpu",
+    seed_override: int | None = None,
 ) -> dict[str, Any]:
     dataset_manifest = dataset_manifest.resolve()
     contract = load_pitch3_contract(fingerprint_path)
     model_config, training = load_pitch3_lte_config(config_path)
+    source_training_config_sha256 = sha256_file(config_path)
+    effective_config_path: Path | None = None
+    effective_training_config_sha256 = source_training_config_sha256
+    if seed_override is not None:
+        if seed_override < 0:
+            raise ValueError("V3-LTE seed override must be non-negative")
+        training = replace(training, seed=seed_override)
+        training.validate()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        effective_config_path = output_dir / "pitch3_lte_effective_config.json"
+        write_json_atomic(
+            effective_config_path,
+            {"model": asdict(model_config), "training": asdict(training)},
+        )
+        effective_training_config_sha256 = sha256_file(effective_config_path)
+    if (training.training_schedule == "global_then_local_v33") != (
+        model_config.potential_mode == "global_local_v33"
+    ):
+        raise LTSNContractError(
+            "V3.3 model and two-stage training contracts must be enabled together"
+        )
     dataset_summary_path = dataset_manifest.parent / "pitch3_lte_dataset_summary.json"
     if dataset_summary_path.is_file():
         dataset_summary = json.loads(dataset_summary_path.read_text(encoding="utf-8"))
@@ -970,8 +1141,13 @@ def train_pitch3_lte(
     if not any(record.source_kind == "local_finite_difference" for record in development_records):
         raise LTSNContractError("V3-LTE checkpoint selection requires held-out local pairs")
     local_scales = _local_training_scales(train_records, training.rank_min_delta)
+    energy_strata_records = (
+        [record for record in train_records if record.source_kind == "base_step4_seed"]
+        if training.global_value_base_only
+        else train_records
+    )
     energy_strata = _energy_strata(
-        train_records,
+        energy_strata_records,
         training.energy_strata_positive_bins,
         training.energy_strata_weight_cap,
     )
@@ -980,12 +1156,16 @@ def train_pitch3_lte(
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested for V3-LTE but is unavailable")
     model = PromptConditionedTopologyEnergy(model_config).to(device)
-    _set_prompt_interaction_trainable(model, training.prompt_frozen_epochs == 0)
+    if training.training_schedule == "global_then_local_v33":
+        _set_training_stage_trainable(model, training, "global")
+    else:
+        _set_prompt_interaction_trainable(model, training.prompt_frozen_epochs == 0)
     train_sampler = PromptBatchSampler(
         train_records,
         training.seed,
         True,
         groups_per_batch=training.prompt_groups_per_batch,
+        pairing_mode=training.batch_pairing_mode,
     )
     development_sampler = PromptBatchSampler(development_records, training.seed, False)
     train_loader = DataLoader(
@@ -1011,9 +1191,19 @@ def train_pitch3_lte(
         energy_strata,
     )
     component_weights = _loss_component_weights(training, tuple(normalizers))
+    local_anchor_scale = (
+        training.local_anchor_normalizer
+        if training.local_anchor_normalizer > 0
+        else float(local_scales["local_delta_scale"])
+    )
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=training.learning_rate, weight_decay=training.weight_decay
     )
+    ema_model: PromptConditionedTopologyEnergy | None = None
+    if training.ema_decay > 0:
+        ema_model = PromptConditionedTopologyEnergy(model_config).to(device)
+        ema_model.load_state_dict(model.state_dict())
+        ema_model.eval().requires_grad_(False)
     output_dir.mkdir(parents=True, exist_ok=True)
     checkpoint_path = output_dir / f"pitch3_lte_seed_{training.seed}.pt"
     candidate_paths = {
@@ -1033,7 +1223,11 @@ def train_pitch3_lte(
         "fingerprint_id": contract.fingerprint_id,
         "fingerprint_spec_revision": contract.spec_revision,
         "fingerprint_json_sha256": contract.artifact_sha256,
-        "training_config_sha256": sha256_file(config_path),
+        "training_config_sha256": effective_training_config_sha256,
+        "source_training_config_sha256": source_training_config_sha256,
+        "effective_training_config": (
+            str(effective_config_path.resolve()) if effective_config_path is not None else None
+        ),
         "training_manifest_sha256": sha256_file(dataset_manifest),
         "dataset_plan_sha256": dataset_summary.get("dataset_plan_sha256"),
         "dataset_preflight_source": dataset_preflight_source,
@@ -1041,12 +1235,16 @@ def train_pitch3_lte(
         "device": device_name,
         "precision": "bf16_forward_fp32_loss" if training.use_bf16 else "fp32",
         "architecture_revision": (
-            "v3.2_dual_rms_latent_primary_prompt_residual"
-            if model_config.latent_stem_mode == "dual_rms_v32"
+            "v3.3_family_round_robin_dual_potential"
+            if model_config.potential_mode == "global_local_v33"
             else (
-                "v3.1_latent_primary_prompt_residual"
-                if model_config.fusion_mode == "latent_primary_residual_v31"
-                else "v3_joint_fusion"
+                "v3.2_dual_rms_latent_primary_prompt_residual"
+                if model_config.latent_stem_mode == "dual_rms_v32"
+                else (
+                    "v3.1_latent_primary_prompt_residual"
+                    if model_config.fusion_mode == "latent_primary_residual_v31"
+                    else "v3_joint_fusion"
+                )
             )
         ),
         "energy_target": "log1p(exact_pitch3_target_band_loss)",
@@ -1065,6 +1263,23 @@ def train_pitch3_lte(
             "dropout_probability": training.prompt_dropout_probability,
             "consistency_weight": training.prompt_consistency_weight,
             "frozen_epochs": training.prompt_frozen_epochs,
+        },
+        "batch_pairing": {
+            "mode": training.batch_pairing_mode,
+            "cross_prompt_family_only": training.cross_prompt_family_only,
+            "round_robin_cycle_epochs": 15
+            if training.batch_pairing_mode == "family_round_robin_v33"
+            else None,
+        },
+        "potential_training": {
+            "mode": model_config.potential_mode,
+            "schedule": training.training_schedule,
+            "global_stage_epochs": training.global_stage_epochs,
+            "local_stage_minimum_epochs": training.local_stage_minimum_epochs,
+            "local_anchor_weight": training.local_anchor_weight,
+            "local_anchor_scale": local_anchor_scale,
+            "ema_decay": training.ema_decay,
+            "evaluation_band_formula_changed": False,
         },
         "prompt_collapse_gate": {
             "maximum_predicted_range": LTE_COLLAPSE_PREDICTED_RANGE,
@@ -1089,6 +1304,8 @@ def train_pitch3_lte(
         epoch: int,
         development_loss: float,
         metrics: Mapping[str, Any],
+        candidate_model: PromptConditionedTopologyEnergy,
+        parameter_source: str,
     ) -> None:
         metadata = {
             **metadata_base,
@@ -1099,10 +1316,11 @@ def train_pitch3_lte(
             "trainable_parameters": sum(parameter.numel() for parameter in model.parameters()),
             "checkpoint_candidate_kind": name,
             "checkpoint_candidate_key": list(key),
+            "checkpoint_parameter_source": parameter_source,
         }
         torch.save(
             {
-                "model_state_dict": model.state_dict(),
+                "model_state_dict": candidate_model.state_dict(),
                 "model_config": asdict(model_config),
                 "training_config": asdict(training),
                 "metadata": metadata,
@@ -1115,15 +1333,37 @@ def train_pitch3_lte(
             "selection_key": list(key),
             "development_gate_deficit": float(metrics["total_gate_deficit"]),
             "all_gates_passed": bool(metrics["all_gates_passed"]),
+            "parameter_source": parameter_source,
         }
 
+    global_component_names = {"value", "prompt_rank", "cross_prompt_rank"}
+    local_component_names = {
+        "local_fd",
+        "local_robust",
+        "local_direction",
+        "local_shape",
+        "local_flat",
+    }
     for epoch in range(1, training.max_epochs + 1):
         train_sampler.set_epoch(epoch)
-        prompt_interaction_enabled = epoch > training.prompt_frozen_epochs
-        _set_prompt_interaction_trainable(model, prompt_interaction_enabled)
-        model.train()
+        stage = _training_stage(training, epoch)
+        if training.training_schedule == "global_then_local_v33":
+            _set_training_stage_trainable(model, training, stage)
+            prompt_interaction_enabled = stage == "global"
+            active_names = (
+                global_component_names if stage == "global" else local_component_names
+            ) & set(normalizers)
+            if stage == "local" and epoch == training.global_stage_epochs + 1:
+                patience = 0
+        else:
+            prompt_interaction_enabled = epoch > training.prompt_frozen_epochs
+            _set_prompt_interaction_trainable(model, prompt_interaction_enabled)
+            model.train()
+            active_names = set(normalizers)
+        if not active_names:
+            raise LTSNContractError(f"V3-LTE {stage} stage has no active loss components")
         sums = {name: 0.0 for name in normalizers}
-        sums.update({"prompt_consistency": 0.0, "total": 0.0})
+        sums.update({"prompt_consistency": 0.0, "local_anchor": 0.0, "total": 0.0})
         batches = 0
         for raw in train_loader:
             batch = _to_device(raw, device)
@@ -1133,12 +1373,31 @@ def train_pitch3_lte(
                 dtype=torch.bfloat16,
                 enabled=training.use_bf16 and device.type == "cuda",
             ):
-                predicted, prompt_consistency = _training_forward(
-                    model,
-                    batch,
-                    training,
-                    prompt_regularization_enabled=prompt_interaction_enabled,
-                )
+                if training.training_schedule == "global_then_local_v33":
+                    latent_state = model.encode_latent(batch["latent"], batch["attention_mask"])
+                    prompt_state = model.encode_prompt(batch["text_hidden"], batch["text_mask"])
+                    potentials = model.potential_components_from_states(
+                        latent_state, prompt_state
+                    )
+                    predicted = (
+                        potentials.global_energy if stage == "global" else potentials.energy
+                    )
+                    prompt_consistency = predicted.sum() * 0.0
+                    local_anchor = (
+                        _local_residual_anchor(
+                            potentials.local_energy, batch, local_anchor_scale
+                        )
+                        if stage == "local"
+                        else predicted.sum() * 0.0
+                    )
+                else:
+                    predicted, prompt_consistency = _training_forward(
+                        model,
+                        batch,
+                        training,
+                        prompt_regularization_enabled=prompt_interaction_enabled,
+                    )
+                    local_anchor = predicted.sum() * 0.0
             raw_losses = pitch3_lte_raw_losses(
                 predicted.float(),
                 batch,
@@ -1146,33 +1405,60 @@ def train_pitch3_lte(
             )
             total = sum(
                 component_weights[name] * raw_losses[name] / normalizers[name]
-                for name in normalizers
+                for name in active_names
             )
             total = total + (
                 training.prompt_consistency_weight
                 * prompt_consistency.float()
                 / normalizers["value"]
             )
+            if stage == "local":
+                total = total + training.local_anchor_weight * local_anchor.float()
             total.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), training.gradient_clip_norm)
+            torch.nn.utils.clip_grad_norm_(
+                [parameter for parameter in model.parameters() if parameter.requires_grad],
+                training.gradient_clip_norm,
+            )
             optimizer.step()
+            if ema_model is not None:
+                _update_ema_model(ema_model, model, training.ema_decay)
             for name, loss in raw_losses.items():
                 sums[name] += float(loss.detach().cpu())
             sums["prompt_consistency"] += float(prompt_consistency.detach().cpu())
+            sums["local_anchor"] += float(local_anchor.detach().cpu())
             sums["total"] += float(total.detach().cpu())
             batches += 1
-        development_rows = _prediction_rows(model, development_loader, device, use_bf16=False)
-        metrics = pitch3_lte_metrics(development_rows)
-        development_loss = _normalized_dataset_loss(
-            model,
-            development_loader,
-            device,
-            training,
-            normalizers,
-            local_scales,
-            energy_strata,
-            component_weights,
+
+        evaluation_variants: list[
+            tuple[str, PromptConditionedTopologyEnergy, dict[str, Any], float]
+        ] = []
+        for source, evaluated_model in (
+            [("online", model)]
+            + ([("ema", ema_model)] if ema_model is not None else [])
+        ):
+            development_rows = _prediction_rows(
+                evaluated_model, development_loader, device, use_bf16=False
+            )
+            variant_metrics = pitch3_lte_metrics(development_rows)
+            variant_loss = _normalized_dataset_loss(
+                evaluated_model,
+                development_loader,
+                device,
+                training,
+                normalizers,
+                local_scales,
+                energy_strata,
+                component_weights,
+            )
+            evaluation_variants.append(
+                (source, evaluated_model, variant_metrics, variant_loss)
+            )
+        gate_variant = min(
+            evaluation_variants,
+            key=lambda item: (float(item[2]["total_gate_deficit"]), item[3]),
         )
+        source, selected_model, metrics, development_loss = gate_variant
+        selection = (float(metrics["total_gate_deficit"]), development_loss)
         epoch_losses = {name: value / max(batches, 1) for name, value in sums.items()}
         normalized_contributions = {
             name: component_weights[name] * epoch_losses[name] / normalizers[name]
@@ -1183,10 +1469,18 @@ def train_pitch3_lte(
             * epoch_losses["prompt_consistency"]
             / normalizers["value"]
         )
+        normalized_contributions["local_anchor"] = (
+            training.local_anchor_weight * epoch_losses["local_anchor"]
+        )
+        active_contributions = {
+            name: normalized_contributions[name] for name in active_names
+        }
+        if stage == "local":
+            active_contributions["local_anchor"] = normalized_contributions["local_anchor"]
         if epoch == 1 and training.maximum_initial_component_contribution > 0:
             excessive = {
                 name: value
-                for name, value in normalized_contributions.items()
+                for name, value in active_contributions.items()
                 if value > training.maximum_initial_component_contribution
             }
             if excessive:
@@ -1195,11 +1489,13 @@ def train_pitch3_lte(
                     "stage": "pitch3_lte_loss_balance_preflight",
                     "status": "failed",
                     "epoch": epoch,
+                    "training_stage": stage,
                     "maximum_initial_component_contribution": (
                         training.maximum_initial_component_contribution
                     ),
                     "raw_epoch_training_loss": epoch_losses,
                     "normalized_contributions": normalized_contributions,
+                    "active_normalized_contributions": active_contributions,
                     "excessive_components": excessive,
                     "component_weights": component_weights,
                     "initial_loss_medians": initial_loss_medians,
@@ -1214,42 +1510,101 @@ def train_pitch3_lte(
                 raise LTSNContractError(
                     "V3-LTE initial loss component contribution exceeded its frozen limit"
                 )
-        selection = (float(metrics["total_gate_deficit"]), development_loss)
         history.append(
             {
                 "epoch": epoch,
+                "training_stage": stage,
                 "training_loss": epoch_losses,
                 "normalized_training_contributions": normalized_contributions,
+                "active_normalized_training_contributions": active_contributions,
                 "development_normalized_loss": development_loss,
                 "development_metrics": metrics,
+                "development_parameter_source": source,
+                "development_variants": {
+                    variant_source: {
+                        "normalized_loss": variant_loss,
+                        "metrics": variant_metrics,
+                    }
+                    for variant_source, _, variant_metrics, variant_loss in evaluation_variants
+                },
                 "selection_key": list(selection),
                 "prompt_interaction_enabled": prompt_interaction_enabled,
             }
         )
-        energy_selection = (
-            -float(metrics["direct_energy_spearman"]),
-            -float(metrics["minimum_prompt_family_spearman"]),
-            development_loss,
+        candidate_eligible = (
+            training.training_schedule != "global_then_local_v33" or stage == "local"
         )
-        direction_selection = (
-            -float(metrics["local_direction_sign_accuracy"]),
-            -float(metrics["local_derivative_spearman"]),
-            development_loss,
+        if not candidate_eligible:
+            continue
+        energy_variant = min(
+            evaluation_variants,
+            key=lambda item: (
+                -float(item[2]["direct_energy_spearman"]),
+                -float(item[2]["minimum_prompt_family_spearman"]),
+                item[3],
+            ),
+        )
+        direction_variant = min(
+            evaluation_variants,
+            key=lambda item: (
+                -float(item[2]["local_direction_sign_accuracy"]),
+                -float(item[2]["local_derivative_spearman"]),
+                item[3],
+            ),
         )
         if selection < candidate_keys["gate_deficit"]:
             patience = 0
-            save_candidate("gate_deficit", selection, epoch, development_loss, metrics)
+            save_candidate(
+                "gate_deficit",
+                selection,
+                epoch,
+                development_loss,
+                metrics,
+                selected_model,
+                source,
+            )
         else:
             patience += 1
+        energy_source, energy_model, energy_metrics, energy_loss = energy_variant
+        energy_selection = (
+            -float(energy_metrics["direct_energy_spearman"]),
+            -float(energy_metrics["minimum_prompt_family_spearman"]),
+            energy_loss,
+        )
         if energy_selection < candidate_keys["global_energy"]:
             save_candidate(
-                "global_energy", energy_selection, epoch, development_loss, metrics
+                "global_energy",
+                energy_selection,
+                epoch,
+                energy_loss,
+                energy_metrics,
+                energy_model,
+                energy_source,
             )
+        direction_source, direction_model, direction_metrics, direction_loss = direction_variant
+        direction_selection = (
+            -float(direction_metrics["local_direction_sign_accuracy"]),
+            -float(direction_metrics["local_derivative_spearman"]),
+            direction_loss,
+        )
         if direction_selection < candidate_keys["local_direction"]:
             save_candidate(
-                "local_direction", direction_selection, epoch, development_loss, metrics
+                "local_direction",
+                direction_selection,
+                epoch,
+                direction_loss,
+                direction_metrics,
+                direction_model,
+                direction_source,
             )
-        if epoch >= training.minimum_epochs and patience >= training.early_stopping_patience:
+        if training.training_schedule == "global_then_local_v33":
+            local_epoch = epoch - training.global_stage_epochs
+            if (
+                local_epoch >= training.local_stage_minimum_epochs
+                and patience >= training.early_stopping_patience
+            ):
+                break
+        elif epoch >= training.minimum_epochs and patience >= training.early_stopping_patience:
             break
     _, best_metadata = load_pitch3_lte_checkpoint(checkpoint_path, device=device)
     for name, path in candidate_paths.items():
@@ -1262,7 +1617,11 @@ def train_pitch3_lte(
     manifest = {
         **best_metadata,
         "epochs_completed": len(history),
-        "checkpoint_selection": "fp32_development_gate_deficit_then_normalized_training_loss",
+        "checkpoint_selection": (
+            "online_or_ema_fp32_development_gate_deficit_then_normalized_loss"
+            if training.ema_decay > 0
+            else "fp32_development_gate_deficit_then_normalized_training_loss"
+        ),
         "checkpoint": str(checkpoint_path.resolve()),
         "checkpoint_sha256": sha256_file(checkpoint_path),
         "checkpoint_candidates": candidate_records,

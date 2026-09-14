@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -186,6 +187,7 @@ def test_lte_model_losses_and_one_shot_guidance() -> None:
     from generation.pitch3_lte import (
         Pitch3LTEConfig,
         Pitch3LTECorrector,
+        Pitch3LTEEnergyEnsemble,
         Pitch3LTEGuidanceConfig,
         PromptConditionedTopologyEnergy,
     )
@@ -282,6 +284,32 @@ def test_lte_model_losses_and_one_shot_guidance() -> None:
     )
     assert dual_model(latent, latent_mask, text, text_mask).energy.shape == (8,)
 
+    v33_model = PromptConditionedTopologyEnergy(
+        Pitch3LTEConfig(
+            model_dim=16,
+            transformer_heads=4,
+            transformer_layers=1,
+            feedforward_dim=32,
+            temporal_stride=2,
+            dropout=0.0,
+            fusion_mode="latent_primary_residual_v31",
+            latent_stem_mode="dual_rms_v32",
+            potential_mode="global_local_v33",
+        )
+    ).eval()
+    latent_state = v33_model.encode_latent(latent, latent_mask)
+    prompt_state = v33_model.encode_prompt(text, text_mask)
+    components = v33_model.potential_components_from_states(latent_state, prompt_state)
+    assert torch.allclose(components.energy, components.global_energy + components.local_energy)
+    assert torch.count_nonzero(components.local_energy) == 0
+    ensemble = Pitch3LTEEnergyEnsemble([dual_model.eval(), v33_model])
+    ensemble_energy = ensemble(latent, latent_mask, text, text_mask).energy
+    expected_energy = 0.5 * (
+        dual_model(latent, latent_mask, text, text_mask).energy
+        + v33_model(latent, latent_mask, text, text_mask).energy
+    )
+    assert torch.allclose(ensemble_energy, expected_energy)
+
     corrector = Pitch3LTECorrector(
         model,
         text[:1],
@@ -310,6 +338,54 @@ def test_lte_model_losses_and_one_shot_guidance() -> None:
     )
     assert skipped is None
     assert torch.equal(untouched, latent[:1])
+
+
+@pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")
+def test_lte_v33_family_round_robin_covers_within_family_pairs() -> None:
+    from generation.pitch3_lte_training import PromptBatchSampler
+
+    records = []
+    for family in ("family_a", "family_b"):
+        for variant in range(4):
+            prompt_id = f"{family}__v{variant:02d}"
+            records.extend(
+                SimpleNamespace(
+                    prompt_id=prompt_id,
+                    prompt_family=family,
+                    source_kind="base_step4_seed",
+                    direction_sign=0,
+                    direction_id="",
+                )
+                for _ in range(4)
+            )
+            for direction in range(2):
+                for sign in (-1, 1):
+                    records.append(
+                        SimpleNamespace(
+                            prompt_id=prompt_id,
+                            prompt_family=family,
+                            source_kind="local_finite_difference",
+                            direction_sign=sign,
+                            direction_id=f"{prompt_id}__d{direction}",
+                        )
+                    )
+    sampler = PromptBatchSampler(
+        records,
+        seed=17,
+        shuffle=False,
+        groups_per_batch=2,
+        pairing_mode="family_round_robin_v33",
+    )
+    observed: dict[str, set[tuple[str, str]]] = {"family_a": set(), "family_b": set()}
+    for epoch in range(1, 4):
+        sampler.set_epoch(epoch)
+        for batch in sampler:
+            prompt_ids = sorted({records[index].prompt_id for index in batch})
+            families = {records[index].prompt_family for index in batch}
+            assert len(prompt_ids) == 2
+            assert len(families) == 1
+            observed[families.pop()].add(tuple(prompt_ids))
+    assert all(len(pairs) == 6 for pairs in observed.values())
 
 
 @pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")

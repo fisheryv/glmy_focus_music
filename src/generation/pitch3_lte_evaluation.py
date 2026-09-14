@@ -22,6 +22,7 @@ from .ltsn_pipeline import write_csv_atomic, write_json_atomic
 from .pitch3_contract import load_pitch3_contract
 from .pitch3_exact_scorer import ExactPitch3Scorer
 from .pitch3_lte import Pitch3LTECorrector, Pitch3LTEGuidanceConfig
+from .pitch3_lte_ensemble import load_pitch3_lte_ensemble
 from .pitch3_lte_training import (
     Pitch3LTEDataset,
     PromptBatchSampler,
@@ -31,6 +32,31 @@ from .pitch3_lte_training import (
     load_pitch3_lte_checkpoint,
     pitch3_lte_metrics,
 )
+
+
+def _load_lte_model_artifact(
+    *,
+    checkpoint_path: Path | None,
+    ensemble_manifest_path: Path | None,
+    device: torch.device,
+    expected_sha256: str | None,
+) -> tuple[Any, dict[str, Any], Path, str]:
+    if (checkpoint_path is None) == (ensemble_manifest_path is None):
+        raise ValueError("select exactly one V3-LTE checkpoint or ensemble manifest")
+    if ensemble_manifest_path is not None:
+        model, metadata = load_pitch3_lte_ensemble(
+            ensemble_manifest_path,
+            device=device,
+            expected_sha256=expected_sha256,
+        )
+        return model, metadata, ensemble_manifest_path, "equal_weight_ensemble"
+    assert checkpoint_path is not None
+    model, metadata = load_pitch3_lte_checkpoint(
+        checkpoint_path,
+        device=device,
+        expected_sha256=expected_sha256,
+    )
+    return model, metadata, checkpoint_path, "checkpoint"
 
 
 def _read_csv(path: Path) -> list[dict[str, str]]:
@@ -74,11 +100,12 @@ def materialize_pitch3_lte_development_guidance(
     fingerprint_path: Path,
     dataset_manifest: Path,
     source_manifest_path: Path,
-    checkpoint_path: Path,
+    checkpoint_path: Path | None,
     ace_config_path: Path,
     prompt_manifest_path: Path,
     output_dir: Path,
     checkpoint_sha256: str | None = None,
+    ensemble_manifest_path: Path | None = None,
     device_name: str = "cuda:0",
     workers: int = 8,
     exact_batch_size: int = 32,
@@ -95,7 +122,10 @@ def materialize_pitch3_lte_development_guidance(
     fingerprint_path = resolve(fingerprint_path)
     dataset_manifest = resolve(dataset_manifest)
     source_manifest_path = resolve(source_manifest_path)
-    checkpoint_path = resolve(checkpoint_path)
+    checkpoint_path = resolve(checkpoint_path) if checkpoint_path is not None else None
+    ensemble_manifest_path = (
+        resolve(ensemble_manifest_path) if ensemble_manifest_path is not None else None
+    )
     ace_config_path = resolve(ace_config_path)
     prompt_manifest_path = resolve(prompt_manifest_path)
     output_dir = resolve(output_dir)
@@ -130,8 +160,11 @@ def materialize_pitch3_lte_development_guidance(
             "V3-LTE final-latent baselines do not match development trajectories"
         )
     device = torch.device(device_name)
-    model, metadata = load_pitch3_lte_checkpoint(
-        checkpoint_path, device=device, expected_sha256=checkpoint_sha256
+    model, metadata, model_artifact_path, model_artifact_kind = _load_lte_model_artifact(
+        checkpoint_path=checkpoint_path,
+        ensemble_manifest_path=ensemble_manifest_path,
+        device=device,
+        expected_sha256=checkpoint_sha256,
     )
     if metadata["fingerprint_json_sha256"] != contract.artifact_sha256:
         raise LTSNContractError("V3-LTE checkpoint fingerprint mismatch")
@@ -173,7 +206,16 @@ def materialize_pitch3_lte_development_guidance(
         "fingerprint_json_sha256": contract.artifact_sha256,
         "dataset_manifest_sha256": sha256_file(dataset_manifest),
         "source_manifest_sha256": sha256_file(source_manifest_path),
-        "checkpoint_sha256": sha256_file(checkpoint_path),
+        "model_artifact_kind": model_artifact_kind,
+        "model_artifact_sha256": sha256_file(model_artifact_path),
+        "checkpoint_sha256": (
+            sha256_file(model_artifact_path) if model_artifact_kind == "checkpoint" else None
+        ),
+        "ensemble_manifest_sha256": (
+            sha256_file(model_artifact_path)
+            if model_artifact_kind == "equal_weight_ensemble"
+            else None
+        ),
         "ace_config_sha256": sha256_file(ace_config_path),
         "prompt_manifest_sha256": sha256_file(prompt_manifest_path),
         "authorization_scope": "development_only",
@@ -401,7 +443,16 @@ def materialize_pitch3_lte_development_guidance(
         "quality_template_sha256": sha256_file(quality_template_path),
         "guided_pairs": str(pairs_path),
         "guided_pairs_sha256": sha256_file(pairs_path),
-        "checkpoint_sha256": sha256_file(checkpoint_path),
+        "model_artifact_kind": model_artifact_kind,
+        "model_artifact_sha256": sha256_file(model_artifact_path),
+        "checkpoint_sha256": (
+            sha256_file(model_artifact_path) if model_artifact_kind == "checkpoint" else None
+        ),
+        "ensemble_manifest_sha256": (
+            sha256_file(model_artifact_path)
+            if model_artifact_kind == "equal_weight_ensemble"
+            else None
+        ),
         "qualification_eligible": False,
         "guidance_promotion_eligible": False,
         "production_authorization": False,
@@ -495,9 +546,10 @@ def screen_pitch3_lte_development(
     *,
     fingerprint_path: Path,
     dataset_manifest: Path,
-    checkpoint_path: Path,
+    checkpoint_path: Path | None,
     output_dir: Path,
     checkpoint_sha256: str | None = None,
+    ensemble_manifest_path: Path | None = None,
     guidance_summary_path: Path | None = None,
     quality_report_path: Path | None = None,
     device_name: str = "cpu",
@@ -518,8 +570,11 @@ def screen_pitch3_lte_development(
         num_workers=0,
     )
     device = torch.device(device_name)
-    model, metadata = load_pitch3_lte_checkpoint(
-        checkpoint_path, device=device, expected_sha256=checkpoint_sha256
+    model, metadata, model_artifact_path, model_artifact_kind = _load_lte_model_artifact(
+        checkpoint_path=checkpoint_path,
+        ensemble_manifest_path=ensemble_manifest_path,
+        device=device,
+        expected_sha256=checkpoint_sha256,
     )
     if metadata["fingerprint_json_sha256"] != contract.artifact_sha256:
         raise LTSNContractError("V3-LTE development checkpoint fingerprint mismatch")
@@ -567,7 +622,16 @@ def screen_pitch3_lte_development(
         "metrics": metrics,
         "guidance_summary": guidance,
         "quality_report": quality,
-        "checkpoint_sha256": sha256_file(checkpoint_path),
+        "model_artifact_kind": model_artifact_kind,
+        "model_artifact_sha256": sha256_file(model_artifact_path),
+        "checkpoint_sha256": (
+            sha256_file(model_artifact_path) if model_artifact_kind == "checkpoint" else None
+        ),
+        "ensemble_manifest_sha256": (
+            sha256_file(model_artifact_path)
+            if model_artifact_kind == "equal_weight_ensemble"
+            else None
+        ),
         "dataset_manifest_sha256": sha256_file(dataset_manifest),
         "predictions_sha256": sha256_file(predictions_path),
         "qualification_eligible": False,

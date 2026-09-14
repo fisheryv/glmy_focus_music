@@ -22,6 +22,7 @@ def main() -> None:
     parser.add_argument("--config", type=Path, default=Path("configs/pitch3_lte_v3.toml"))
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--seed", type=int)
     args = parser.parse_args()
     result = train_pitch3_lte(
         fingerprint_path=args.fingerprint,
@@ -29,6 +30,7 @@ def main() -> None:
         config_path=args.config,
         output_dir=args.output_dir,
         device_name=args.device,
+        seed_override=args.seed,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

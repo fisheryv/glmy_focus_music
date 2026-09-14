@@ -29,7 +29,8 @@ def main() -> None:
     )
     guide.add_argument("--manifest", type=Path, required=True)
     guide.add_argument("--source-manifest", type=Path, required=True)
-    guide.add_argument("--checkpoint", type=Path, required=True)
+    guide.add_argument("--checkpoint", type=Path)
+    guide.add_argument("--ensemble-manifest", type=Path)
     guide.add_argument("--checkpoint-sha256")
     guide.add_argument("--ace-config", type=Path, default=Path("configs/ace_rerank_180s.toml"))
     guide.add_argument("--prompts", type=Path, default=Path("metadata/ltsn_prompts.csv"))
@@ -44,7 +45,8 @@ def main() -> None:
         "--fingerprint", type=Path, default=Path("metadata/focus_pitch3_fingerprint_v1.json")
     )
     screen.add_argument("--manifest", type=Path, required=True)
-    screen.add_argument("--checkpoint", type=Path, required=True)
+    screen.add_argument("--checkpoint", type=Path)
+    screen.add_argument("--ensemble-manifest", type=Path)
     screen.add_argument("--checkpoint-sha256")
     screen.add_argument("--guidance-summary", type=Path)
     screen.add_argument("--quality-report", type=Path)
@@ -67,6 +69,7 @@ def main() -> None:
             prompt_manifest_path=args.prompts,
             output_dir=args.output_dir,
             checkpoint_sha256=args.checkpoint_sha256,
+            ensemble_manifest_path=args.ensemble_manifest,
             device_name=args.device,
             workers=args.workers,
             exact_batch_size=args.exact_batch_size,
@@ -80,6 +83,7 @@ def main() -> None:
             checkpoint_path=args.checkpoint,
             output_dir=args.output_dir,
             checkpoint_sha256=args.checkpoint_sha256,
+            ensemble_manifest_path=args.ensemble_manifest,
             guidance_summary_path=args.guidance_summary,
             quality_report_path=args.quality_report,
             device_name=args.device,

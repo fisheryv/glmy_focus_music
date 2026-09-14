@@ -21,6 +21,14 @@ class Pitch3LTEOutput(NamedTuple):
     energy: Tensor
 
 
+class Pitch3LTEPotentialComponents(NamedTuple):
+    """Conservative V3.3 potential decomposition; ``energy`` is always the sum."""
+
+    energy: Tensor
+    global_energy: Tensor
+    local_energy: Tensor
+
+
 @dataclass(frozen=True, slots=True)
 class Pitch3LTEConfig:
     latent_dim: int = 64
@@ -34,6 +42,8 @@ class Pitch3LTEConfig:
     fusion_mode: str = "joint_v3"
     prompt_residual_scale: float = 0.25
     latent_stem_mode: str = "normalized_v3"
+    potential_mode: str = "single_v3"
+    local_residual_scale: float = 1.0
 
     def validate(self) -> None:
         if self.model_dim % self.transformer_heads:
@@ -48,6 +58,14 @@ class Pitch3LTEConfig:
             raise ValueError("V3-LTE prompt residual scale must be positive")
         if self.latent_stem_mode not in {"normalized_v3", "dual_rms_v32"}:
             raise ValueError("unknown V3-LTE latent stem mode")
+        if self.potential_mode not in {"single_v3", "global_local_v33"}:
+            raise ValueError("unknown V3-LTE potential mode")
+        if self.potential_mode == "global_local_v33" and self.fusion_mode != (
+            "latent_primary_residual_v31"
+        ):
+            raise ValueError("V3.3 potential decomposition requires latent-primary fusion")
+        if self.local_residual_scale <= 0:
+            raise ValueError("V3-LTE local residual scale must be positive")
 
 
 class PromptConditionedTopologyEnergy(nn.Module):
@@ -128,6 +146,14 @@ class PromptConditionedTopologyEnergy(nn.Module):
             self.interaction_energy_head = nn.Linear(cfg.model_dim, 1)
             nn.init.zeros_(self.interaction_energy_head.weight)
             nn.init.zeros_(self.interaction_energy_head.bias)
+        if cfg.potential_mode == "global_local_v33":
+            self.local_energy_head = nn.Sequential(
+                nn.Linear(cfg.model_dim, cfg.model_dim),
+                nn.SiLU(),
+                nn.Linear(cfg.model_dim, 1),
+            )
+            nn.init.zeros_(self.local_energy_head[-1].weight)
+            nn.init.zeros_(self.local_energy_head[-1].bias)
 
     @staticmethod
     def _validate_mask(values: Tensor, mask: Tensor, name: str) -> Tensor:
@@ -191,6 +217,16 @@ class PromptConditionedTopologyEnergy(nn.Module):
         consistency without recomputing the expensive temporal transformer.
         """
 
+        components = self.potential_components_from_states(latent_state, prompt_state)
+        return Pitch3LTEOutput(components.energy)
+
+    def potential_components_from_states(
+        self,
+        latent_state: Tensor,
+        prompt_state: Tensor,
+    ) -> Pitch3LTEPotentialComponents:
+        """Return the global and conservative local-residual scalar potentials."""
+
         if prompt_state.shape[0] == 1 and latent_state.shape[0] != 1:
             prompt_state = prompt_state.expand(latent_state.shape[0], -1)
         if prompt_state.shape != latent_state.shape:
@@ -207,18 +243,66 @@ class PromptConditionedTopologyEnergy(nn.Module):
             )
         )
         if self.config.fusion_mode == "joint_v3":
-            energy = self.energy_head(fused).squeeze(-1)
+            global_energy = self.energy_head(fused).squeeze(-1)
         else:
             latent_energy = self.latent_energy_head(latent_state).squeeze(-1)
             interaction = self.config.prompt_residual_scale * torch.tanh(
                 self.interaction_energy_head(fused).squeeze(-1)
             )
-            energy = latent_energy + interaction
-        return Pitch3LTEOutput(energy.float())
+            global_energy = latent_energy + interaction
+        if self.config.potential_mode == "global_local_v33":
+            local_energy = self.config.local_residual_scale * self.local_energy_head(fused).squeeze(
+                -1
+            )
+        else:
+            local_energy = torch.zeros_like(global_energy)
+        energy = global_energy + local_energy
+        return Pitch3LTEPotentialComponents(
+            energy.float(), global_energy.float(), local_energy.float()
+        )
 
     @property
     def trainable_parameters(self) -> int:
         return sum(parameter.numel() for parameter in self.parameters() if parameter.requires_grad)
+
+
+class Pitch3LTEEnergyEnsemble(nn.Module):
+    """Equal-contract average of scalar energies; its latent gradient is averaged too."""
+
+    def __init__(
+        self,
+        models: list[PromptConditionedTopologyEnergy],
+        weights: Tensor | None = None,
+    ) -> None:
+        super().__init__()
+        if not models:
+            raise ValueError("V3-LTE ensemble requires at least one model")
+        self.models = nn.ModuleList(models)
+        if weights is None:
+            weights = torch.ones(len(models), dtype=torch.float32)
+        checked = torch.as_tensor(weights, dtype=torch.float32)
+        if checked.shape != (len(models),) or not torch.isfinite(checked).all():
+            raise ValueError("V3-LTE ensemble weights must be finite and match members")
+        if (checked <= 0).any():
+            raise ValueError("V3-LTE ensemble weights must be positive")
+        self.register_buffer("weights", checked / checked.sum())
+
+    def forward(
+        self,
+        latent: Tensor,
+        attention_mask: Tensor,
+        text_hidden: Tensor,
+        text_mask: Tensor,
+    ) -> Pitch3LTEOutput:
+        energies = torch.stack(
+            [
+                model(latent, attention_mask, text_hidden, text_mask).energy
+                for model in self.models
+            ],
+            dim=0,
+        )
+        weights = self.weights.to(device=energies.device, dtype=energies.dtype)
+        return Pitch3LTEOutput((energies * weights[:, None]).sum(dim=0).float())
 
 
 @dataclass(frozen=True, slots=True)
