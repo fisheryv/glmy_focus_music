@@ -67,3 +67,34 @@ SHA-256 values. Issued checkpoints always set
 Real CUDA training, OOD calibration, decoded-exact direction agreement,
 candidate ranking, and audio/prompt non-inferiority must all be rerun before any
 sampling-time corrector can be enabled.
+
+## V2.6-GR-R development run
+
+V2.6-GR-R keeps the V2.6-GR network and frozen evaluation gates, but replaces
+the trajectory-anchor sampler with family-aware snapshot pairs. Every 6-ID/2-OOD
+batch contains exactly two low-, two middle-, and two high-Band snapshots and
+three same-family/same-step contrasts: low-high, low-middle, and middle-high.
+The coordinate-2 ranking and trajectory-delta auxiliaries are disabled. Model
+selection first requires all pooled gates and the predeclared E2 development
+Band floor (`0.5143053354087133`), then minimizes the group deficit.
+
+```bash
+python scripts/train_pitch3_control_head.py \
+  --fingerprint metadata/focus_pitch3_fingerprint_v1.json \
+  --manifest runs/pitch3_ltch/ood_v2/pitch3_training_manifest_augmented.csv \
+  --config configs/pitch3_control_head_training_v26_grr.toml \
+  --output-dir runs/pitch3_ltch/models_pitch3_v26_grr_seed_20260919 \
+  --device cuda:1
+
+python scripts/evaluate_pitch3_control_head.py screen-development \
+  --fingerprint metadata/focus_pitch3_fingerprint_v1.json \
+  --manifest runs/pitch3_ltch/ood_v2/pitch3_training_manifest_augmented.csv \
+  --checkpoint runs/pitch3_ltch/models_pitch3_v26_grr_seed_20260919/pitch3_control_head_seed_20260919.pt \
+  --output-dir runs/pitch3_ltch/development_screen_v26_grr_seed_20260919 \
+  --batch-size 8 \
+  --device cuda:1
+```
+
+Do not run calibration unless both the pooled and required group development
+screens pass. The qualification split remains excluded from training,
+checkpoint selection, and this development decision.

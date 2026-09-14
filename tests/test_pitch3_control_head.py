@@ -24,6 +24,8 @@ from generation.pitch3_training import (  # noqa: E402
     Pitch3GroupRobustBatchSampler,
     Pitch3LossWeights,
     Pitch3Snapshot,
+    Pitch3SnapshotPairBatchSampler,
+    _pitch3_checkpoint_selection_key,
     load_pitch3_training_config,
     pitch3_loss,
     pitch3_prompt_family,
@@ -293,6 +295,52 @@ def test_pitch3_v26_gr_freezes_group_robust_contract() -> None:
     assert weights.local_band_rank == 0.10
     assert weights.coordinate2_rank == 0.10
     assert weights.trajectory_delta == 0.10
+
+
+def test_pitch3_v26_grr_freezes_snapshot_pair_and_guardrail_contract() -> None:
+    v26_model, v26_training, _ = load_pitch3_training_config(
+        ROOT / "configs" / "pitch3_control_head_training_v26_gr.toml"
+    )
+    model, training, weights = load_pitch3_training_config(
+        ROOT / "configs" / "pitch3_control_head_training_v26_grr.toml"
+    )
+
+    assert asdict(model) == asdict(v26_model)
+    assert training.seed == 20260919
+    assert training.group_robust_sampling is True
+    assert training.group_robust_selection is True
+    assert training.group_robust_sampler_kind == "snapshot_pair_v26_grr"
+    assert training.pooled_band_spearman_floor == pytest.approx(0.5143053354087133)
+    assert v26_training.group_robust_sampler_kind == "trajectory_anchor_v26"
+    assert v26_training.pooled_band_spearman_floor == 0.0
+    assert weights.band_rank == 0.05
+    assert weights.local_band_rank == 0.10
+    assert weights.coordinate2_rank == 0.0
+    assert weights.trajectory_delta == 0.0
+
+
+def test_pitch3_v26_grr_selection_requires_pooled_guardrail_before_group_deficit() -> None:
+    _, training, _ = load_pitch3_training_config(
+        ROOT / "configs" / "pitch3_control_head_training_v26_grr.toml"
+    )
+    passing_key, passing = _pitch3_checkpoint_selection_key(
+        training,
+        gate_deficit=0.0,
+        group_gate_deficit=0.40,
+        development_loss=1.0,
+        pooled_band_spearman=0.52,
+    )
+    failing_key, failing = _pitch3_checkpoint_selection_key(
+        training,
+        gate_deficit=0.0,
+        group_gate_deficit=0.01,
+        development_loss=0.1,
+        pooled_band_spearman=0.51,
+    )
+
+    assert passing["passed"] is True
+    assert failing["passed"] is False
+    assert passing_key < failing_key
 
 
 def test_pitch3_v26_group_losses_use_local_and_trajectory_pairs() -> None:
@@ -655,3 +703,90 @@ def test_pitch3_v26_sampler_exposes_local_and_trajectory_pairs() -> None:
         assert len(families) == 1
         assert max(trajectory_counts.values()) == 4
         assert sum(count >= 2 for count in step_counts.values()) == 2
+
+
+def test_pitch3_v26_grr_sampler_restores_snapshot_strata_and_three_local_pairs() -> None:
+    contract = load_pitch3_contract(PROFILE)
+    records = []
+    coordinate3_by_stratum = (1.0, 4.0, 8.0)
+    for family_index in range(3):
+        family = f"p{family_index:02d}_family"
+        for trajectory_index in range(6):
+            trajectory = f"{family}__v01__seed{trajectory_index}"
+            coordinate3 = coordinate3_by_stratum[trajectory_index // 2]
+            for step in (4, 5, 6, 8):
+                records.append(
+                    Pitch3Snapshot(
+                        sample_id=f"{trajectory}__step{step:02d}",
+                        prompt_id=f"{family}__v01",
+                        trajectory_id=trajectory,
+                        split="train",
+                        step_number=step,
+                        timestep=0.0,
+                        latent_path=Path("unused.npy"),
+                        latent_sha256="0" * 64,
+                        coordinates=(-0.5, 0.5, coordinate3),
+                        focus_logit=0.0,
+                        ood_label=0.0,
+                        is_final=step == 8,
+                        ood_kind="",
+                        ood_transform_version="",
+                        ood_label_source="",
+                    )
+                )
+    for index, kind in enumerate(("ood_scale_high", "ood_block_shuffle") * 6):
+        records.append(
+            Pitch3Snapshot(
+                sample_id=f"ood_grr_{index}",
+                prompt_id=f"ood_prompt_{index}",
+                trajectory_id=f"ood_trajectory_{index}",
+                split="train",
+                step_number=4,
+                timestep=0.5,
+                latent_path=Path("unused.npy"),
+                latent_sha256="1" * 64,
+                coordinates=(0.0, 0.0, 0.0),
+                focus_logit=0.0,
+                ood_label=1.0,
+                is_final=False,
+                ood_kind=kind,
+                ood_transform_version="pitch3_latent_ood_v2",
+                ood_label_source="deterministic_latent_transform_v2",
+            )
+        )
+    sampler = Pitch3SnapshotPairBatchSampler(
+        records,
+        id_per_batch=6,
+        ood_per_batch=2,
+        seed=20260919,
+        contract=contract,
+    )
+    expected_contrasts = {
+        frozenset(("low", "high")),
+        frozenset(("low", "middle")),
+        frozenset(("middle", "high")),
+    }
+
+    for batch in sampler:
+        id_indices = [index for index in batch if records[index].ood_label < 0.5]
+        ood_indices = [index for index in batch if records[index].ood_label >= 0.5]
+        families = {pitch3_prompt_family(records[index].prompt_id) for index in id_indices}
+        strata = Counter(sampler.id_stratum_by_index[index] for index in id_indices)
+        by_step: dict[int, list[int]] = {}
+        for index in id_indices:
+            by_step.setdefault(records[index].step_number, []).append(index)
+        contrasts = {
+            frozenset(sampler.id_stratum_by_index[index] for index in indices)
+            for indices in by_step.values()
+        }
+
+        assert len(id_indices) == 6
+        assert len(ood_indices) == 2
+        assert len(families) == 1
+        assert strata == {"low": 2, "middle": 2, "high": 2}
+        assert sorted(len(indices) for indices in by_step.values()) == [2, 2, 2]
+        assert contrasts == expected_contrasts
+        assert all(
+            records[indices[0]].trajectory_id != records[indices[1]].trajectory_id
+            for indices in by_step.values()
+        )

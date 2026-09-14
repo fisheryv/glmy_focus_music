@@ -54,6 +54,8 @@ class Pitch3TrainingConfig:
     id_band_stratified: bool = False
     group_robust_sampling: bool = False
     group_robust_selection: bool = False
+    group_robust_sampler_kind: str = "trajectory_anchor_v26"
+    pooled_band_spearman_floor: float = 0.0
     scale_high_training_target_scales: tuple[float, ...] = ()
 
 
@@ -131,6 +133,26 @@ def load_pitch3_training_config(
         raise ValueError("group-robust Pitch-3 sampling requires a 6 ID / 2 OOD batch")
     if training.group_robust_selection and not training.gate_aligned_selection:
         raise ValueError("group-robust selection requires gate-aligned selection")
+    sampler_kinds = {"trajectory_anchor_v26", "snapshot_pair_v26_grr"}
+    if training.group_robust_sampler_kind not in sampler_kinds:
+        raise ValueError(
+            "group_robust_sampler_kind must be trajectory_anchor_v26 or snapshot_pair_v26_grr"
+        )
+    if not training.group_robust_sampling and (
+        training.group_robust_sampler_kind != "trajectory_anchor_v26"
+    ):
+        raise ValueError("a non-default group sampler requires group-robust sampling")
+    if (
+        training.group_robust_sampler_kind == "snapshot_pair_v26_grr"
+        and not training.id_band_stratified
+    ):
+        raise ValueError("the snapshot-pair group sampler requires ID Band stratification")
+    if not math.isfinite(training.pooled_band_spearman_floor) or not (
+        0.0 <= training.pooled_band_spearman_floor <= 1.0
+    ):
+        raise ValueError("pooled_band_spearman_floor must be finite and in [0,1]")
+    if training.pooled_band_spearman_floor > 0.0 and not training.group_robust_selection:
+        raise ValueError("a pooled Band floor requires group-robust selection")
     if (
         any(not math.isfinite(value) or value < 0.0 for value in asdict(loss).values())
         or loss.coordinate <= 0.0
@@ -665,6 +687,185 @@ class Pitch3GroupRobustBatchSampler(Sampler[list[int]]):
                 batch.append(
                     self._take(pools, ("companion", family, step, trajectory_id), candidates, rng)
                 )
+            for offset in range(self.ood_per_batch):
+                kind = ood_assignments[batch_index * self.ood_per_batch + offset]
+                batch.append(self._take(pools, ("ood", kind), self.ood_by_kind[kind], rng))
+            rng.shuffle(batch)
+            yield batch
+
+    def __len__(self) -> int:
+        return self.batch_count
+
+
+class Pitch3SnapshotPairBatchSampler(Sampler[list[int]]):
+    """Build family-aware 6:2 batches with frozen snapshot-level Band balance.
+
+    Each batch contains two low-, two middle-, and two high-Band ID snapshots.
+    The six snapshots form three same-family/same-step comparison pairs with
+    low-high, low-middle, and middle-high contrasts.  Three of the four formal
+    steps are used per batch and the omitted step and pair assignment rotate
+    deterministically across batches for each prompt family.
+    """
+
+    _PAIR_PATTERNS = (("low", "high"), ("low", "middle"), ("middle", "high"))
+
+    def __init__(
+        self,
+        records: list[Pitch3Snapshot],
+        *,
+        id_per_batch: int,
+        ood_per_batch: int,
+        seed: int,
+        contract: Pitch3Contract,
+    ) -> None:
+        if id_per_batch != 6 or ood_per_batch != 2:
+            raise ValueError("Pitch-3 snapshot-pair batches require exactly 6 ID and 2 OOD rows")
+        self.records = records
+        self.id_per_batch = id_per_batch
+        self.ood_per_batch = ood_per_batch
+        self.seed = seed
+        self.epoch = 0
+        self.id_indices = [index for index, record in enumerate(records) if record.ood_label < 0.5]
+        by_kind: dict[str, list[int]] = {}
+        for index, record in enumerate(records):
+            if record.ood_label >= 0.5:
+                by_kind.setdefault(record.ood_kind, []).append(index)
+        if not self.id_indices or not by_kind or any(not values for values in by_kind.values()):
+            raise LTSNContractError("snapshot-pair batches require ID samples and OOD families")
+        self.ood_by_kind = dict(sorted(by_kind.items()))
+
+        lower = np.asarray(contract.target_lower, dtype=float)
+        upper = np.asarray(contract.target_upper, dtype=float)
+        weights = np.asarray(contract.distance_weights, dtype=float)
+
+        def band_loss(index: int) -> float:
+            coordinate = np.asarray(records[index].coordinates, dtype=float)
+            below = np.maximum(lower - coordinate, 0.0)
+            above = np.maximum(coordinate - upper, 0.0)
+            return float(((np.square(below) + np.square(above)) * weights).sum())
+
+        ordered = sorted(
+            self.id_indices,
+            key=lambda index: (
+                band_loss(index),
+                hashlib.sha256(records[index].sample_id.encode("utf-8")).digest(),
+            ),
+        )
+        chunks = np.array_split(np.asarray(ordered, dtype=int), 3)
+        self.id_by_stratum = {
+            name: [int(value) for value in chunk]
+            for name, chunk in zip(("low", "middle", "high"), chunks, strict=True)
+        }
+        self.id_stratum_by_index = {
+            index: name for name, indices in self.id_by_stratum.items() for index in indices
+        }
+        self.id_strata_summary = {
+            name: {
+                "samples": len(indices),
+                "minimum_band_loss": min(band_loss(index) for index in indices),
+                "maximum_band_loss": max(band_loss(index) for index in indices),
+            }
+            for name, indices in self.id_by_stratum.items()
+        }
+        self.snapshots: dict[tuple[str, int, str], list[int]] = {}
+        for index in self.id_indices:
+            record = records[index]
+            family = pitch3_prompt_family(record.prompt_id)
+            stratum = self.id_stratum_by_index[index]
+            self.snapshots.setdefault((family, record.step_number, stratum), []).append(index)
+        self.families = sorted({key[0] for key in self.snapshots})
+        for family in self.families:
+            for step in FORMAL_STEPS:
+                for first_stratum, second_stratum in self._PAIR_PATTERNS:
+                    first = self.snapshots.get((family, step, first_stratum), [])
+                    second = self.snapshots.get((family, step, second_stratum), [])
+                    if (
+                        not first
+                        or not second
+                        or not any(
+                            records[left].trajectory_id != records[right].trajectory_id
+                            for left in first
+                            for right in second
+                        )
+                    ):
+                        raise LTSNContractError(
+                            "snapshot-pair training requires cross-trajectory low/middle/high "
+                            f"coverage for family={family}, step={step}"
+                        )
+        self.batch_count = max(
+            math.ceil(len(self.id_indices) / id_per_batch),
+            math.ceil(sum(len(values) for values in by_kind.values()) / ood_per_batch),
+        )
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    @staticmethod
+    def _take(pools: dict[Any, list[Any]], key: Any, values: list[Any], rng: random.Random) -> Any:
+        if not pools.get(key):
+            pools[key] = values.copy()
+            rng.shuffle(pools[key])
+        return pools[key].pop()
+
+    def __iter__(self) -> Iterator[list[int]]:
+        rng = random.Random(self.seed + self.epoch * 1_000_003)
+        pools: dict[Any, list[Any]] = {}
+        family_stream = Pitch3BalancedBatchSampler._cycle(
+            list(range(len(self.families))), self.batch_count, rng
+        )
+        family_counts = Counter()
+        kind_names = list(self.ood_by_kind)
+        ood_assignments = [
+            kind_names[index % len(kind_names)]
+            for index in range(self.batch_count * self.ood_per_batch)
+        ]
+        rng.shuffle(ood_assignments)
+        for batch_index, family_index in enumerate(family_stream):
+            family = self.families[family_index]
+            family_count = family_counts[family]
+            family_counts[family] += 1
+            omitted = family_count % len(FORMAL_STEPS)
+            selected_steps = [step for index, step in enumerate(FORMAL_STEPS) if index != omitted]
+            rotation = (family_count // len(FORMAL_STEPS)) % len(selected_steps)
+            selected_steps = selected_steps[rotation:] + selected_steps[:rotation]
+            batch: list[int] = []
+            for step, (first_stratum, second_stratum) in zip(
+                selected_steps, self._PAIR_PATTERNS, strict=True
+            ):
+                first_values = self.snapshots[(family, step, first_stratum)]
+                second_values = self.snapshots[(family, step, second_stratum)]
+                viable_first = [
+                    index
+                    for index in first_values
+                    if any(
+                        self.records[index].trajectory_id != self.records[other].trajectory_id
+                        for other in second_values
+                    )
+                ]
+                first = self._take(
+                    pools,
+                    ("pair-first", family, step, first_stratum, second_stratum),
+                    viable_first,
+                    rng,
+                )
+                second_candidates = [
+                    index
+                    for index in second_values
+                    if self.records[index].trajectory_id != self.records[first].trajectory_id
+                ]
+                second = self._take(
+                    pools,
+                    (
+                        "pair-second",
+                        family,
+                        step,
+                        second_stratum,
+                        self.records[first].trajectory_id,
+                    ),
+                    second_candidates,
+                    rng,
+                )
+                batch.extend((first, second))
             for offset in range(self.ood_per_batch):
                 kind = ood_assignments[batch_index * self.ood_per_batch + offset]
                 batch.append(self._take(pools, ("ood", kind), self.ood_by_kind[kind], rng))
@@ -1294,6 +1495,36 @@ def _development_gate_screen(
     }
 
 
+def _pitch3_checkpoint_selection_key(
+    training: Pitch3TrainingConfig,
+    *,
+    gate_deficit: float,
+    group_gate_deficit: float,
+    development_loss: float,
+    pooled_band_spearman: float,
+) -> tuple[tuple[Any, ...], dict[str, Any]]:
+    band_floor_deficit = max(0.0, training.pooled_band_spearman_floor - pooled_band_spearman)
+    guardrail_passed = gate_deficit <= 1e-12 and band_floor_deficit <= 1e-12
+    guardrail = {
+        "pooled_band_spearman_floor": training.pooled_band_spearman_floor,
+        "pooled_band_floor_deficit": band_floor_deficit,
+        "pooled_gate_deficit": gate_deficit,
+        "passed": guardrail_passed,
+    }
+    if training.group_robust_selection and training.pooled_band_spearman_floor > 0.0:
+        key: tuple[Any, ...] = (
+            not guardrail_passed,
+            gate_deficit + band_floor_deficit,
+            group_gate_deficit,
+            development_loss,
+        )
+    elif training.group_robust_selection:
+        key = (group_gate_deficit, gate_deficit, development_loss)
+    else:
+        key = (gate_deficit, development_loss)
+    return key, guardrail
+
+
 def train_pitch3_control_head(
     *,
     fingerprint_path: Path,
@@ -1345,10 +1576,20 @@ def train_pitch3_control_head(
         train_records,
         scale_high_training_target_scales=training.scale_high_training_target_scales,
     )
-    train_batch_sampler: Pitch3BalancedBatchSampler | Pitch3GroupRobustBatchSampler | None = None
+    train_batch_sampler: (
+        Pitch3BalancedBatchSampler
+        | Pitch3GroupRobustBatchSampler
+        | Pitch3SnapshotPairBatchSampler
+        | None
+    ) = None
     if training.id_samples_per_batch and training.ood_samples_per_batch:
         if training.group_robust_sampling:
-            train_batch_sampler = Pitch3GroupRobustBatchSampler(
+            sampler_class = (
+                Pitch3SnapshotPairBatchSampler
+                if training.group_robust_sampler_kind == "snapshot_pair_v26_grr"
+                else Pitch3GroupRobustBatchSampler
+            )
+            train_batch_sampler = sampler_class(
                 train_records,
                 id_per_batch=training.id_samples_per_batch,
                 ood_per_batch=training.ood_samples_per_batch,
@@ -1397,6 +1638,9 @@ def train_pitch3_control_head(
     best_loss = float("inf")
     best_gate_deficit = float("inf")
     best_group_gate_deficit = float("inf")
+    best_pooled_band_floor_deficit = float("inf")
+    best_pooled_guardrail_passed = False
+    best_selection_key: tuple[Any, ...] | None = None
     best_gate_screen: dict[str, Any] | None = None
     best_state: dict[str, Tensor] | None = None
     stale = 0
@@ -1441,29 +1685,39 @@ def train_pitch3_control_head(
             if training.gate_aligned_selection
             else None
         )
+        gate_deficit = 0.0 if gate_screen is None else float(gate_screen["total_deficit"])
+        group_gate_deficit = (
+            0.0 if gate_screen is None else float(gate_screen["group_robust"]["total_deficit"])
+        )
+        pooled_band_spearman = (
+            training.pooled_band_spearman_floor
+            if gate_screen is None
+            else float(gate_screen["metrics"]["target_band_distance_spearman"])
+        )
+        current_key, selection_guardrail = _pitch3_checkpoint_selection_key(
+            training,
+            gate_deficit=gate_deficit,
+            group_gate_deficit=group_gate_deficit,
+            development_loss=development_metrics["loss"],
+            pooled_band_spearman=pooled_band_spearman,
+        )
         history.append(
             {
                 "epoch": epoch,
                 "train": train_metrics,
                 "development": development_metrics,
                 "development_gate_screen": gate_screen,
+                "selection_guardrail": selection_guardrail,
             }
         )
-        gate_deficit = 0.0 if gate_screen is None else float(gate_screen["total_deficit"])
-        group_gate_deficit = (
-            0.0 if gate_screen is None else float(gate_screen["group_robust"]["total_deficit"])
-        )
-        if training.group_robust_selection:
-            current_key = (group_gate_deficit, gate_deficit, development_metrics["loss"])
-            best_key = (best_group_gate_deficit, best_gate_deficit, best_loss)
-        else:
-            current_key = (gate_deficit, development_metrics["loss"])
-            best_key = (best_gate_deficit, best_loss)
-        improved = current_key < best_key
+        improved = best_selection_key is None or current_key < best_selection_key
         if improved:
+            best_selection_key = current_key
             best_loss = development_metrics["loss"]
             best_gate_deficit = gate_deficit
             best_group_gate_deficit = group_gate_deficit
+            best_pooled_band_floor_deficit = selection_guardrail["pooled_band_floor_deficit"]
+            best_pooled_guardrail_passed = selection_guardrail["passed"]
             best_gate_screen = gate_screen
             best_state = {
                 name: value.detach().cpu().clone() for name, value in model.state_dict().items()
@@ -1531,20 +1785,39 @@ def train_pitch3_control_head(
         "group_robust_training": {
             "enabled": training.group_robust_sampling and training.group_robust_selection,
             "sampler": (
-                "prompt_family_trajectory_anchor_band_rotation"
-                if training.group_robust_sampling
-                else "disabled"
+                "prompt_family_snapshot_band_pair_rotation"
+                if isinstance(train_batch_sampler, Pitch3SnapshotPairBatchSampler)
+                else (
+                    "prompt_family_trajectory_anchor_band_rotation"
+                    if training.group_robust_sampling
+                    else "disabled"
+                )
             ),
             "local_band_rank_weight": weights.local_band_rank,
             "coordinate2_rank_weight": weights.coordinate2_rank,
             "trajectory_delta_weight": weights.trajectory_delta,
             "same_prompt_family_and_step_pairs": True,
+            "local_pairs_per_batch": (
+                3 if isinstance(train_batch_sampler, Pitch3SnapshotPairBatchSampler) else 2
+            ),
+            "snapshot_band_counts_per_batch": (
+                {"low": 2, "middle": 2, "high": 2}
+                if isinstance(train_batch_sampler, Pitch3SnapshotPairBatchSampler)
+                else {}
+            ),
             "development_screen_required": training.group_robust_selection,
             "qualification_split_used_for_training_or_selection": False,
         },
         "best_development_loss": best_loss,
         "best_development_gate_deficit": best_gate_deficit,
         "best_development_group_gate_deficit": best_group_gate_deficit,
+        "best_development_pooled_band_floor_deficit": best_pooled_band_floor_deficit,
+        "best_development_pooled_guardrail_passed": best_pooled_guardrail_passed,
+        "pooled_selection_guardrail": {
+            "target_band_distance_spearman_floor": training.pooled_band_spearman_floor,
+            "pooled_gates_must_pass": training.pooled_band_spearman_floor > 0.0,
+            "thresholds_changed": False,
+        },
         "best_development_gate_screen": best_gate_screen,
         "epochs_completed": len(history),
         "ood_class_counts": {
@@ -1558,12 +1831,16 @@ def train_pitch3_control_head(
         "ood_label_source": ood_label_sources[0],
         "batch_policy": {
             "kind": (
-                "prompt_family_trajectory_anchor_band_rotation"
-                if isinstance(train_batch_sampler, Pitch3GroupRobustBatchSampler)
+                "prompt_family_snapshot_band_pair_rotation"
+                if isinstance(train_batch_sampler, Pitch3SnapshotPairBatchSampler)
                 else (
-                    "balanced_id_ood_family_rotation"
-                    if train_batch_sampler is not None
-                    else "random_shuffle"
+                    "prompt_family_trajectory_anchor_band_rotation"
+                    if isinstance(train_batch_sampler, Pitch3GroupRobustBatchSampler)
+                    else (
+                        "balanced_id_ood_family_rotation"
+                        if train_batch_sampler is not None
+                        else "random_shuffle"
+                    )
                 )
             ),
             "id_samples_per_batch": training.id_samples_per_batch,
@@ -1572,7 +1849,10 @@ def train_pitch3_control_head(
             "id_band_stratified": training.id_band_stratified,
             "id_strata": (
                 train_batch_sampler.id_strata_summary
-                if isinstance(train_batch_sampler, Pitch3BalancedBatchSampler)
+                if isinstance(
+                    train_batch_sampler,
+                    (Pitch3BalancedBatchSampler, Pitch3SnapshotPairBatchSampler),
+                )
                 else {}
             ),
             "trajectory_strata": (
@@ -1582,12 +1862,16 @@ def train_pitch3_control_head(
             ),
         },
         "checkpoint_selection": (
-            "development_worst_group_then_pooled_gate_deficit_then_loss"
-            if training.group_robust_selection
+            "development_pooled_guardrail_then_worst_group_then_loss"
+            if training.group_robust_selection and training.pooled_band_spearman_floor > 0.0
             else (
-                "development_gate_deficit_then_loss"
-                if training.gate_aligned_selection
-                else "development_loss"
+                "development_worst_group_then_pooled_gate_deficit_then_loss"
+                if training.group_robust_selection
+                else (
+                    "development_gate_deficit_then_loss"
+                    if training.gate_aligned_selection
+                    else "development_loss"
+                )
             )
         ),
         "training_virtual_ood_augmentation": virtual_scale_augmentation,
