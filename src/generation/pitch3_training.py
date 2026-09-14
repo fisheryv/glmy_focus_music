@@ -66,6 +66,9 @@ class Pitch3Snapshot:
     focus_logit: float
     ood_label: float
     is_final: bool
+    ood_kind: str
+    ood_transform_version: str
+    ood_label_source: str
 
 
 def load_pitch3_training_config(
@@ -121,6 +124,11 @@ def read_pitch3_manifest(path: Path, contract: Pitch3Contract) -> list[Pitch3Sna
             focus = float(raw["focus_logit"])
             if ood not in {0.0, 1.0} or not math.isfinite(focus):
                 raise LTSNContractError("Pitch-3 OOD/focus labels are malformed")
+            ood_kind = raw.get("ood_kind", "").strip()
+            ood_transform_version = raw.get("ood_transform_version", "").strip()
+            ood_label_source = raw.get("ood_label_source", "").strip()
+            if ood >= 0.5 and not all((ood_kind, ood_transform_version, ood_label_source)):
+                raise LTSNContractError("Pitch-3 OOD rows require transform provenance")
             prompt_id = raw["prompt_id"]
             trajectory_id = raw["trajectory_id"]
             prompt_splits.setdefault(prompt_id, set()).add(split)
@@ -139,6 +147,9 @@ def read_pitch3_manifest(path: Path, contract: Pitch3Contract) -> list[Pitch3Sna
                     focus_logit=focus,
                     ood_label=ood,
                     is_final=is_final,
+                    ood_kind=ood_kind,
+                    ood_transform_version=ood_transform_version,
+                    ood_label_source=ood_label_source,
                 )
             )
     if not records:
@@ -210,10 +221,13 @@ def pitch3_loss(
     if id_mask.any():
         error = output.coordinate_mean[id_mask] - coordinates[id_mask]
         coordinate = F.smooth_l1_loss(output.coordinate_mean[id_mask], coordinates[id_mask])
-        nll = 0.5 * (
-            torch.exp(-output.coordinate_logvar[id_mask]) * error.square()
-            + output.coordinate_logvar[id_mask]
-        ).mean()
+        nll = (
+            0.5
+            * (
+                torch.exp(-output.coordinate_logvar[id_mask]) * error.square()
+                + output.coordinate_logvar[id_mask]
+            ).mean()
+        )
         focus = F.smooth_l1_loss(output.focus_logit[id_mask], focus_logit[id_mask])
     else:
         zero = output.coordinate_mean.sum() * 0.0
@@ -327,10 +341,16 @@ def train_pitch3_control_head(
         if not positives or not negatives:
             raise LTSNContractError("Pitch-3 training requires ID and OOD train samples")
         if not development_positives or not development_negatives:
-            raise LTSNContractError(
-                "Pitch-3 training requires ID and OOD development samples"
-            )
+            raise LTSNContractError("Pitch-3 training requires ID and OOD development samples")
     positive_weight = 1.0 if not positives else max(1.0, negatives / positives)
+    ood_versions = sorted(
+        {record.ood_transform_version for record in records if record.ood_label >= 0.5}
+    )
+    ood_label_sources = sorted(
+        {record.ood_label_source for record in records if record.ood_label >= 0.5}
+    )
+    if len(ood_versions) != 1 or len(ood_label_sources) != 1:
+        raise LTSNContractError("Pitch-3 training requires one frozen OOD provenance contract")
     _set_seed(training.seed)
     device = torch.device(device_name)
     if device.type == "cuda" and not torch.cuda.is_available():
@@ -355,11 +375,7 @@ def train_pitch3_control_head(
         num_workers=training.num_workers,
         collate_fn=collate_pitch3,
     )
-    use_bf16 = (
-        training.use_bf16
-        and device.type == "cuda"
-        and torch.cuda.is_bf16_supported()
-    )
+    use_bf16 = training.use_bf16 and device.type == "cuda" and torch.cuda.is_bf16_supported()
     history: list[dict[str, Any]] = []
     best_loss = float("inf")
     best_state: dict[str, Tensor] | None = None
@@ -385,9 +401,7 @@ def train_pitch3_control_head(
             use_bf16=use_bf16,
             ood_positive_weight=positive_weight,
         )
-        history.append(
-            {"epoch": epoch, "train": train_metrics, "development": development_metrics}
-        )
+        history.append({"epoch": epoch, "train": train_metrics, "development": development_metrics})
         if development_metrics["loss"] < best_loss:
             best_loss = development_metrics["loss"]
             best_state = {
@@ -427,6 +441,8 @@ def train_pitch3_control_head(
                 "ood": development_positives,
             },
         },
+        "ood_transform_version": ood_versions[0],
+        "ood_label_source": ood_label_sources[0],
         "guidance_promotion_eligible": False,
         "production_authorization": False,
     }

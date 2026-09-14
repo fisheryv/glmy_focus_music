@@ -13,6 +13,7 @@ if str(SRC) not in sys.path:
 from generation.pitch3_evaluation import (  # noqa: E402
     calibrate_pitch3_control_head,
     qualify_pitch3_control_head,
+    screen_pitch3_development,
 )
 
 
@@ -35,8 +36,14 @@ def main() -> None:
         description="Calibrate or independently qualify the Pitch-3 latent control head"
     )
     subparsers = parser.add_subparsers(dest="stage", required=True)
+    development = subparsers.add_parser(
+        "screen-development",
+        help="screen one checkpoint on development before calibration",
+    )
+    _common(development)
     calibration = subparsers.add_parser("calibrate", help="freeze calibration-split thresholds")
     _common(calibration)
+    calibration.add_argument("--development-screen", type=Path, required=True)
     qualification = subparsers.add_parser(
         "qualify", help="evaluate the untouched qualification split once"
     )
@@ -52,8 +59,13 @@ def main() -> None:
         "device_name": args.device,
         "expected_checkpoint_sha256": args.checkpoint_sha256,
     }
-    if args.stage == "calibrate":
-        result = calibrate_pitch3_control_head(**common)
+    if args.stage == "screen-development":
+        result = screen_pitch3_development(**common)
+    elif args.stage == "calibrate":
+        result = calibrate_pitch3_control_head(
+            development_screen_path=args.development_screen,
+            **common,
+        )
     else:
         result = qualify_pitch3_control_head(calibration_path=args.calibration, **common)
     print(json.dumps(result, ensure_ascii=False, indent=2))

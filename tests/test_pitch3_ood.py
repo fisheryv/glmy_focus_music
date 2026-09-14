@@ -13,7 +13,11 @@ from generation.ltsn_pipeline import write_csv_atomic, write_json_atomic
 from generation.pitch3_contract import load_pitch3_contract
 from generation.pitch3_ood import (
     EVALUATION_OOD_KINDS,
+    PITCH3_OOD_CONTRACT_V1,
+    PITCH3_OOD_CONTRACT_V2,
     TRAIN_OOD_KINDS,
+    V2_DEVELOPMENT_OOD_KINDS,
+    V2_TRAIN_OOD_KINDS,
     apply_pitch3_ood_transform,
     build_pitch3_ood_augmentation,
     build_pitch3_ood_plan,
@@ -33,7 +37,7 @@ def test_pitch3_ood_plan_is_deterministic_split_local_and_held_out() -> None:
     rows = []
     for split in ("train", "development", "calibration", "qualification"):
         steps = (4, 5, 6, 8) if split in {"calibration", "qualification"} else (4, 5, 6)
-        for prompt_index in range(2):
+        for prompt_index in range(5):
             for step in steps:
                 for trajectory_index in range(2):
                     rows.append(
@@ -54,18 +58,23 @@ def test_pitch3_ood_plan_is_deterministic_split_local_and_held_out() -> None:
     second = build_pitch3_ood_plan(rows, ood_per_prompt=1, evaluation_ood_per_prompt=1)
 
     assert first == second
-    assert len(first) == 28
-    train_kinds = {
-        row["ood_kind"] for row in first if row["split"] in {"train", "development"}
-    }
+    assert len(first) == 70
+    train_kinds = {row["ood_kind"] for row in first if row["split"] == "train"}
+    development_kinds = {row["ood_kind"] for row in first if row["split"] == "development"}
     evaluation_kinds = {
-        row["ood_kind"]
-        for row in first
-        if row["split"] in {"calibration", "qualification"}
+        row["ood_kind"] for row in first if row["split"] in {"calibration", "qualification"}
     }
-    assert train_kinds == set(TRAIN_OOD_KINDS)
+    assert train_kinds == set(V2_TRAIN_OOD_KINDS)
+    assert development_kinds == set(V2_DEVELOPMENT_OOD_KINDS)
     assert evaluation_kinds == set(EVALUATION_OOD_KINDS)
+    assert {row["ood_transform_version"] for row in first} == {"pitch3_latent_ood_v2"}
     assert all(row["source_sample_id"].startswith(row["split"]) for row in first)
+
+    legacy = build_pitch3_ood_plan(rows, ood_contract=PITCH3_OOD_CONTRACT_V1)
+    assert {row["ood_kind"] for row in legacy if row["split"] in {"train", "development"}} == set(
+        TRAIN_OOD_KINDS
+    )
+    assert {row["ood_transform_version"] for row in legacy} == {"pitch3_latent_ood_v1"}
 
 
 def test_pitch3_ood_transforms_preserve_finite_shape() -> None:
@@ -75,12 +84,32 @@ def test_pitch3_ood_transforms_preserve_finite_shape() -> None:
     scaled = apply_pitch3_ood_transform(latent, "ood_scale_high")
     reversed_latent = apply_pitch3_ood_transform(latent, "ood_time_reverse")
     rolled = apply_pitch3_ood_transform(latent, "ood_channel_roll")
+    block_shuffled = apply_pitch3_ood_transform(latent, "ood_temporal_block_shuffle")
+    segment_reversed = apply_pitch3_ood_transform(latent, "ood_segment_reverse")
+    rolled_5 = apply_pitch3_ood_transform(latent, "ood_channel_roll_5")
+    rolled_11 = apply_pitch3_ood_transform(latent, "ood_channel_roll_11")
 
     assert zero.shape == latent.shape and np.count_nonzero(zero) == 0
     assert np.array_equal(scaled, latent * 4.0)
     assert np.array_equal(reversed_latent, latent[::-1])
     assert np.array_equal(rolled, np.roll(latent, 17, axis=1))
-    assert all(np.isfinite(value).all() for value in (zero, scaled, reversed_latent, rolled))
+    assert not np.array_equal(block_shuffled, latent)
+    assert not np.array_equal(segment_reversed, latent)
+    assert np.array_equal(rolled_5, np.roll(latent, 5, axis=1))
+    assert np.array_equal(rolled_11, np.roll(latent, 11, axis=1))
+    assert all(
+        np.isfinite(value).all()
+        for value in (
+            zero,
+            scaled,
+            reversed_latent,
+            rolled,
+            block_shuffled,
+            segment_reversed,
+            rolled_5,
+            rolled_11,
+        )
+    )
 
 
 def test_pitch3_ood_builder_emits_hash_bound_merged_manifest(
@@ -213,6 +242,7 @@ def test_pitch3_ood_builder_emits_hash_bound_merged_manifest(
         workers=1,
         exact_batch_size=8,
         device_name="cpu",
+        ood_contract=PITCH3_OOD_CONTRACT_V2,
     )
 
     assert result["source_samples"] == 14
@@ -229,7 +259,7 @@ def test_pitch3_ood_builder_emits_hash_bound_merged_manifest(
     assert sha256_file(combined_path) == result["combined_training_manifest_sha256"]
     assert {row["ood_label"] for row in combined} == {"0.0", "1.0"}
     assert all(
-        row["ood_label_source"] == "deterministic_latent_transform_v1"
+        row["ood_label_source"] == "deterministic_latent_transform_v2"
         for row in combined
         if row["ood_label"] == "1.0"
     )
@@ -243,8 +273,9 @@ def test_pitch3_ood_builder_emits_hash_bound_merged_manifest(
         workers=1,
         exact_batch_size=8,
         device_name="cpu",
+        ood_contract=PITCH3_OOD_CONTRACT_V2,
         resume=True,
     )
-    assert second["combined_training_manifest_sha256"] == result[
-        "combined_training_manifest_sha256"
-    ]
+    assert (
+        second["combined_training_manifest_sha256"] == result["combined_training_manifest_sha256"]
+    )

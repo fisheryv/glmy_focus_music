@@ -11,7 +11,11 @@ for local_root in reversed(LOCAL_IMPORT_ROOTS):
     if local_root.is_dir() and str(local_root) not in sys.path:
         sys.path.insert(0, str(local_root))
 
-from generation.pitch3_ood import build_pitch3_ood_augmentation  # noqa: E402
+from generation.pitch3_ood import (  # noqa: E402
+    PITCH3_OOD_CONTRACT_V2,
+    PITCH3_OOD_CONTRACTS,
+    build_pitch3_ood_augmentation,
+)
 
 
 def main() -> None:
@@ -21,9 +25,7 @@ def main() -> None:
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--source-manifest", type=Path, required=True)
     parser.add_argument("--source-split-manifest", type=Path, required=True)
-    parser.add_argument(
-        "--ace-config", type=Path, default=Path("configs/ace_rerank_180s.toml")
-    )
+    parser.add_argument("--ace-config", type=Path, default=Path("configs/ace_rerank_180s.toml"))
     parser.add_argument(
         "--fingerprint",
         type=Path,
@@ -32,6 +34,12 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--ood-per-prompt", type=int, default=1)
     parser.add_argument("--evaluation-ood-per-prompt", type=int, default=1)
+    parser.add_argument(
+        "--ood-contract",
+        choices=PITCH3_OOD_CONTRACTS,
+        default=PITCH3_OOD_CONTRACT_V2,
+        help="use v2 for order-aware train/development OOD with held-out evaluation transforms",
+    )
     parser.add_argument("--duration-seconds", type=float, default=180.0)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--exact-batch-size", type=int, default=256)
@@ -53,6 +61,7 @@ def main() -> None:
         output_dir=args.output_dir,
         ood_per_prompt=args.ood_per_prompt,
         evaluation_ood_per_prompt=args.evaluation_ood_per_prompt,
+        ood_contract=args.ood_contract,
         duration_seconds=args.duration_seconds,
         workers=args.workers,
         exact_batch_size=args.exact_batch_size,

@@ -242,7 +242,7 @@ def _calibration_threshold(
         step_id = (steps == step) & (labels < 0.5)
         if not np.any(step_id):
             raise LTSNContractError(f"calibration has no ID samples at correction step {step}")
-        quantile = float(np.quantile(probabilities[step_id], 0.95))
+        quantile = float(np.quantile(probabilities[step_id], 0.95, method="higher"))
         quantiles.append(quantile)
         by_step[str(step)] = {
             "id_samples": int(np.count_nonzero(step_id)),
@@ -337,11 +337,124 @@ def _qualification_gates(
     }
 
 
+def _development_gates(
+    metrics: Mapping[str, Any], metrics_by_step: Mapping[str, Mapping[str, Any]]
+) -> dict[str, bool]:
+    """Predeclared development screen without using calibrated interval coverage."""
+
+    gates = _qualification_gates(metrics, metrics_by_step)
+    gates.pop("interval_90_coverage")
+    return gates
+
+
+def screen_pitch3_development(
+    *,
+    fingerprint_path: Path,
+    training_manifest: Path,
+    checkpoint_path: Path,
+    output_dir: Path,
+    batch_size: int = 8,
+    device_name: str | None = None,
+    expected_checkpoint_sha256: str | None = None,
+) -> dict[str, Any]:
+    """Screen one checkpoint on development before calibration is consumed."""
+
+    if batch_size < 1:
+        raise ValueError("batch_size must be positive")
+    device = torch.device(device_name or ("cuda" if torch.cuda.is_available() else "cpu"))
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError("CUDA device requested but unavailable")
+    contract, model, metadata, checkpoint_sha256 = _load_model(
+        fingerprint_path=fingerprint_path,
+        training_manifest=training_manifest,
+        checkpoint_path=checkpoint_path,
+        device=device,
+        expected_checkpoint_sha256=expected_checkpoint_sha256,
+    )
+    records = read_pitch3_manifest(training_manifest, contract)
+    development = [record for record in records if record.split == "development"]
+    prediction = _predict(model, development, batch_size=batch_size, device=device)
+    labels = prediction["ood_label"]
+    if not np.any(labels < 0.5) or not np.any(labels >= 0.5):
+        raise LTSNContractError("Pitch-3 development screen requires ID and OOD samples")
+    threshold, threshold_by_step = _calibration_threshold(
+        labels, prediction["ood_probability"], prediction["step_number"]
+    )
+    variance_scale = np.ones(PITCH3_DIMENSIONS, dtype=float)
+    overall = _metrics(
+        prediction,
+        contract=contract,
+        variance_scale=variance_scale,
+        ood_threshold=threshold,
+    )
+    correction_mask = np.isin(prediction["step_number"].astype(int), CORRECTION_STEPS)
+    overall.update(
+        _ood_metrics(
+            labels[correction_mask],
+            prediction["ood_probability"][correction_mask],
+            threshold,
+        )
+    )
+    by_step: dict[str, Any] = {}
+    for step in CORRECTION_STEPS:
+        mask = prediction["step_number"] == step
+        subset = {
+            name: value[mask]
+            if isinstance(value, np.ndarray)
+            else [item for item, keep in zip(value, mask, strict=True) if keep]
+            for name, value in prediction.items()
+        }
+        by_step[str(step)] = _metrics(
+            subset,
+            contract=contract,
+            variance_scale=variance_scale,
+            ood_threshold=threshold,
+        )
+        by_step[str(step)]["id_probability_q95"] = threshold_by_step[str(step)][
+            "id_probability_q95"
+        ]
+    gates = _development_gates(overall, by_step)
+    passed = all(gates.values())
+    output_dir.mkdir(parents=True, exist_ok=True)
+    prediction_path = output_dir / "pitch3_development_predictions.csv"
+    write_csv_atomic(prediction_path, _prediction_rows(prediction))
+    payload = {
+        "schema_version": 1,
+        "stage": "pitch3_development_screen",
+        "status": "passed" if passed else "failed",
+        "calibration_eligible": passed,
+        "fingerprint_json_sha256": contract.artifact_sha256,
+        "checkpoint_sha256": checkpoint_sha256,
+        "training_manifest_sha256": sha256_file(training_manifest),
+        "training_config_sha256": metadata["training_config_sha256"],
+        "ood_transform_version": metadata.get("ood_transform_version", ""),
+        "ood_label_source": metadata.get("ood_label_source", ""),
+        "prediction_csv": prediction_path.resolve().as_posix(),
+        "prediction_csv_sha256": sha256_file(prediction_path),
+        "ood_probability_threshold_diagnostic": threshold,
+        "metrics": overall,
+        "metrics_by_step": by_step,
+        "gates": gates,
+        "selection_scope": "development_only",
+        "qualification_split_consumed": False,
+        "guidance_promotion_eligible": False,
+        "production_authorization": False,
+    }
+    report_path = output_dir / "pitch3_development_screen.json"
+    write_json_atomic(report_path, payload)
+    return {
+        **payload,
+        "report": report_path.resolve().as_posix(),
+        "report_sha256": sha256_file(report_path),
+    }
+
+
 def calibrate_pitch3_control_head(
     *,
     fingerprint_path: Path,
     training_manifest: Path,
     checkpoint_path: Path,
+    development_screen_path: Path,
     output_dir: Path,
     batch_size: int = 8,
     device_name: str | None = None,
@@ -361,6 +474,22 @@ def calibrate_pitch3_control_head(
         device=device,
         expected_checkpoint_sha256=expected_checkpoint_sha256,
     )
+    development_screen = json.loads(development_screen_path.read_text(encoding="utf-8"))
+    if (
+        development_screen.get("schema_version") != 1
+        or development_screen.get("stage") != "pitch3_development_screen"
+        or development_screen.get("status") != "passed"
+        or development_screen.get("calibration_eligible") is not True
+    ):
+        raise LTSNContractError("calibration requires a passed Pitch-3 development screen")
+    expected_screen_bindings = {
+        "fingerprint_json_sha256": contract.artifact_sha256,
+        "checkpoint_sha256": checkpoint_sha256,
+        "training_manifest_sha256": sha256_file(training_manifest),
+    }
+    for name, value in expected_screen_bindings.items():
+        if development_screen.get(name) != value:
+            raise LTSNContractError(f"Pitch-3 development screen {name} binding mismatch")
     records = read_pitch3_manifest(training_manifest, contract)
     calibration_records = [record for record in records if record.split == "calibration"]
     prediction = _predict(model, calibration_records, batch_size=batch_size, device=device)
@@ -379,18 +508,32 @@ def calibrate_pitch3_control_head(
         by_step[str(step)]["id_acceptance_rate"] >= MINIMUM_ID_ACCEPTANCE
         for step in CORRECTION_STEPS
     )
+    ood_metrics = _ood_metrics(prediction["ood_label"], prediction["ood_probability"], threshold)
+    ood_auroc_passed = (
+        isinstance(ood_metrics["ood_auroc"], (int, float))
+        and math.isfinite(ood_metrics["ood_auroc"])
+        and ood_metrics["ood_auroc"] >= MINIMUM_OOD_AUROC
+    )
+    ood_sensitivity_passed = (
+        isinstance(ood_metrics["ood_sensitivity"], (int, float))
+        and ood_metrics["ood_sensitivity"] >= MINIMUM_OOD_SENSITIVITY
+    )
+    calibration_passed = acceptance_passed and ood_auroc_passed and ood_sensitivity_passed
     output_dir.mkdir(parents=True, exist_ok=True)
     prediction_path = output_dir / "pitch3_calibration_predictions.csv"
     write_csv_atomic(prediction_path, _prediction_rows(prediction))
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "stage": "pitch3_calibration",
-        "status": "frozen" if acceptance_passed else "failed",
-        "qualification_eligible": acceptance_passed,
+        "status": "frozen" if calibration_passed else "failed",
+        "qualification_eligible": calibration_passed,
         "fingerprint_json_sha256": contract.artifact_sha256,
         "checkpoint_sha256": checkpoint_sha256,
         "training_manifest_sha256": sha256_file(training_manifest),
         "training_config_sha256": metadata["training_config_sha256"],
+        "ood_transform_version": metadata.get("ood_transform_version", ""),
+        "ood_label_source": metadata.get("ood_label_source", ""),
+        "development_screen_sha256": sha256_file(development_screen_path),
         "prediction_csv": prediction_path.resolve().as_posix(),
         "prediction_csv_sha256": sha256_file(prediction_path),
         "sample_count": len(calibration_records),
@@ -398,10 +541,15 @@ def calibrate_pitch3_control_head(
         "ood_sample_count": int(np.count_nonzero(~id_mask)),
         "variance_scale": variance_scale.tolist(),
         "ood_probability_threshold": threshold,
+        "ood_metrics": ood_metrics,
         "ood_by_step": by_step,
         "calibration_gate": {
             "correction_step_id_acceptance": acceptance_passed,
+            "ood_auroc": ood_auroc_passed,
+            "ood_sensitivity": ood_sensitivity_passed,
             "minimum_id_acceptance": MINIMUM_ID_ACCEPTANCE,
+            "minimum_ood_auroc": MINIMUM_OOD_AUROC,
+            "minimum_ood_sensitivity": MINIMUM_OOD_SENSITIVITY,
         },
         "ood_evidence_scope": "held_out_synthetic_transform_benchmark",
         "guidance_promotion_eligible": False,
@@ -443,7 +591,7 @@ def qualify_pitch3_control_head(
     )
     calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
     if (
-        calibration.get("schema_version") != 1
+        calibration.get("schema_version") != 2
         or calibration.get("stage") != "pitch3_calibration"
         or calibration.get("status") != "frozen"
         or calibration.get("qualification_eligible") is not True
@@ -512,6 +660,8 @@ def qualify_pitch3_control_head(
         "checkpoint_sha256": checkpoint_sha256,
         "training_manifest_sha256": sha256_file(training_manifest),
         "training_config_sha256": metadata["training_config_sha256"],
+        "ood_transform_version": metadata.get("ood_transform_version", ""),
+        "ood_label_source": metadata.get("ood_label_source", ""),
         "calibration_sha256": sha256_file(calibration_path),
         "prediction_csv": prediction_path.resolve().as_posix(),
         "prediction_csv_sha256": sha256_file(prediction_path),

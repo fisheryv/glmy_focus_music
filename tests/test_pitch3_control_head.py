@@ -82,6 +82,9 @@ def _write_smoke_manifest(tmp_path: Path) -> Path:
                 "coordinates_json": json.dumps([0.1 * index, 0.2 * index, 0.3 * index]),
                 "focus_logit": 0.25 * index,
                 "ood_label": ood,
+                "ood_kind": "" if ood == 0.0 else "ood_scale_high",
+                "ood_transform_version": ("" if ood == 0.0 else "pitch3_latent_ood_v2"),
+                "ood_label_source": ("" if ood == 0.0 else "deterministic_latent_transform_v2"),
                 "fingerprint_json_sha256": contract.artifact_sha256,
                 "feature_order_json": json.dumps(list(contract.feature_order)),
                 "label_scope": "per_snapshot_exact",
@@ -154,6 +157,7 @@ ood = 0.1
     }
     assert result["production_authorization"] is False
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
-    assert payload["metadata"]["fingerprint_json_sha256"] == load_pitch3_contract(
-        PROFILE
-    ).artifact_sha256
+    assert (
+        payload["metadata"]["fingerprint_json_sha256"]
+        == load_pitch3_contract(PROFILE).artifact_sha256
+    )

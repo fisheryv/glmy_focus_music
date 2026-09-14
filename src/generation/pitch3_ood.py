@@ -22,13 +22,53 @@ from .ltsn_pipeline import write_csv_atomic, write_json_atomic
 from .pitch3_contract import Pitch3Contract, load_pitch3_contract
 from .pitch3_exact_scorer import ExactPitch3Scorer
 
+PITCH3_OOD_CONTRACT_V1 = "v1"
+PITCH3_OOD_CONTRACT_V2 = "v2"
+PITCH3_OOD_CONTRACTS = (PITCH3_OOD_CONTRACT_V1, PITCH3_OOD_CONTRACT_V2)
 PITCH3_OOD_TRANSFORM_VERSION = "pitch3_latent_ood_v1"
 PITCH3_OOD_LABEL_SOURCE = "deterministic_latent_transform_v1"
 TRAIN_OOD_KINDS = ("ood_zero", "ood_scale_high")
+DEVELOPMENT_OOD_KINDS = TRAIN_OOD_KINDS
 EVALUATION_OOD_KINDS = ("ood_time_reverse", "ood_channel_roll")
+V2_TRAIN_OOD_KINDS = (
+    "ood_zero",
+    "ood_scale_high",
+    "ood_temporal_block_shuffle",
+    "ood_segment_reverse",
+    "ood_channel_roll_5",
+)
+V2_DEVELOPMENT_OOD_KINDS = (
+    "ood_scale_medium",
+    "ood_temporal_block_shuffle_dev",
+    "ood_segment_reverse_dev",
+    "ood_channel_roll_11",
+)
+V2_EVALUATION_OOD_KINDS = EVALUATION_OOD_KINDS
 CORRECTION_STEPS = (4, 5, 6)
 EVALUATION_STEPS = (4, 5, 6, 8)
 SPLITS = ("train", "development", "calibration", "qualification")
+
+
+def _ood_contract(name: str) -> dict[str, Any]:
+    if name == PITCH3_OOD_CONTRACT_V1:
+        return {
+            "name": name,
+            "transform_version": PITCH3_OOD_TRANSFORM_VERSION,
+            "label_source": PITCH3_OOD_LABEL_SOURCE,
+            "train_kinds": TRAIN_OOD_KINDS,
+            "development_kinds": DEVELOPMENT_OOD_KINDS,
+            "evaluation_kinds": EVALUATION_OOD_KINDS,
+        }
+    if name == PITCH3_OOD_CONTRACT_V2:
+        return {
+            "name": name,
+            "transform_version": "pitch3_latent_ood_v2",
+            "label_source": "deterministic_latent_transform_v2",
+            "train_kinds": V2_TRAIN_OOD_KINDS,
+            "development_kinds": V2_DEVELOPMENT_OOD_KINDS,
+            "evaluation_kinds": V2_EVALUATION_OOD_KINDS,
+        }
+    raise ValueError(f"unsupported Pitch-3 OOD contract: {name}")
 
 
 def _require_exact_audio_runtime() -> None:
@@ -84,9 +124,7 @@ def _validate_source_manifest(
             raise LTSNContractError("Pitch-3 source fingerprint hash mismatch")
         if row.get("label_scope") != "per_snapshot_exact":
             raise LTSNContractError("Pitch-3 OOD augmentation requires exact source labels")
-        if json.loads(row.get("feature_order_json", "null")) != list(
-            contract.feature_order
-        ):
+        if json.loads(row.get("feature_order_json", "null")) != list(contract.feature_order):
             raise LTSNContractError("Pitch-3 source feature order mismatch")
         coordinates = [float(value) for value in json.loads(row["coordinates_json"])]
         if len(coordinates) != 3 or not all(math.isfinite(value) for value in coordinates):
@@ -123,8 +161,30 @@ def apply_pitch3_ood_transform(latent: np.ndarray, kind: str) -> np.ndarray:
         transformed = np.zeros_like(values)
     elif kind == "ood_scale_high":
         transformed = values * np.float32(4.0)
+    elif kind == "ood_scale_medium":
+        transformed = values * np.float32(3.0)
+    elif kind == "ood_temporal_block_shuffle":
+        blocks = np.array_split(values, min(8, len(values)), axis=0)
+        order = tuple(range(0, len(blocks), 2)) + tuple(range(1, len(blocks), 2))
+        transformed = np.ascontiguousarray(np.concatenate([blocks[index] for index in order]))
+    elif kind == "ood_temporal_block_shuffle_dev":
+        blocks = np.array_split(values, min(7, len(values)), axis=0)
+        order = tuple(range(len(blocks) - 1, -1, -2)) + tuple(range(len(blocks) - 2, -1, -2))
+        transformed = np.ascontiguousarray(np.concatenate([blocks[index] for index in order]))
+    elif kind == "ood_segment_reverse":
+        transformed = values.copy()
+        start, stop = len(values) // 4, 3 * len(values) // 4
+        transformed[start:stop] = transformed[start:stop][::-1]
+    elif kind == "ood_segment_reverse_dev":
+        transformed = values.copy()
+        start, stop = len(values) // 6, 5 * len(values) // 6
+        transformed[start:stop] = transformed[start:stop][::-1]
     elif kind == "ood_time_reverse":
         transformed = np.ascontiguousarray(values[::-1])
+    elif kind == "ood_channel_roll_5":
+        transformed = np.roll(values, shift=5, axis=1).copy()
+    elif kind == "ood_channel_roll_11":
+        transformed = np.roll(values, shift=11, axis=1).copy()
     elif kind == "ood_channel_roll":
         transformed = np.roll(values, shift=17, axis=1).copy()
     else:
@@ -139,11 +199,13 @@ def build_pitch3_ood_plan(
     *,
     ood_per_prompt: int = 1,
     evaluation_ood_per_prompt: int = 1,
+    ood_contract: str = PITCH3_OOD_CONTRACT_V2,
 ) -> list[dict[str, Any]]:
     """Select split-local anchors and assign train/evaluation transform families."""
 
     if ood_per_prompt < 1 or evaluation_ood_per_prompt < 1:
         raise ValueError("Pitch-3 OOD counts per prompt must be positive")
+    contract = _ood_contract(ood_contract)
     grouped: dict[tuple[str, str, int], list[Mapping[str, str]]] = defaultdict(list)
     prompts: dict[str, set[str]] = defaultdict(set)
     for row in source_rows:
@@ -155,8 +217,8 @@ def build_pitch3_ood_plan(
         prompt_id = str(row.get("prompt_id", ""))
         step = int(row.get("step_number", 0))
         prompts[split].add(prompt_id)
-        expected = EVALUATION_STEPS if split in {"calibration", "qualification"} else (
-            CORRECTION_STEPS
+        expected = (
+            EVALUATION_STEPS if split in {"calibration", "qualification"} else (CORRECTION_STEPS)
         )
         if step in expected:
             grouped[(split, prompt_id, step)].append(row)
@@ -171,11 +233,12 @@ def build_pitch3_ood_plan(
             if split in {"calibration", "qualification"}
             else ood_per_prompt
         )
-        families = (
-            EVALUATION_OOD_KINDS
-            if split in {"calibration", "qualification"}
-            else TRAIN_OOD_KINDS
-        )
+        if split in {"calibration", "qualification"}:
+            families = contract["evaluation_kinds"]
+        elif split == "development":
+            families = contract["development_kinds"]
+        else:
+            families = contract["train_kinds"]
         for prompt_rank, prompt_id in enumerate(sorted(prompts.get(split, set()))):
             for step_rank, step in enumerate(expected_steps):
                 candidates = sorted(
@@ -199,11 +262,10 @@ def build_pitch3_ood_plan(
                             "split": split,
                             "step_number": step,
                             "timestep": float(anchor["timestep"]),
-                            "is_final": str(anchor.get("is_final", "false")).lower()
-                            == "true",
+                            "is_final": str(anchor.get("is_final", "false")).lower() == "true",
                             "ood_kind": kind,
-                            "ood_transform_version": PITCH3_OOD_TRANSFORM_VERSION,
-                            "ood_label_source": PITCH3_OOD_LABEL_SOURCE,
+                            "ood_transform_version": contract["transform_version"],
+                            "ood_label_source": contract["label_source"],
                         }
                     )
     if not planned:
@@ -261,7 +323,7 @@ def _materialize_ood(
         "source_sample_id": item["source_sample_id"],
         "source_latent_sha256": item["source_latent_sha256"],
         "ood_kind": item["ood_kind"],
-        "ood_transform_version": PITCH3_OOD_TRANSFORM_VERSION,
+        "ood_transform_version": item["ood_transform_version"],
         "latent_path": latent_path.relative_to(output_dir).as_posix(),
         "latent_sha256": sha256_file(latent_path),
         "audio_path": audio_path.relative_to(output_dir).as_posix(),
@@ -314,8 +376,8 @@ def _score_ood_rows(
             "source_sample_id": trajectory["source_sample_id"],
             "source_latent_sha256": trajectory["source_latent_sha256"],
             "ood_kind": trajectory["ood_kind"],
-            "ood_transform_version": PITCH3_OOD_TRANSFORM_VERSION,
-            "ood_label_source": PITCH3_OOD_LABEL_SOURCE,
+            "ood_transform_version": trajectory["ood_transform_version"],
+            "ood_label_source": trajectory["ood_label_source"],
             "technical_ood_label": technical_ood,
         }
         label_rows.append(
@@ -385,6 +447,7 @@ def build_pitch3_ood_augmentation(
     output_dir: Path,
     ood_per_prompt: int = 1,
     evaluation_ood_per_prompt: int = 1,
+    ood_contract: str = PITCH3_OOD_CONTRACT_V2,
     duration_seconds: float = 180.0,
     workers: int = 8,
     exact_batch_size: int = 256,
@@ -404,14 +467,13 @@ def build_pitch3_ood_augmentation(
     fingerprint_path = _rooted(fingerprint_path, root)
     output_dir = _rooted(output_dir, root)
     contract = load_pitch3_contract(fingerprint_path)
+    ood_spec = _ood_contract(ood_contract)
     _require_exact_audio_runtime()
     source_rows = _read_csv(source_manifest_path)
     _validate_source_manifest(source_manifest_path, source_rows, contract)
     if any(float(row.get("ood_label", 0.0)) >= 0.5 for row in source_rows):
         raise LTSNContractError("Pitch-3 OOD augmentation requires an ID-only source manifest")
-    split_payload = _validate_split_manifest(
-        source_split_manifest_path, source_rows, contract
-    )
+    split_payload = _validate_split_manifest(source_split_manifest_path, source_rows, contract)
     source_exact_path, source_exact_rows = _load_source_exact_labels(
         source_manifest_path, source_rows
     )
@@ -420,11 +482,17 @@ def build_pitch3_ood_augmentation(
         source_rows,
         ood_per_prompt=ood_per_prompt,
         evaluation_ood_per_prompt=evaluation_ood_per_prompt,
+        ood_contract=ood_contract,
     )
     plan = {
         "schema_version": 1,
         "scope": "pitch3_exact_decoded_ood_augmentation",
-        "transform_version": PITCH3_OOD_TRANSFORM_VERSION,
+        "ood_contract": ood_contract,
+        "transform_version": ood_spec["transform_version"],
+        "label_source": ood_spec["label_source"],
+        "train_kinds": list(ood_spec["train_kinds"]),
+        "development_kinds": list(ood_spec["development_kinds"]),
+        "evaluation_kinds": list(ood_spec["evaluation_kinds"]),
         "fingerprint_json_sha256": contract.artifact_sha256,
         "source_manifest_sha256": sha256_file(source_manifest_path),
         "source_split_manifest_sha256": sha256_file(source_split_manifest_path),
@@ -485,8 +553,8 @@ def build_pitch3_ood_augmentation(
                 "source_sample_id": item["source_sample_id"],
                 "source_latent_sha256": item["source_latent_sha256"],
                 "ood_kind": item["ood_kind"],
-                "ood_transform_version": PITCH3_OOD_TRANSFORM_VERSION,
-                "ood_label_source": PITCH3_OOD_LABEL_SOURCE,
+                "ood_transform_version": item["ood_transform_version"],
+                "ood_label_source": item["ood_label_source"],
             }
         )
     trajectory_path = output_dir / "pitch3_ood_trajectories.csv"
@@ -544,15 +612,15 @@ def build_pitch3_ood_augmentation(
     split_payload.update(
         {
             "schema_version": 2,
-            "ood_transform_version": PITCH3_OOD_TRANSFORM_VERSION,
+            "ood_contract": ood_contract,
+            "ood_transform_version": ood_spec["transform_version"],
+            "ood_label_source": ood_spec["label_source"],
             "source_split_manifest_sha256": sha256_file(source_split_manifest_path),
             "source_training_manifest_sha256": sha256_file(source_manifest_path),
             "pitch3_ood_plan_sha256": plan_sha256,
             "training_manifest_sha256": sha256_file(combined_manifest_path),
             "exact_label_table_sha256": combined_exact_sha256,
-            "ood_counts_by_split": {
-                split: counts[(split, 1)] for split in SPLITS
-            },
+            "ood_counts_by_split": {split: counts[(split, 1)] for split in SPLITS},
             "qualification_eligible": True,
             "guidance_promotion_eligible": False,
         }
@@ -562,12 +630,14 @@ def build_pitch3_ood_augmentation(
     summary = {
         "schema_version": 1,
         "scope": "pitch3_exact_decoded_ood_augmentation",
+        "ood_contract": ood_contract,
+        "ood_transform_version": ood_spec["transform_version"],
+        "ood_label_source": ood_spec["label_source"],
         "source_samples": len(source_rows),
         "ood_samples": len(ood_manifest),
         "combined_samples": len(combined_manifest),
         "counts_by_split": {
-            split: {"id": counts[(split, 0)], "ood": counts[(split, 1)]}
-            for split in SPLITS
+            split: {"id": counts[(split, 0)], "ood": counts[(split, 1)]} for split in SPLITS
         },
         "ood_counts_by_kind": dict(
             sorted(Counter(str(row["ood_kind"]) for row in ood_manifest).items())
