@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import math
 import os
 import random
 import tomllib
+from collections import Counter
 from collections.abc import Iterator
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -47,6 +49,7 @@ class Pitch3TrainingConfig:
     id_samples_per_batch: int = 0
     ood_samples_per_batch: int = 0
     gate_aligned_selection: bool = False
+    scale_high_training_target_scales: tuple[float, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +59,8 @@ class Pitch3LossWeights:
     focus: float = 0.25
     ood: float = 0.1
     band: float = 0.0
+    band_rank: float = 0.0
+    band_rank_min_delta: float = 1e-4
     ood_margin: float = 0.0
     ood_margin_value: float = 1.0
 
@@ -85,7 +90,12 @@ def load_pitch3_training_config(
     with path.open("rb") as handle:
         payload = tomllib.load(handle)
     model = Pitch3ControlHeadConfig(**payload.get("model", {}))
-    training = Pitch3TrainingConfig(**payload.get("training", {}))
+    training_payload = dict(payload.get("training", {}))
+    if "scale_high_training_target_scales" in training_payload:
+        training_payload["scale_high_training_target_scales"] = tuple(
+            float(value) for value in training_payload["scale_high_training_target_scales"]
+        )
+    training = Pitch3TrainingConfig(**training_payload)
     loss = Pitch3LossWeights(**payload.get("loss", {}))
     if training.micro_batch_size < 1 or training.max_epochs < 1:
         raise ValueError("training batch size and epochs must be positive")
@@ -102,6 +112,14 @@ def load_pitch3_training_config(
         raise ValueError("loss weights must be non-negative with coordinate > 0")
     if loss.ood_margin > 0.0 and loss.ood_margin_value <= 0.0:
         raise ValueError("positive OOD margin loss requires ood_margin_value > 0")
+    if loss.band_rank > 0.0 and loss.band_rank_min_delta <= 0.0:
+        raise ValueError("positive band ranking loss requires band_rank_min_delta > 0")
+    scales = training.scale_high_training_target_scales
+    if scales and (
+        len(set(scales)) != len(scales)
+        or any(not math.isfinite(value) or value <= 1.0 or value > 4.0 for value in scales)
+    ):
+        raise ValueError("training scale targets must be unique finite values in (1,4]")
     return model, training, loss
 
 
@@ -176,9 +194,64 @@ def read_pitch3_manifest(path: Path, contract: Pitch3Contract) -> list[Pitch3Sna
     return records
 
 
+def _virtual_scale_assignments(
+    records: list[Pitch3Snapshot], targets: tuple[float, ...]
+) -> dict[str, float]:
+    eligible = [
+        record
+        for record in records
+        if targets and record.ood_label >= 0.5 and record.ood_kind == "ood_scale_high"
+    ]
+    eligible.sort(
+        key=lambda record: hashlib.sha256(f"pitch3-scale-v22|{record.sample_id}".encode()).digest()
+    )
+    return {
+        record.sample_id: targets[index % len(targets)] for index, record in enumerate(eligible)
+    }
+
+
+def _virtual_scale_summary(
+    records: list[Pitch3Snapshot], targets: tuple[float, ...]
+) -> dict[str, Any]:
+    scale_assignments = _virtual_scale_assignments(records, targets)
+    assignments = [
+        {
+            "sample_id": record.sample_id,
+            "source_latent_sha256": record.latent_sha256,
+            "source_scale": 4.0,
+            "target_scale": scale_assignments[record.sample_id],
+        }
+        for record in records
+        if targets and record.ood_label >= 0.5 and record.ood_kind == "ood_scale_high"
+    ]
+    encoded = json.dumps(assignments, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    counts = Counter(item["target_scale"] for item in assignments)
+    return {
+        "schema_version": 1,
+        "kind": "hash_deterministic_scale_high_rescaling",
+        "assignment_salt": "pitch3-scale-v22",
+        "source_kind": "ood_scale_high",
+        "source_scale": 4.0,
+        "target_scales": list(targets),
+        "assignment_count": len(assignments),
+        "assignment_counts_by_target": {str(scale): counts[scale] for scale in sorted(counts)},
+        "assignment_sha256": hashlib.sha256(encoded).hexdigest(),
+        "coordinate_targets_used": False,
+    }
+
+
 class Pitch3Dataset(Dataset[dict[str, Any]]):
-    def __init__(self, records: list[Pitch3Snapshot]) -> None:
+    def __init__(
+        self,
+        records: list[Pitch3Snapshot],
+        *,
+        scale_high_training_target_scales: tuple[float, ...] = (),
+    ) -> None:
         self.records = records
+        self.scale_high_training_target_scales = scale_high_training_target_scales
+        self.virtual_scale_assignments = _virtual_scale_assignments(
+            records, scale_high_training_target_scales
+        )
 
     def __len__(self) -> int:
         return len(self.records)
@@ -188,6 +261,15 @@ class Pitch3Dataset(Dataset[dict[str, Any]]):
         latent = np.load(record.latent_path, allow_pickle=False)
         if latent.ndim != 2 or latent.shape[1] != 64 or not np.isfinite(latent).all():
             raise LTSNContractError(f"invalid Pitch-3 latent array: {record.latent_path}")
+        virtual_scale = 0.0
+        if (
+            self.scale_high_training_target_scales
+            and record.split == "train"
+            and record.ood_label >= 0.5
+            and record.ood_kind == "ood_scale_high"
+        ):
+            virtual_scale = self.virtual_scale_assignments[record.sample_id]
+            latent = np.asarray(latent, dtype=np.float32) * np.float32(virtual_scale / 4.0)
         return {
             "sample_id": record.sample_id,
             "latent": torch.from_numpy(np.asarray(latent, dtype=np.float32)),
@@ -197,6 +279,7 @@ class Pitch3Dataset(Dataset[dict[str, Any]]):
             "focus_logit": torch.tensor(record.focus_logit, dtype=torch.float32),
             "ood_label": torch.tensor(record.ood_label, dtype=torch.float32),
             "ood_kind": record.ood_kind,
+            "virtual_ood_scale": virtual_scale,
         }
 
 
@@ -220,6 +303,7 @@ def collate_pitch3(items: list[dict[str, Any]]) -> dict[str, Any]:
         "focus_logit": torch.stack([item["focus_logit"] for item in items]),
         "ood_label": torch.stack([item["ood_label"] for item in items]),
         "ood_kind": [item["ood_kind"] for item in items],
+        "virtual_ood_scale": [item["virtual_ood_scale"] for item in items],
     }
 
 
@@ -324,7 +408,7 @@ def pitch3_loss(
             ).mean()
         )
         focus = F.smooth_l1_loss(output.focus_logit[id_mask], focus_logit[id_mask])
-        if weights.band > 0.0:
+        if weights.band > 0.0 or weights.band_rank > 0.0:
             if target_lower is None or target_upper is None or distance_weights is None:
                 raise ValueError("Pitch-3 band loss requires frozen target tensors")
             predicted_below = torch.relu(target_lower - output.coordinate_mean[id_mask])
@@ -337,15 +421,33 @@ def pitch3_loss(
             exact_band = ((exact_below.square() + exact_above.square()) * distance_weights).sum(
                 dim=1
             )
-            band = F.smooth_l1_loss(torch.log1p(predicted_band), torch.log1p(exact_band))
+            predicted_log_band = torch.log1p(predicted_band)
+            exact_log_band = torch.log1p(exact_band)
+            band = F.smooth_l1_loss(predicted_log_band, exact_log_band)
+            if weights.band_rank > 0.0 and len(predicted_log_band) >= 2:
+                exact_delta = exact_log_band[:, None] - exact_log_band[None, :]
+                predicted_delta = predicted_log_band[:, None] - predicted_log_band[None, :]
+                upper_triangle = torch.triu(
+                    torch.ones_like(exact_delta, dtype=torch.bool), diagonal=1
+                )
+                informative = upper_triangle & (exact_delta.abs() >= weights.band_rank_min_delta)
+                if informative.any():
+                    signs = torch.sign(exact_delta[informative])
+                    band_rank = F.softplus(-signs * predicted_delta[informative]).mean()
+                else:
+                    band_rank = output.coordinate_mean.sum() * 0.0
+            else:
+                band_rank = output.coordinate_mean.sum() * 0.0
         else:
             band = output.coordinate_mean.sum() * 0.0
+            band_rank = output.coordinate_mean.sum() * 0.0
     else:
         zero = output.coordinate_mean.sum() * 0.0
         coordinate = zero
         nll = zero
         focus = zero
         band = zero
+        band_rank = zero
     positive_weight = torch.tensor(
         ood_positive_weight, device=ood_label.device, dtype=ood_label.dtype
     )
@@ -366,6 +468,7 @@ def pitch3_loss(
         + weights.focus * focus
         + weights.ood * ood
         + weights.band * band
+        + weights.band_rank * band_rank
         + weights.ood_margin * ood_margin
     )
     return total, {
@@ -374,6 +477,7 @@ def pitch3_loss(
         "focus": focus,
         "ood": ood,
         "band": band,
+        "band_rank": band_rank,
         "ood_margin": ood_margin,
     }
 
@@ -416,6 +520,7 @@ def _epoch(
         "focus": 0.0,
         "ood": 0.0,
         "band": 0.0,
+        "band_rank": 0.0,
         "ood_margin": 0.0,
     }
     samples = 0
@@ -663,6 +768,10 @@ def train_pitch3_control_head(
         model.parameters(), lr=training.learning_rate, weight_decay=training.weight_decay
     )
     train_generator = torch.Generator().manual_seed(training.seed)
+    train_dataset = Pitch3Dataset(
+        train_records,
+        scale_high_training_target_scales=training.scale_high_training_target_scales,
+    )
     train_batch_sampler: Pitch3BalancedBatchSampler | None = None
     if training.id_samples_per_batch and training.ood_samples_per_batch:
         train_batch_sampler = Pitch3BalancedBatchSampler(
@@ -672,14 +781,14 @@ def train_pitch3_control_head(
             seed=training.seed,
         )
         train_loader = DataLoader(
-            Pitch3Dataset(train_records),
+            train_dataset,
             batch_sampler=train_batch_sampler,
             num_workers=training.num_workers,
             collate_fn=collate_pitch3,
         )
     else:
         train_loader = DataLoader(
-            Pitch3Dataset(train_records),
+            train_dataset,
             batch_size=training.micro_batch_size,
             shuffle=True,
             generator=train_generator,
@@ -694,6 +803,9 @@ def train_pitch3_control_head(
         collate_fn=collate_pitch3,
     )
     use_bf16 = training.use_bf16 and device.type == "cuda" and torch.cuda.is_bf16_supported()
+    virtual_scale_augmentation = _virtual_scale_summary(
+        train_records, training.scale_high_training_target_scales
+    )
     target_lower = torch.tensor(contract.target_lower, device=device, dtype=torch.float32)
     target_upper = torch.tensor(contract.target_upper, device=device, dtype=torch.float32)
     distance_weights = torch.tensor(contract.distance_weights, device=device, dtype=torch.float32)
@@ -814,6 +926,7 @@ def train_pitch3_control_head(
             if training.gate_aligned_selection
             else "development_loss"
         ),
+        "training_virtual_ood_augmentation": virtual_scale_augmentation,
         "guidance_promotion_eligible": False,
         "production_authorization": False,
     }

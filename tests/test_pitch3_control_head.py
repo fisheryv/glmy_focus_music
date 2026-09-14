@@ -49,7 +49,12 @@ def test_pitch3_control_head_shapes_gradients_and_parameter_budget() -> None:
         torch.randn(2, 3),
         torch.randn(2),
         torch.tensor([0.0, 1.0]),
-        Pitch3LossWeights(band=0.25, ood_margin=0.1, ood_margin_value=1.0),
+        Pitch3LossWeights(
+            band=0.5,
+            band_rank=0.1,
+            ood_margin=0.1,
+            ood_margin_value=1.0,
+        ),
         target_lower=torch.tensor(contract.target_lower),
         target_upper=torch.tensor(contract.target_upper),
         distance_weights=torch.tensor(contract.distance_weights),
@@ -60,7 +65,15 @@ def test_pitch3_control_head_shapes_gradients_and_parameter_budget() -> None:
     assert output.coordinate_logvar.shape == (2, 3)
     assert output.ood_logit.shape == (2,)
     assert output.focus_logit.shape == (2,)
-    assert set(parts) == {"coordinate", "nll", "focus", "ood", "band", "ood_margin"}
+    assert set(parts) == {
+        "coordinate",
+        "nll",
+        "focus",
+        "ood",
+        "band",
+        "band_rank",
+        "ood_margin",
+    }
     assert torch.isfinite(loss)
     assert latent.grad is not None and torch.isfinite(latent.grad).all()
     assert model.trainable_parameters < 7_000_000
@@ -133,6 +146,7 @@ num_workers = 0
 use_bf16 = false
 seed = 17
 require_ood_both_classes = true
+scale_high_training_target_scales = [2.5, 3.5, 4.0]
 
 [loss]
 coordinate = 1.0
@@ -161,6 +175,10 @@ ood = 0.1
         "development": {"id": 1, "ood": 1},
     }
     assert result["production_authorization"] is False
+    augmentation = result["training_virtual_ood_augmentation"]
+    assert augmentation["assignment_count"] == 1
+    assert augmentation["target_scales"] == [2.5, 3.5, 4.0]
+    assert augmentation["coordinate_targets_used"] is False
     payload = torch.load(checkpoint, map_location="cpu", weights_only=False)
     assert (
         payload["metadata"]["fingerprint_json_sha256"]
