@@ -16,8 +16,10 @@ from generation.latent_topology_control_head import (  # noqa: E402
 from generation.ltsn_contract import sha256_file  # noqa: E402
 from generation.pitch3_contract import load_pitch3_contract  # noqa: E402
 from generation.pitch3_training import (  # noqa: E402
+    Pitch3BalancedBatchSampler,
     Pitch3LossWeights,
     pitch3_loss,
+    read_pitch3_manifest,
     train_pitch3_control_head,
 )
 
@@ -47,7 +49,10 @@ def test_pitch3_control_head_shapes_gradients_and_parameter_budget() -> None:
         torch.randn(2, 3),
         torch.randn(2),
         torch.tensor([0.0, 1.0]),
-        Pitch3LossWeights(),
+        Pitch3LossWeights(band=0.25, ood_margin=0.1, ood_margin_value=1.0),
+        target_lower=torch.tensor(contract.target_lower),
+        target_upper=torch.tensor(contract.target_upper),
+        distance_weights=torch.tensor(contract.distance_weights),
     )
     loss.backward()
 
@@ -55,7 +60,7 @@ def test_pitch3_control_head_shapes_gradients_and_parameter_budget() -> None:
     assert output.coordinate_logvar.shape == (2, 3)
     assert output.ood_logit.shape == (2,)
     assert output.focus_logit.shape == (2,)
-    assert set(parts) == {"coordinate", "nll", "focus", "ood"}
+    assert set(parts) == {"coordinate", "nll", "focus", "ood", "band", "ood_margin"}
     assert torch.isfinite(loss)
     assert latent.grad is not None and torch.isfinite(latent.grad).all()
     assert model.trainable_parameters < 7_000_000
@@ -160,4 +165,25 @@ ood = 0.1
     assert (
         payload["metadata"]["fingerprint_json_sha256"]
         == load_pitch3_contract(PROFILE).artifact_sha256
+    )
+
+
+def test_pitch3_balanced_batch_sampler_has_fixed_class_counts(tmp_path: Path) -> None:
+    manifest = _write_smoke_manifest(tmp_path)
+    records = [
+        record
+        for record in read_pitch3_manifest(manifest, load_pitch3_contract(PROFILE))
+        if record.split == "train"
+    ]
+    sampler = Pitch3BalancedBatchSampler(
+        records,
+        id_per_batch=1,
+        ood_per_batch=1,
+        seed=17,
+    )
+    sampler.set_epoch(3)
+    batches = list(sampler)
+    assert batches
+    assert all(
+        sorted(records[index].ood_label for index in batch) == [0.0, 1.0] for batch in batches
     )

@@ -144,6 +144,7 @@ def _predict(
             "prompt_id": [record.prompt_id for record in records],
             "trajectory_id": [record.trajectory_id for record in records],
             "split": [record.split for record in records],
+            "ood_kind": [record.ood_kind for record in records],
             "timestep": np.asarray([record.timestep for record in records], dtype=float),
             "is_final": np.asarray([record.is_final for record in records], dtype=bool),
         }
@@ -174,6 +175,7 @@ def _prediction_rows(prediction: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "exact_focus_logit": float(prediction["focus_logit"][index]),
                 "predicted_focus_logit": float(prediction["predicted_focus_logit"][index]),
                 "ood_label": float(prediction["ood_label"][index]),
+                "ood_kind": prediction["ood_kind"][index],
                 "ood_probability": float(prediction["ood_probability"][index]),
             }
         )
@@ -388,13 +390,36 @@ def screen_pitch3_development(
         ood_threshold=threshold,
     )
     correction_mask = np.isin(prediction["step_number"].astype(int), CORRECTION_STEPS)
-    overall.update(
-        _ood_metrics(
-            labels[correction_mask],
-            prediction["ood_probability"][correction_mask],
-            threshold,
-        )
+    ood_screen = _ood_metrics(
+        labels[correction_mask],
+        prediction["ood_probability"][correction_mask],
+        threshold,
     )
+    overall.update(
+        {
+            "regression_samples": int(len(labels)),
+            "regression_id_samples": int(np.count_nonzero(labels < 0.5)),
+            "ood_screen_samples": ood_screen["samples"],
+            "ood_screen_id_samples": ood_screen["id_samples"],
+            "ood_screen_ood_samples": ood_screen["ood_samples"],
+            "id_acceptance_rate": ood_screen["id_acceptance_rate"],
+            "ood_sensitivity": ood_screen["ood_sensitivity"],
+            "ood_auroc": ood_screen["ood_auroc"],
+        }
+    )
+    ood_kind = np.asarray(prediction["ood_kind"], dtype=object)
+    ood_by_kind: dict[str, Any] = {}
+    for kind in sorted({str(value) for value in ood_kind if value}):
+        mask = correction_mask & (ood_kind == kind) & (labels >= 0.5)
+        probabilities = prediction["ood_probability"][mask]
+        if len(probabilities):
+            ood_by_kind[kind] = {
+                "samples": int(len(probabilities)),
+                "sensitivity": float(np.mean(probabilities > threshold)),
+                "probability_min": float(np.min(probabilities)),
+                "probability_median": float(np.median(probabilities)),
+                "probability_max": float(np.max(probabilities)),
+            }
     by_step: dict[str, Any] = {}
     for step in CORRECTION_STEPS:
         mask = prediction["step_number"] == step
@@ -419,7 +444,7 @@ def screen_pitch3_development(
     prediction_path = output_dir / "pitch3_development_predictions.csv"
     write_csv_atomic(prediction_path, _prediction_rows(prediction))
     payload = {
-        "schema_version": 1,
+        "schema_version": 2,
         "stage": "pitch3_development_screen",
         "status": "passed" if passed else "failed",
         "calibration_eligible": passed,
@@ -434,6 +459,7 @@ def screen_pitch3_development(
         "ood_probability_threshold_diagnostic": threshold,
         "metrics": overall,
         "metrics_by_step": by_step,
+        "ood_metrics_by_kind": ood_by_kind,
         "gates": gates,
         "selection_scope": "development_only",
         "qualification_split_consumed": False,
@@ -476,7 +502,7 @@ def calibrate_pitch3_control_head(
     )
     development_screen = json.loads(development_screen_path.read_text(encoding="utf-8"))
     if (
-        development_screen.get("schema_version") != 1
+        development_screen.get("schema_version") != 2
         or development_screen.get("stage") != "pitch3_development_screen"
         or development_screen.get("status") != "passed"
         or development_screen.get("calibration_eligible") is not True
