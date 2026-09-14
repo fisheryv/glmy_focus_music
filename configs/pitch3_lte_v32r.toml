@@ -1,0 +1,38 @@
+[model]
+latent_dim = 64
+text_dim = 1024
+model_dim = 128
+transformer_heads = 4
+transformer_layers = 3
+feedforward_dim = 512
+temporal_stride = 4
+dropout = 0.1
+fusion_mode = "latent_primary_residual_v31"
+prompt_residual_scale = 0.25
+latent_stem_mode = "dual_rms_v32"
+
+[training]
+learning_rate = 0.0002
+weight_decay = 0.0001
+max_epochs = 50
+minimum_epochs = 20
+early_stopping_patience = 10
+gradient_clip_norm = 1.0
+num_workers = 0
+use_bf16 = false
+seed = 20260922
+huber_delta = 1.0
+rank_min_delta = 0.000001
+local_objective = "decomposed_direction_v32"
+local_direction_weight = 1.0
+local_shape_weight = 0.25
+local_flat_weight = 0.25
+cross_prompt_rank_weight = 1.0
+prompt_groups_per_batch = 2
+prompt_dropout_probability = 0.25
+prompt_consistency_weight = 0.25
+prompt_frozen_epochs = 10
+energy_strata_positive_bins = 3
+energy_strata_weight_cap = 4.0
+local_flat_normalizer = 1.0
+maximum_initial_component_contribution = 20.0

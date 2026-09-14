@@ -8,6 +8,7 @@ DEVICE="${LTE_DEVICE:-cuda:1}"
 STAGE="${1:-all}"
 DATA_ROOT="${LTE_DATA_ROOT:-${PROJECT_ROOT}/runs/pitch3_lte_v3}"
 RUN_ROOT="${LTE_V32_RUN_ROOT:-${PROJECT_ROOT}/runs/pitch3_lte_v32}"
+TRAIN_CONFIG="${LTE_TRAIN_CONFIG:-${PROJECT_ROOT}/configs/pitch3_lte_v32.toml}"
 SOURCE_MANIFEST="${LTE_SOURCE_MANIFEST:-${PROJECT_ROOT}/runs/pitch3_ltch/ood_v2/pitch3_training_manifest_augmented.csv}"
 DATA_DIR="${DATA_ROOT}/exact_local_dataset"
 MODEL_DIR="${RUN_ROOT}/models"
@@ -20,7 +21,7 @@ train_model() {
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/train_pitch3_lte.py" \
     --fingerprint "${PROJECT_ROOT}/metadata/focus_pitch3_fingerprint_v1.json" \
     --manifest "${DATA_DIR}/pitch3_lte_examples.csv" \
-    --config "${PROJECT_ROOT}/configs/pitch3_lte_v32.toml" \
+    --config "${TRAIN_CONFIG}" \
     --output-dir "${MODEL_DIR}" \
     --device "${DEVICE}"
 }

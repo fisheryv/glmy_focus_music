@@ -58,6 +58,8 @@ class Pitch3LTETrainingConfig:
     prompt_frozen_epochs: int = 0
     energy_strata_positive_bins: int = 1
     energy_strata_weight_cap: float = 1.0
+    local_flat_normalizer: float = 0.0
+    maximum_initial_component_contribution: float = 0.0
 
     def validate(self) -> None:
         if self.max_epochs < 1 or not 1 <= self.minimum_epochs <= self.max_epochs:
@@ -93,6 +95,10 @@ class Pitch3LTETrainingConfig:
             raise ValueError("V3-LTE energy strata bin count must be positive")
         if self.energy_strata_weight_cap < 1.0:
             raise ValueError("V3-LTE energy strata weight cap must be at least one")
+        if self.local_flat_normalizer < 0:
+            raise ValueError("V3-LTE local flat normalizer must be non-negative")
+        if self.maximum_initial_component_contribution < 0:
+            raise ValueError("V3-LTE component contribution limit must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -825,7 +831,7 @@ def _loss_normalizers(
     training: Pitch3LTETrainingConfig,
     local_scales: Mapping[str, float],
     energy_strata: Mapping[str, Any],
-) -> dict[str, float]:
+) -> tuple[dict[str, float], dict[str, float], dict[str, str]]:
     names = ["value", "prompt_rank"]
     if training.cross_prompt_rank_weight > 0:
         names.append("cross_prompt_rank")
@@ -855,7 +861,12 @@ def _loss_normalizers(
     medians = {name: float(np.median(items)) if items else 0.0 for name, items in values.items()}
     if any(value <= 0 or not math.isfinite(value) for value in medians.values()):
         raise LTSNContractError("V3-LTE first-epoch loss normalization found an empty component")
-    return medians
+    normalizers = dict(medians)
+    policies = {name: "initial_batch_median" for name in normalizers}
+    if "local_flat" in normalizers and training.local_flat_normalizer > 0:
+        normalizers["local_flat"] = training.local_flat_normalizer
+        policies["local_flat"] = "fixed_dimensionless_scale"
+    return normalizers, medians, policies
 
 
 def _normalized_dataset_loss(
@@ -991,7 +1002,7 @@ def train_pitch3_lte(
         num_workers=training.num_workers,
         pin_memory=device.type == "cuda",
     )
-    normalizers = _loss_normalizers(
+    normalizers, initial_loss_medians, normalizer_policies = _loss_normalizers(
         model,
         train_loader,
         device,
@@ -1060,7 +1071,13 @@ def train_pitch3_lte(
             "minimum_exact_range": LTE_COLLAPSE_EXACT_RANGE,
             "maximum_fraction": LTE_MAX_COLLAPSED_PROMPT_FRACTION,
         },
-        "first_epoch_loss_medians": normalizers,
+        "initial_loss_medians": initial_loss_medians,
+        "first_epoch_loss_medians": initial_loss_medians,
+        "loss_normalizers": normalizers,
+        "loss_normalizer_policy": normalizer_policies,
+        "maximum_initial_component_contribution": (
+            training.maximum_initial_component_contribution
+        ),
         "qualification_eligible": False,
         "guidance_promotion_eligible": False,
         "production_authorization": False,
@@ -1157,11 +1174,52 @@ def train_pitch3_lte(
             component_weights,
         )
         epoch_losses = {name: value / max(batches, 1) for name, value in sums.items()}
+        normalized_contributions = {
+            name: component_weights[name] * epoch_losses[name] / normalizers[name]
+            for name in normalizers
+        }
+        normalized_contributions["prompt_consistency"] = (
+            training.prompt_consistency_weight
+            * epoch_losses["prompt_consistency"]
+            / normalizers["value"]
+        )
+        if epoch == 1 and training.maximum_initial_component_contribution > 0:
+            excessive = {
+                name: value
+                for name, value in normalized_contributions.items()
+                if value > training.maximum_initial_component_contribution
+            }
+            if excessive:
+                failure = {
+                    "schema_version": 1,
+                    "stage": "pitch3_lte_loss_balance_preflight",
+                    "status": "failed",
+                    "epoch": epoch,
+                    "maximum_initial_component_contribution": (
+                        training.maximum_initial_component_contribution
+                    ),
+                    "raw_epoch_training_loss": epoch_losses,
+                    "normalized_contributions": normalized_contributions,
+                    "excessive_components": excessive,
+                    "component_weights": component_weights,
+                    "initial_loss_medians": initial_loss_medians,
+                    "loss_normalizers": normalizers,
+                    "loss_normalizer_policy": normalizer_policies,
+                    "qualification_eligible": False,
+                    "production_authorization": False,
+                }
+                write_json_atomic(
+                    output_dir / "pitch3_lte_loss_balance_failure.json", failure
+                )
+                raise LTSNContractError(
+                    "V3-LTE initial loss component contribution exceeded its frozen limit"
+                )
         selection = (float(metrics["total_gate_deficit"]), development_loss)
         history.append(
             {
                 "epoch": epoch,
                 "training_loss": epoch_losses,
+                "normalized_training_contributions": normalized_contributions,
                 "development_normalized_loss": development_loss,
                 "development_metrics": metrics,
                 "selection_key": list(selection),
