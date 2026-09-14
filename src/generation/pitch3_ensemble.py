@@ -241,7 +241,7 @@ def load_pitch3_ensemble(
     for raw in raw_members:
         try:
             weight = float(raw.get("weight")) if isinstance(raw, Mapping) else math.nan
-        except TypeError, ValueError:
+        except (TypeError, ValueError) as _error:
             weight = math.nan
         weights.append(weight)
     if any(not math.isfinite(value) or value <= 0.0 for value in weights) or not math.isclose(
