@@ -123,6 +123,23 @@ def test_lte_multi_gpu_merge_keeps_prompt_groups_disjoint(tmp_path) -> None:
         (shard_dir / "pitch3_lte_dataset_summary.json").write_text(
             json.dumps(summary), encoding="utf-8"
         )
+    legacy_plan = {
+        "schema_version": 1,
+        "stage": "pitch3_lte_exact_local_dataset",
+        "model_family": "pitch3_prompt_conditioned_local_energy_v3",
+        **common,
+        "sharded": True,
+        "shard_count": shard_count,
+        "prompt_assignment": "sha256(v3-lte-data-shard|prompt_id)-mod-shard_count",
+        "shard_plan_sha256": ["a" * 64, "b" * 64],
+        "planned_local_samples": 1536,
+        "items_sha256": "c" * 64,
+        "prompt_ids": sorted(prompt_id for prompt_id, _ in prompts),
+        "wav_policy": "ephemeral_delete_after_each_exact_batch",
+    }
+    legacy_path = tmp_path / "pitch3_lte_dataset_plan.json"
+    legacy_path.write_text(json.dumps(legacy_plan), encoding="utf-8")
+    legacy_sha256 = sha256_file(legacy_path)
     result = merge_pitch3_lte_dataset_shards(
         output_dir=tmp_path,
         shard_dirs=shard_dirs,
@@ -131,6 +148,18 @@ def test_lte_multi_gpu_merge_keeps_prompt_groups_disjoint(tmp_path) -> None:
     assert result["multi_gpu"] is True
     assert result["base_samples"] == 1536
     assert result["local_samples"] == 1536
+    assert result["replaced_compatible_plan_sha256"] == legacy_sha256
+    assert (tmp_path / f"pitch3_lte_dataset_plan_superseded_{legacy_sha256[:12]}.json").is_file()
+    published = json.loads(legacy_path.read_text(encoding="utf-8"))
+    assert published["publication_kind"] == "canonical_merged_dataset"
+    assert "shard_count" not in published
+    rerun = merge_pitch3_lte_dataset_shards(
+        output_dir=tmp_path,
+        shard_dirs=shard_dirs,
+        devices=("cuda:1", "cuda:0"),
+    )
+    assert rerun["dataset_plan_sha256"] == result["dataset_plan_sha256"]
+    assert rerun["replaced_compatible_plan_sha256"] is None
 
 
 @pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")

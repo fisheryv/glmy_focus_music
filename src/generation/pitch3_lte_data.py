@@ -707,6 +707,61 @@ def _merged_dataset_preflight(examples: Sequence[Mapping[str, Any]]) -> dict[str
     }
 
 
+def _merged_dataset_items_sha256(
+    shard_rows: Sequence[tuple[Path, Sequence[Mapping[str, str]]]],
+) -> str:
+    """Hash logical dataset content without binding it to an execution layout."""
+
+    ignored = {"latent_path", "prompt_embedding_path", "dataset_plan_sha256"}
+    items = [
+        {name: value for name, value in row.items() if name not in ignored}
+        for _, rows in shard_rows
+        for row in rows
+    ]
+    items.sort(key=lambda row: str(row["sample_id"]))
+    return canonical_json_sha256(items)
+
+
+def _publish_merged_dataset_plan(
+    path: Path,
+    plan: Mapping[str, Any],
+    *,
+    compatibility_fields: Sequence[str],
+) -> str | None:
+    """Publish a canonical merged plan and preserve a compatible legacy plan.
+
+    Early V3-LTE multi-GPU plans included shard hashes and shard counts in the
+    final dataset identity.  That made a scientifically identical resume fail
+    when users switched from one GPU to several GPUs, or changed only the
+    number of execution shards.  The final plan is now layout-independent;
+    shard provenance remains in the dataset summary.
+    """
+
+    if not path.is_file():
+        write_json_atomic(path, plan)
+        return None
+    existing = json.loads(path.read_text(encoding="utf-8"))
+    if existing == plan:
+        return None
+    if any(existing.get(name) != plan.get(name) for name in compatibility_fields):
+        raise LTSNContractError(
+            "merged V3-LTE scientific plan changed; use a new output directory"
+        )
+    if existing.get("publication_kind") == "canonical_merged_dataset":
+        raise LTSNContractError(
+            "merged V3-LTE dataset content changed; use a new output directory"
+        )
+    previous_sha256 = sha256_file(path)
+    archived = path.with_name(f"{path.stem}_superseded_{previous_sha256[:12]}.json")
+    if archived.is_file():
+        if json.loads(archived.read_text(encoding="utf-8")) != existing:
+            raise LTSNContractError("V3-LTE superseded plan archive hash collision")
+    else:
+        write_json_atomic(archived, existing)
+    write_json_atomic(path, plan)
+    return previous_sha256
+
+
 def merge_pitch3_lte_dataset_shards(
     *,
     output_dir: Path,
@@ -780,22 +835,27 @@ def merge_pitch3_lte_dataset_shards(
         "stage": "pitch3_lte_exact_local_dataset",
         "model_family": LTE_MODEL_FAMILY,
         **{name: plans[0][name] for name in common_fields},
-        "sharded": True,
-        "shard_count": shard_count,
-        "prompt_assignment": "sha256(v3-lte-data-shard|prompt_id)-mod-shard_count",
-        "shard_plan_sha256": shard_plan_hashes,
+        "publication_kind": "canonical_merged_dataset",
         "planned_local_samples": sum(int(plan["planned_local_samples"]) for plan in plans),
-        "items_sha256": canonical_json_sha256(shard_plan_hashes),
+        "items_sha256": _merged_dataset_items_sha256(shard_rows),
         "prompt_ids": sorted(set().union(*prompt_sets)),
         "wav_policy": "ephemeral_delete_after_each_exact_batch",
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     merged_plan_path = output_dir / "pitch3_lte_dataset_plan.json"
-    if merged_plan_path.is_file():
-        if json.loads(merged_plan_path.read_text(encoding="utf-8")) != merged_plan:
-            raise LTSNContractError("merged V3-LTE plan changed; use a new output directory")
-    else:
-        write_json_atomic(merged_plan_path, merged_plan)
+    replaced_plan_sha256 = _publish_merged_dataset_plan(
+        merged_plan_path,
+        merged_plan,
+        compatibility_fields=(
+            "schema_version",
+            "stage",
+            "model_family",
+            *common_fields,
+            "planned_local_samples",
+            "prompt_ids",
+            "wav_policy",
+        ),
+    )
     merged_plan_sha256 = sha256_file(merged_plan_path)
 
     examples: list[dict[str, Any]] = []
@@ -853,6 +913,8 @@ def merge_pitch3_lte_dataset_shards(
         "shard_summary_sha256": [
             sha256_file(shard_dir / "pitch3_lte_dataset_summary.json") for shard_dir in shard_dirs
         ],
+        "shard_plan_sha256": shard_plan_hashes,
+        "replaced_compatible_plan_sha256": replaced_plan_sha256,
         "retained_wav_files": retained_wav,
     }
     if retained_wav:
