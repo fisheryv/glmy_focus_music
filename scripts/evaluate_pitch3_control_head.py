@@ -24,8 +24,11 @@ def _common(parser: argparse.ArgumentParser) -> None:
         default=Path("metadata/focus_pitch3_fingerprint_v1.json"),
     )
     parser.add_argument("--manifest", type=Path, required=True)
-    parser.add_argument("--checkpoint", type=Path, required=True)
+    predictor = parser.add_mutually_exclusive_group(required=True)
+    predictor.add_argument("--checkpoint", type=Path)
+    predictor.add_argument("--ensemble-manifest", type=Path)
     parser.add_argument("--checkpoint-sha256")
+    parser.add_argument("--ensemble-manifest-sha256")
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--device", default=None)
@@ -54,10 +57,12 @@ def main() -> None:
         "fingerprint_path": args.fingerprint,
         "training_manifest": args.manifest,
         "checkpoint_path": args.checkpoint,
+        "ensemble_manifest_path": args.ensemble_manifest,
         "output_dir": args.output_dir,
         "batch_size": args.batch_size,
         "device_name": args.device,
         "expected_checkpoint_sha256": args.checkpoint_sha256,
+        "expected_ensemble_manifest_sha256": args.ensemble_manifest_sha256,
     }
     if args.stage == "screen-development":
         result = screen_pitch3_development(**common)

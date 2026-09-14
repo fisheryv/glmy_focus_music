@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 import torch
+from torch import nn
 from torch.utils.data import DataLoader
 
 from .latent_topology_control_head import (
@@ -25,6 +26,7 @@ from .pitch3_contract import (
     load_pitch3_contract,
     validate_pitch3_checkpoint_metadata,
 )
+from .pitch3_ensemble import load_pitch3_ensemble
 from .pitch3_training import (
     Pitch3Dataset,
     Pitch3Snapshot,
@@ -80,6 +82,70 @@ def _load_model(
     return contract, model, dict(metadata), checkpoint_sha256
 
 
+def _load_predictor(
+    *,
+    fingerprint_path: Path,
+    training_manifest: Path,
+    device: torch.device,
+    checkpoint_path: Path | None,
+    ensemble_manifest_path: Path | None,
+    expected_checkpoint_sha256: str | None,
+    expected_ensemble_manifest_sha256: str | None,
+) -> tuple[Pitch3Contract, nn.Module, dict[str, Any], dict[str, Any]]:
+    if (checkpoint_path is None) == (ensemble_manifest_path is None):
+        raise ValueError("select exactly one Pitch-3 checkpoint or ensemble manifest")
+    if checkpoint_path is not None:
+        contract, model, metadata, checkpoint_sha256 = _load_model(
+            fingerprint_path=fingerprint_path,
+            training_manifest=training_manifest,
+            checkpoint_path=checkpoint_path,
+            device=device,
+            expected_checkpoint_sha256=expected_checkpoint_sha256,
+        )
+        binding = {
+            "model_artifact_kind": "single_checkpoint",
+            "model_artifact_sha256": checkpoint_sha256,
+            "checkpoint_sha256": checkpoint_sha256,
+            "training_config_sha256": metadata["training_config_sha256"],
+        }
+        return contract, model, metadata, binding
+    contract = load_pitch3_contract(fingerprint_path)
+    model, metadata, ensemble_sha256 = load_pitch3_ensemble(
+        manifest_path=ensemble_manifest_path,
+        contract=contract,
+        training_manifest=training_manifest,
+        device=device,
+        expected_manifest_sha256=expected_ensemble_manifest_sha256,
+    )
+    members = metadata["members"]
+    binding = {
+        "model_artifact_kind": "weighted_ensemble",
+        "model_artifact_sha256": ensemble_sha256,
+        "ensemble_manifest_sha256": ensemble_sha256,
+        "ensemble_id": metadata["ensemble_id"],
+        "ensemble_member_checkpoint_sha256s": [member["checkpoint_sha256"] for member in members],
+        "ensemble_member_training_config_sha256s": [
+            member["training_config_sha256"] for member in members
+        ],
+    }
+    return contract, model, metadata, binding
+
+
+def _validate_upstream_model_binding(
+    report: Mapping[str, Any], binding: Mapping[str, Any], *, stage: str
+) -> None:
+    if "model_artifact_kind" in report or "model_artifact_sha256" in report:
+        expected = {
+            "model_artifact_kind": binding["model_artifact_kind"],
+            "model_artifact_sha256": binding["model_artifact_sha256"],
+        }
+    else:
+        expected = {"checkpoint_sha256": binding.get("checkpoint_sha256")}
+    for name, value in expected.items():
+        if report.get(name) != value:
+            raise LTSNContractError(f"Pitch-3 {stage} {name} binding mismatch")
+
+
 def _sigmoid(values: np.ndarray) -> np.ndarray:
     values = np.asarray(values, dtype=float)
     return np.exp(-np.logaddexp(0.0, -values))
@@ -87,7 +153,7 @@ def _sigmoid(values: np.ndarray) -> np.ndarray:
 
 @torch.no_grad()
 def _predict(
-    model: LatentTopologyControlHead,
+    model: nn.Module,
     records: Sequence[Pitch3Snapshot],
     *,
     batch_size: int,
@@ -353,25 +419,29 @@ def screen_pitch3_development(
     *,
     fingerprint_path: Path,
     training_manifest: Path,
-    checkpoint_path: Path,
     output_dir: Path,
+    checkpoint_path: Path | None = None,
+    ensemble_manifest_path: Path | None = None,
     batch_size: int = 8,
     device_name: str | None = None,
     expected_checkpoint_sha256: str | None = None,
+    expected_ensemble_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
-    """Screen one checkpoint on development before calibration is consumed."""
+    """Screen one frozen predictor on development before calibration is consumed."""
 
     if batch_size < 1:
         raise ValueError("batch_size must be positive")
     device = torch.device(device_name or ("cuda" if torch.cuda.is_available() else "cpu"))
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA device requested but unavailable")
-    contract, model, metadata, checkpoint_sha256 = _load_model(
+    contract, model, metadata, artifact_binding = _load_predictor(
         fingerprint_path=fingerprint_path,
         training_manifest=training_manifest,
-        checkpoint_path=checkpoint_path,
         device=device,
+        checkpoint_path=checkpoint_path,
+        ensemble_manifest_path=ensemble_manifest_path,
         expected_checkpoint_sha256=expected_checkpoint_sha256,
+        expected_ensemble_manifest_sha256=expected_ensemble_manifest_sha256,
     )
     records = read_pitch3_manifest(training_manifest, contract)
     development = [record for record in records if record.split == "development"]
@@ -449,9 +519,8 @@ def screen_pitch3_development(
         "status": "passed" if passed else "failed",
         "calibration_eligible": passed,
         "fingerprint_json_sha256": contract.artifact_sha256,
-        "checkpoint_sha256": checkpoint_sha256,
         "training_manifest_sha256": sha256_file(training_manifest),
-        "training_config_sha256": metadata["training_config_sha256"],
+        **artifact_binding,
         "ood_transform_version": metadata.get("ood_transform_version", ""),
         "ood_label_source": metadata.get("ood_label_source", ""),
         "prediction_csv": prediction_path.resolve().as_posix(),
@@ -479,12 +548,14 @@ def calibrate_pitch3_control_head(
     *,
     fingerprint_path: Path,
     training_manifest: Path,
-    checkpoint_path: Path,
     development_screen_path: Path,
     output_dir: Path,
+    checkpoint_path: Path | None = None,
+    ensemble_manifest_path: Path | None = None,
     batch_size: int = 8,
     device_name: str | None = None,
     expected_checkpoint_sha256: str | None = None,
+    expected_ensemble_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Freeze interval scaling and an ID-preserving OOD threshold on calibration only."""
 
@@ -493,12 +564,14 @@ def calibrate_pitch3_control_head(
     device = torch.device(device_name or ("cuda" if torch.cuda.is_available() else "cpu"))
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA device requested but unavailable")
-    contract, model, metadata, checkpoint_sha256 = _load_model(
+    contract, model, metadata, artifact_binding = _load_predictor(
         fingerprint_path=fingerprint_path,
         training_manifest=training_manifest,
-        checkpoint_path=checkpoint_path,
         device=device,
+        checkpoint_path=checkpoint_path,
+        ensemble_manifest_path=ensemble_manifest_path,
         expected_checkpoint_sha256=expected_checkpoint_sha256,
+        expected_ensemble_manifest_sha256=expected_ensemble_manifest_sha256,
     )
     development_screen = json.loads(development_screen_path.read_text(encoding="utf-8"))
     if (
@@ -510,12 +583,14 @@ def calibrate_pitch3_control_head(
         raise LTSNContractError("calibration requires a passed Pitch-3 development screen")
     expected_screen_bindings = {
         "fingerprint_json_sha256": contract.artifact_sha256,
-        "checkpoint_sha256": checkpoint_sha256,
         "training_manifest_sha256": sha256_file(training_manifest),
     }
     for name, value in expected_screen_bindings.items():
         if development_screen.get(name) != value:
             raise LTSNContractError(f"Pitch-3 development screen {name} binding mismatch")
+    _validate_upstream_model_binding(
+        development_screen, artifact_binding, stage="development screen"
+    )
     records = read_pitch3_manifest(training_manifest, contract)
     calibration_records = [record for record in records if record.split == "calibration"]
     prediction = _predict(model, calibration_records, batch_size=batch_size, device=device)
@@ -554,9 +629,8 @@ def calibrate_pitch3_control_head(
         "status": "frozen" if calibration_passed else "failed",
         "qualification_eligible": calibration_passed,
         "fingerprint_json_sha256": contract.artifact_sha256,
-        "checkpoint_sha256": checkpoint_sha256,
         "training_manifest_sha256": sha256_file(training_manifest),
-        "training_config_sha256": metadata["training_config_sha256"],
+        **artifact_binding,
         "ood_transform_version": metadata.get("ood_transform_version", ""),
         "ood_label_source": metadata.get("ood_label_source", ""),
         "development_screen_sha256": sha256_file(development_screen_path),
@@ -594,12 +668,14 @@ def qualify_pitch3_control_head(
     *,
     fingerprint_path: Path,
     training_manifest: Path,
-    checkpoint_path: Path,
     calibration_path: Path,
     output_dir: Path,
+    checkpoint_path: Path | None = None,
+    ensemble_manifest_path: Path | None = None,
     batch_size: int = 8,
     device_name: str | None = None,
     expected_checkpoint_sha256: str | None = None,
+    expected_ensemble_manifest_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Run one-shot independent surrogate qualification without authorizing guidance."""
 
@@ -608,12 +684,14 @@ def qualify_pitch3_control_head(
     device = torch.device(device_name or ("cuda" if torch.cuda.is_available() else "cpu"))
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA device requested but unavailable")
-    contract, model, metadata, checkpoint_sha256 = _load_model(
+    contract, model, metadata, artifact_binding = _load_predictor(
         fingerprint_path=fingerprint_path,
         training_manifest=training_manifest,
-        checkpoint_path=checkpoint_path,
         device=device,
+        checkpoint_path=checkpoint_path,
+        ensemble_manifest_path=ensemble_manifest_path,
         expected_checkpoint_sha256=expected_checkpoint_sha256,
+        expected_ensemble_manifest_sha256=expected_ensemble_manifest_sha256,
     )
     calibration = json.loads(calibration_path.read_text(encoding="utf-8"))
     if (
@@ -625,12 +703,12 @@ def qualify_pitch3_control_head(
         raise LTSNContractError("qualification requires a frozen Pitch-3 calibration")
     expected_bindings = {
         "fingerprint_json_sha256": contract.artifact_sha256,
-        "checkpoint_sha256": checkpoint_sha256,
         "training_manifest_sha256": sha256_file(training_manifest),
     }
     for name, value in expected_bindings.items():
         if calibration.get(name) != value:
             raise LTSNContractError(f"Pitch-3 calibration {name} binding mismatch")
+    _validate_upstream_model_binding(calibration, artifact_binding, stage="calibration")
     variance_scale = np.asarray(calibration.get("variance_scale"), dtype=float)
     if variance_scale.shape != (PITCH3_DIMENSIONS,) or not np.isfinite(variance_scale).all():
         raise LTSNContractError("Pitch-3 calibration variance scale is malformed")
@@ -683,9 +761,8 @@ def qualify_pitch3_control_head(
         "status": "passed" if surrogate_passed else "failed",
         "surrogate_qualification_passed": surrogate_passed,
         "fingerprint_json_sha256": contract.artifact_sha256,
-        "checkpoint_sha256": checkpoint_sha256,
         "training_manifest_sha256": sha256_file(training_manifest),
-        "training_config_sha256": metadata["training_config_sha256"],
+        **artifact_binding,
         "ood_transform_version": metadata.get("ood_transform_version", ""),
         "ood_label_source": metadata.get("ood_label_source", ""),
         "calibration_sha256": sha256_file(calibration_path),
