@@ -29,6 +29,10 @@ from .pitch3_lte_data import (
     validate_pitch3_lte_dataset_preflight,
 )
 
+LTE_COLLAPSE_PREDICTED_RANGE = 1e-3
+LTE_COLLAPSE_EXACT_RANGE = 0.1
+LTE_MAX_COLLAPSED_PROMPT_FRACTION = 0.05
+
 
 @dataclass(frozen=True, slots=True)
 class Pitch3LTETrainingConfig:
@@ -43,6 +47,12 @@ class Pitch3LTETrainingConfig:
     seed: int = 20260920
     huber_delta: float = 1.0
     rank_min_delta: float = 1e-6
+    local_objective: str = "central_difference_huber_v3"
+    local_shape_weight: float = 0.25
+    local_flat_weight: float = 0.25
+    prompt_groups_per_batch: int = 1
+    prompt_dropout_probability: float = 0.0
+    prompt_consistency_weight: float = 0.0
 
     def validate(self) -> None:
         if self.max_epochs < 1 or not 1 <= self.minimum_epochs <= self.max_epochs:
@@ -53,6 +63,19 @@ class Pitch3LTETrainingConfig:
             raise ValueError("V3-LTE optimizer settings are invalid")
         if self.huber_delta <= 0 or self.rank_min_delta <= 0:
             raise ValueError("V3-LTE robust-loss thresholds must be positive")
+        if self.local_objective not in {
+            "central_difference_huber_v3",
+            "robust_direction_v31",
+        }:
+            raise ValueError("unknown V3-LTE local objective")
+        if self.local_shape_weight < 0 or self.local_flat_weight < 0:
+            raise ValueError("V3-LTE local robust-loss weights must be non-negative")
+        if self.prompt_groups_per_batch < 1:
+            raise ValueError("V3-LTE prompt groups per batch must be positive")
+        if not 0.0 <= self.prompt_dropout_probability < 1.0:
+            raise ValueError("V3-LTE prompt dropout must lie in [0,1)")
+        if self.prompt_consistency_weight < 0:
+            raise ValueError("V3-LTE prompt consistency weight must be non-negative")
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,9 +246,15 @@ def collate_pitch3_lte(items: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 class PromptBatchSampler(Sampler[list[int]]):
-    """One complete prompt group per batch: four seeds plus two +/- pairs."""
+    """Keep complete prompt groups intact while optionally batching several."""
 
-    def __init__(self, records: Sequence[Pitch3LTEExample], seed: int, shuffle: bool) -> None:
+    def __init__(
+        self,
+        records: Sequence[Pitch3LTEExample],
+        seed: int,
+        shuffle: bool,
+        groups_per_batch: int = 1,
+    ) -> None:
         grouped: dict[str, list[int]] = defaultdict(list)
         for index, record in enumerate(records):
             grouped[record.prompt_id].append(index)
@@ -250,6 +279,9 @@ class PromptBatchSampler(Sampler[list[int]]):
             self.groups.append(base + local)
         self.seed = seed
         self.shuffle = shuffle
+        if groups_per_batch < 1:
+            raise ValueError("groups_per_batch must be positive")
+        self.groups_per_batch = groups_per_batch
         self.epoch = 0
 
     def set_epoch(self, epoch: int) -> None:
@@ -259,15 +291,27 @@ class PromptBatchSampler(Sampler[list[int]]):
         groups = [values.copy() for values in self.groups]
         if self.shuffle:
             random.Random(self.seed + 1_000_003 * self.epoch).shuffle(groups)
-        yield from groups
+        for start in range(0, len(groups), self.groups_per_batch):
+            selected = groups[start : start + self.groups_per_batch]
+            yield [index for group in selected for index in group]
 
     def __len__(self) -> int:
-        return len(self.groups)
+        return math.ceil(len(self.groups) / self.groups_per_batch)
 
 
 def _pair_indices(batch: Mapping[str, Any]) -> tuple[list[tuple[int, int]], list[tuple[int, int]]]:
-    base = [index for index, kind in enumerate(batch["source_kind"]) if kind == "base_step4_seed"]
-    rank_pairs = [(left, right) for offset, left in enumerate(base) for right in base[offset + 1 :]]
+    base_by_prompt: dict[str, list[int]] = defaultdict(list)
+    for index, (kind, prompt_id) in enumerate(
+        zip(batch["source_kind"], batch["prompt_id"], strict=True)
+    ):
+        if kind == "base_step4_seed":
+            base_by_prompt[str(prompt_id)].append(index)
+    rank_pairs = [
+        (left, right)
+        for base in base_by_prompt.values()
+        for offset, left in enumerate(base)
+        for right in base[offset + 1 :]
+    ]
     directions: dict[str, dict[int, int]] = defaultdict(dict)
     for index, (direction_id, sign) in enumerate(
         zip(batch["direction_id"], batch["direction_sign"].tolist(), strict=True)
@@ -288,11 +332,20 @@ def pitch3_lte_raw_losses(
     *,
     huber_delta: float,
     rank_min_delta: float,
+    local_objective: str = "central_difference_huber_v3",
+    local_derivative_scale: float = 1.0,
+    local_delta_scale: float = 1.0,
+    local_shape_weight: float = 0.25,
+    local_flat_weight: float = 0.25,
 ) -> dict[str, Tensor]:
     target = batch["energy_target"].float()
     value = F.huber_loss(predicted.float(), target, delta=huber_delta)
     rank_terms = []
     fd_terms = []
+    direction_terms = []
+    shape_terms = []
+    flat_terms = []
+    zero = predicted.sum() * 0.0
     rank_pairs, fd_pairs = _pair_indices(batch)
     for left, right in rank_pairs:
         exact_delta = target[left] - target[right]
@@ -306,13 +359,140 @@ def pitch3_lte_raw_losses(
             raise LTSNContractError("V3-LTE finite-difference epsilon differs within a pair")
         exact_derivative = (target[plus] - target[minus]) / (2.0 * epsilon)
         predicted_derivative = (predicted[plus] - predicted[minus]) / (2.0 * epsilon)
-        fd_terms.append(F.huber_loss(predicted_derivative, exact_derivative, delta=huber_delta))
-    zero = predicted.sum() * 0.0
-    return {
+        if local_objective == "central_difference_huber_v3":
+            fd_terms.append(
+                F.huber_loss(predicted_derivative, exact_derivative, delta=huber_delta)
+            )
+            continue
+        if local_objective != "robust_direction_v31":
+            raise ValueError(f"unknown V3-LTE local objective: {local_objective}")
+        predicted_delta = predicted[plus] - predicted[minus]
+        if exact_derivative.abs() <= rank_min_delta:
+            flat_terms.append(F.smooth_l1_loss(predicted_delta / local_delta_scale, zero))
+            continue
+        direction_terms.append(
+            F.softplus(-torch.sign(exact_derivative) * predicted_delta / local_delta_scale)
+        )
+        exact_robust = torch.asinh(exact_derivative / local_derivative_scale)
+        predicted_robust = torch.asinh(predicted_derivative / local_derivative_scale)
+        shape_terms.append(F.huber_loss(predicted_robust, exact_robust, delta=huber_delta))
+    losses = {
         "value": value,
         "prompt_rank": torch.stack(rank_terms).mean() if rank_terms else zero,
-        "local_fd": torch.stack(fd_terms).mean() if fd_terms else zero,
     }
+    if local_objective == "central_difference_huber_v3":
+        losses["local_fd"] = torch.stack(fd_terms).mean() if fd_terms else zero
+    else:
+        direction = torch.stack(direction_terms).mean() if direction_terms else zero
+        shape = torch.stack(shape_terms).mean() if shape_terms else zero
+        flat = torch.stack(flat_terms).mean() if flat_terms else zero
+        losses["local_robust"] = (
+            direction + local_shape_weight * shape + local_flat_weight * flat
+        )
+    return losses
+
+
+def _local_training_scales(
+    records: Sequence[Pitch3LTEExample],
+    minimum_delta: float,
+) -> dict[str, float]:
+    signed: dict[str, dict[int, Pitch3LTEExample]] = defaultdict(dict)
+    for record in records:
+        if record.direction_id:
+            signed[record.direction_id][record.direction_sign] = record
+    derivatives: list[float] = []
+    deltas: list[float] = []
+    for pair in signed.values():
+        if set(pair) != {-1, 1}:
+            raise LTSNContractError("V3-LTE training scale found an incomplete local pair")
+        minus, plus = pair[-1], pair[1]
+        if not math.isclose(minus.epsilon, plus.epsilon, abs_tol=1e-9):
+            raise LTSNContractError("V3-LTE training scale found mismatched epsilon")
+        delta = plus.energy_target - minus.energy_target
+        derivative = delta / (2.0 * minus.epsilon)
+        if abs(derivative) > minimum_delta:
+            derivatives.append(abs(derivative))
+            deltas.append(abs(delta))
+    if not derivatives or not deltas:
+        raise LTSNContractError("V3-LTE training split has no nonzero local directions")
+    derivative_scale = float(np.median(derivatives))
+    delta_scale = float(np.median(deltas))
+    if min(derivative_scale, delta_scale) <= 0:
+        raise LTSNContractError("V3-LTE robust local scales are degenerate")
+    return {
+        "local_derivative_scale": derivative_scale,
+        "local_delta_scale": delta_scale,
+        "nonzero_local_directions": len(derivatives),
+    }
+
+
+def _raw_loss_kwargs(
+    training: Pitch3LTETrainingConfig,
+    local_scales: Mapping[str, float],
+) -> dict[str, Any]:
+    return {
+        "huber_delta": training.huber_delta,
+        "rank_min_delta": training.rank_min_delta,
+        "local_objective": training.local_objective,
+        "local_derivative_scale": float(local_scales["local_derivative_scale"]),
+        "local_delta_scale": float(local_scales["local_delta_scale"]),
+        "local_shape_weight": training.local_shape_weight,
+        "local_flat_weight": training.local_flat_weight,
+    }
+
+
+def _prompt_permutation(prompt_ids: Sequence[str], device: torch.device) -> Tensor | None:
+    grouped: dict[str, list[int]] = defaultdict(list)
+    for index, prompt_id in enumerate(prompt_ids):
+        grouped[str(prompt_id)].append(index)
+    groups = list(grouped.values())
+    if len(groups) < 2:
+        return None
+    permutation = list(range(len(prompt_ids)))
+    for group_index, indices in enumerate(groups):
+        replacement = groups[(group_index + 1) % len(groups)]
+        if len(indices) != len(replacement):
+            raise LTSNContractError("V3-LTE shuffled prompt groups have different sizes")
+        for index, replacement_index in zip(indices, replacement, strict=True):
+            permutation[index] = replacement_index
+    return torch.tensor(permutation, dtype=torch.long, device=device)
+
+
+def _training_forward(
+    model: PromptConditionedTopologyEnergy,
+    batch: Mapping[str, Any],
+    training: Pitch3LTETrainingConfig,
+) -> tuple[Tensor, Tensor]:
+    latent_state = model.encode_latent(batch["latent"], batch["attention_mask"])
+    prompt_state = model.encode_prompt(batch["text_hidden"], batch["text_mask"])
+    predicted = model.energy_from_states(latent_state, prompt_state).energy
+    zero = predicted.sum() * 0.0
+    if training.prompt_consistency_weight <= 0:
+        return predicted, zero
+    permutation = _prompt_permutation(batch["prompt_id"], prompt_state.device)
+    if permutation is None:
+        raise LTSNContractError(
+            "V3.1 prompt consistency requires at least two prompt groups per batch"
+        )
+    shuffled = model.energy_from_states(latent_state, prompt_state[permutation]).energy
+    dropout_state = prompt_state.clone()
+    prompt_ids = list(dict.fromkeys(str(value) for value in batch["prompt_id"]))
+    drop_group = torch.rand(len(prompt_ids), device=prompt_state.device) < float(
+        training.prompt_dropout_probability
+    )
+    for group_index, prompt_id in enumerate(prompt_ids):
+        if bool(drop_group[group_index]):
+            indices = [
+                index for index, value in enumerate(batch["prompt_id"]) if str(value) == prompt_id
+            ]
+            dropout_state[indices] = 0.0
+    dropped = model.energy_from_states(latent_state, dropout_state).energy
+    reference = predicted.detach()
+    consistency = 0.5 * (
+        F.huber_loss(shuffled, reference, delta=training.huber_delta)
+        + F.huber_loss(dropped, reference, delta=training.huber_delta)
+    )
+    return predicted, consistency
 
 
 def _to_device(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
@@ -395,6 +575,18 @@ def pitch3_lte_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     for row in base:
         by_prompt[str(row["prompt_id"])].append(row)
         by_family[str(row["prompt_family"])].append(row)
+    collapsed_prompt_ids = []
+    for prompt_id, values in by_prompt.items():
+        exact_values = [float(row["exact_energy"]) for row in values]
+        predicted_values = [float(row["predicted_energy"]) for row in values]
+        exact_range = max(exact_values) - min(exact_values)
+        predicted_range = max(predicted_values) - min(predicted_values)
+        if (
+            exact_range > LTE_COLLAPSE_EXACT_RANGE
+            and predicted_range < LTE_COLLAPSE_PREDICTED_RANGE
+        ):
+            collapsed_prompt_ids.append(prompt_id)
+    collapsed_fraction = len(collapsed_prompt_ids) / len(by_prompt)
     rank_correct = 0
     rank_total = 0
     for values in by_prompt.values():
@@ -446,12 +638,16 @@ def pitch3_lte_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "every_prompt_family_spearman": bool(family_rho) and min(family_rho.values()) >= 0.50,
         "same_prompt_ranking_accuracy": rank_total > 0 and ranking >= 0.65,
         "local_direction_sign_accuracy": direction_total > 0 and direction >= 0.65,
+        "prompt_latent_sensitivity": collapsed_fraction <= LTE_MAX_COLLAPSED_PROMPT_FRACTION,
     }
     deficits = {
         "direct_energy_spearman": max(0.0, 0.50 - pooled),
         "every_prompt_family_spearman": max(0.0, 0.50 - min(family_rho.values(), default=0.0)),
         "same_prompt_ranking_accuracy": max(0.0, 0.65 - ranking),
         "local_direction_sign_accuracy": max(0.0, 0.65 - direction) if direction_total else 0.65,
+        "prompt_latent_sensitivity": max(
+            0.0, collapsed_fraction - LTE_MAX_COLLAPSED_PROMPT_FRACTION
+        ),
     }
     return {
         "samples": len(rows),
@@ -468,6 +664,14 @@ def pitch3_lte_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         )
         if direction_total >= 2
         else 0.0,
+        "collapsed_prompt_count": len(collapsed_prompt_ids),
+        "collapsed_prompt_fraction": collapsed_fraction,
+        "collapsed_prompt_ids": sorted(collapsed_prompt_ids),
+        "prompt_collapse_definition": {
+            "maximum_predicted_range": LTE_COLLAPSE_PREDICTED_RANGE,
+            "minimum_exact_range": LTE_COLLAPSE_EXACT_RANGE,
+            "maximum_fraction": LTE_MAX_COLLAPSED_PROMPT_FRACTION,
+        },
         "gates": gates,
         "gate_deficits": deficits,
         "total_gate_deficit": sum(deficits.values()),
@@ -480,8 +684,14 @@ def _loss_normalizers(
     loader: DataLoader[dict[str, Any]],
     device: torch.device,
     training: Pitch3LTETrainingConfig,
+    local_scales: Mapping[str, float],
 ) -> dict[str, float]:
-    values: dict[str, list[float]] = {"value": [], "prompt_rank": [], "local_fd": []}
+    local_name = (
+        "local_fd"
+        if training.local_objective == "central_difference_huber_v3"
+        else "local_robust"
+    )
+    values: dict[str, list[float]] = {"value": [], "prompt_rank": [], local_name: []}
     model.eval()
     with torch.inference_mode():
         for raw in loader:
@@ -492,8 +702,7 @@ def _loss_normalizers(
             losses = pitch3_lte_raw_losses(
                 predicted,
                 batch,
-                huber_delta=training.huber_delta,
-                rank_min_delta=training.rank_min_delta,
+                **_raw_loss_kwargs(training, local_scales),
             )
             for name, loss in losses.items():
                 value = float(loss.detach().cpu())
@@ -511,6 +720,7 @@ def _normalized_dataset_loss(
     device: torch.device,
     training: Pitch3LTETrainingConfig,
     normalizers: Mapping[str, float],
+    local_scales: Mapping[str, float],
 ) -> float:
     totals: list[float] = []
     model.eval()
@@ -526,8 +736,7 @@ def _normalized_dataset_loss(
             losses = pitch3_lte_raw_losses(
                 predicted,
                 batch,
-                huber_delta=training.huber_delta,
-                rank_min_delta=training.rank_min_delta,
+                **_raw_loss_kwargs(training, local_scales),
             )
             totals.append(
                 sum(float(losses[name].cpu()) / normalizers[name] for name in normalizers)
@@ -600,12 +809,18 @@ def train_pitch3_lte(
         raise LTSNContractError("V3-LTE training split has no exact local finite differences")
     if not any(record.source_kind == "local_finite_difference" for record in development_records):
         raise LTSNContractError("V3-LTE checkpoint selection requires held-out local pairs")
+    local_scales = _local_training_scales(train_records, training.rank_min_delta)
     _seed_everything(training.seed)
     device = torch.device(device_name)
     if device.type == "cuda" and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested for V3-LTE but is unavailable")
     model = PromptConditionedTopologyEnergy(model_config).to(device)
-    train_sampler = PromptBatchSampler(train_records, training.seed, True)
+    train_sampler = PromptBatchSampler(
+        train_records,
+        training.seed,
+        True,
+        groups_per_batch=training.prompt_groups_per_batch,
+    )
     development_sampler = PromptBatchSampler(development_records, training.seed, False)
     train_loader = DataLoader(
         Pitch3LTEDataset(train_records),
@@ -621,7 +836,7 @@ def train_pitch3_lte(
         num_workers=training.num_workers,
         pin_memory=device.type == "cuda",
     )
-    normalizers = _loss_normalizers(model, train_loader, device, training)
+    normalizers = _loss_normalizers(model, train_loader, device, training, local_scales)
     optimizer = torch.optim.AdamW(
         model.parameters(), lr=training.learning_rate, weight_decay=training.weight_decay
     )
@@ -643,14 +858,31 @@ def train_pitch3_lte(
         "seed": training.seed,
         "device": device_name,
         "precision": "bf16_forward_fp32_loss" if training.use_bf16 else "fp32",
+        "architecture_revision": (
+            "v3.1_latent_primary_prompt_residual"
+            if model_config.fusion_mode == "latent_primary_residual_v31"
+            else "v3_joint_fusion"
+        ),
         "energy_target": "log1p(exact_pitch3_target_band_loss)",
         "prompt_condition": "frozen_ace_step_text_hidden_state",
         "prompt_id_embedding_used": False,
         "guidance_steps": [4],
         "training_radius_ratio": LTE_RADIUS_RATIO,
         "maximum_guidance_update_ratio": LTE_RADIUS_RATIO / 2.0,
-        "loss_components": ["value_huber", "same_prompt_rank", "local_central_difference"],
-        "loss_component_weights": [1.0, 1.0, 1.0],
+        "loss_components": list(normalizers),
+        "loss_component_weights": {name: 1.0 for name in normalizers},
+        "local_objective": training.local_objective,
+        "local_training_scales": local_scales,
+        "prompt_regularization": {
+            "groups_per_batch": training.prompt_groups_per_batch,
+            "dropout_probability": training.prompt_dropout_probability,
+            "consistency_weight": training.prompt_consistency_weight,
+        },
+        "prompt_collapse_gate": {
+            "maximum_predicted_range": LTE_COLLAPSE_PREDICTED_RANGE,
+            "minimum_exact_range": LTE_COLLAPSE_EXACT_RANGE,
+            "maximum_fraction": LTE_MAX_COLLAPSED_PROMPT_FRACTION,
+        },
         "first_epoch_loss_medians": normalizers,
         "qualification_eligible": False,
         "guidance_promotion_eligible": False,
@@ -659,7 +891,8 @@ def train_pitch3_lte(
     for epoch in range(1, training.max_epochs + 1):
         train_sampler.set_epoch(epoch)
         model.train()
-        sums = {"value": 0.0, "prompt_rank": 0.0, "local_fd": 0.0, "total": 0.0}
+        sums = {name: 0.0 for name in normalizers}
+        sums.update({"prompt_consistency": 0.0, "total": 0.0})
         batches = 0
         for raw in train_loader:
             batch = _to_device(raw, device)
@@ -669,30 +902,30 @@ def train_pitch3_lte(
                 dtype=torch.bfloat16,
                 enabled=training.use_bf16 and device.type == "cuda",
             ):
-                predicted = model(
-                    batch["latent"],
-                    batch["attention_mask"],
-                    batch["text_hidden"],
-                    batch["text_mask"],
-                ).energy
+                predicted, prompt_consistency = _training_forward(model, batch, training)
             raw_losses = pitch3_lte_raw_losses(
                 predicted.float(),
                 batch,
-                huber_delta=training.huber_delta,
-                rank_min_delta=training.rank_min_delta,
+                **_raw_loss_kwargs(training, local_scales),
             )
             total = sum(raw_losses[name] / normalizers[name] for name in normalizers)
+            total = total + (
+                training.prompt_consistency_weight
+                * prompt_consistency.float()
+                / normalizers["value"]
+            )
             total.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), training.gradient_clip_norm)
             optimizer.step()
             for name, loss in raw_losses.items():
                 sums[name] += float(loss.detach().cpu())
+            sums["prompt_consistency"] += float(prompt_consistency.detach().cpu())
             sums["total"] += float(total.detach().cpu())
             batches += 1
-        development_rows = _prediction_rows(model, development_loader, device, training.use_bf16)
+        development_rows = _prediction_rows(model, development_loader, device, use_bf16=False)
         metrics = pitch3_lte_metrics(development_rows)
         development_loss = _normalized_dataset_loss(
-            model, development_loader, device, training, normalizers
+            model, development_loader, device, training, normalizers, local_scales
         )
         epoch_losses = {name: value / max(batches, 1) for name, value in sums.items()}
         selection = (float(metrics["total_gate_deficit"]), development_loss)
@@ -732,7 +965,7 @@ def train_pitch3_lte(
     manifest = {
         **best_metadata,
         "epochs_completed": len(history),
-        "checkpoint_selection": "development_gate_deficit_then_normalized_training_loss",
+        "checkpoint_selection": "fp32_development_gate_deficit_then_normalized_training_loss",
         "checkpoint": str(checkpoint_path.resolve()),
         "checkpoint_sha256": sha256_file(checkpoint_path),
         "training_history": history,

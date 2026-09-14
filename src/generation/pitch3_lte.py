@@ -31,6 +31,8 @@ class Pitch3LTEConfig:
     feedforward_dim: int = 512
     temporal_stride: int = 4
     dropout: float = 0.1
+    fusion_mode: str = "joint_v3"
+    prompt_residual_scale: float = 0.25
 
     def validate(self) -> None:
         if self.model_dim % self.transformer_heads:
@@ -39,6 +41,10 @@ class Pitch3LTEConfig:
             raise ValueError("V3-LTE dimensions and temporal stride must be positive")
         if not 0.0 <= self.dropout < 1.0:
             raise ValueError("V3-LTE dropout must lie in [0,1)")
+        if self.fusion_mode not in {"joint_v3", "latent_primary_residual_v31"}:
+            raise ValueError("unknown V3-LTE fusion mode")
+        if self.prompt_residual_scale <= 0:
+            raise ValueError("V3-LTE prompt residual scale must be positive")
 
 
 class PromptConditionedTopologyEnergy(nn.Module):
@@ -105,7 +111,17 @@ class PromptConditionedTopologyEnergy(nn.Module):
             nn.Linear(cfg.model_dim * 2, cfg.model_dim),
             nn.SiLU(),
         )
-        self.energy_head = nn.Linear(cfg.model_dim, 1)
+        if cfg.fusion_mode == "joint_v3":
+            self.energy_head = nn.Linear(cfg.model_dim, 1)
+        else:
+            self.latent_energy_head = nn.Sequential(
+                nn.Linear(cfg.model_dim, cfg.model_dim),
+                nn.SiLU(),
+                nn.Linear(cfg.model_dim, 1),
+            )
+            self.interaction_energy_head = nn.Linear(cfg.model_dim, 1)
+            nn.init.zeros_(self.interaction_energy_head.weight)
+            nn.init.zeros_(self.interaction_energy_head.bias)
 
     @staticmethod
     def _validate_mask(values: Tensor, mask: Tensor, name: str) -> Tensor:
@@ -150,6 +166,19 @@ class PromptConditionedTopologyEnergy(nn.Module):
     ) -> Pitch3LTEOutput:
         latent_state = self.encode_latent(latent, attention_mask)
         prompt_state = self.encode_prompt(text_hidden, text_mask)
+        return self.energy_from_states(latent_state, prompt_state)
+
+    def energy_from_states(
+        self,
+        latent_state: Tensor,
+        prompt_state: Tensor,
+    ) -> Pitch3LTEOutput:
+        """Read energy from reusable latent/prompt states.
+
+        V3.1 training uses this boundary for prompt dropout and shuffled-prompt
+        consistency without recomputing the expensive temporal transformer.
+        """
+
         if prompt_state.shape[0] == 1 and latent_state.shape[0] != 1:
             prompt_state = prompt_state.expand(latent_state.shape[0], -1)
         if prompt_state.shape != latent_state.shape:
@@ -165,7 +194,15 @@ class PromptConditionedTopologyEnergy(nn.Module):
                 dim=1,
             )
         )
-        return Pitch3LTEOutput(self.energy_head(fused).squeeze(-1).float())
+        if self.config.fusion_mode == "joint_v3":
+            energy = self.energy_head(fused).squeeze(-1)
+        else:
+            latent_energy = self.latent_energy_head(latent_state).squeeze(-1)
+            interaction = self.config.prompt_residual_scale * torch.tanh(
+                self.interaction_energy_head(fused).squeeze(-1)
+            )
+            energy = latent_energy + interaction
+        return Pitch3LTEOutput(energy.float())
 
     @property
     def trainable_parameters(self) -> int:

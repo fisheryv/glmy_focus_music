@@ -210,6 +210,7 @@ def test_lte_model_losses_and_one_shot_guidance() -> None:
     assert predicted.shape == (8,)
     batch = {
         "source_kind": ["base_step4_seed"] * 4 + ["local_finite_difference"] * 4,
+        "prompt_id": ["p1"] * 8,
         "energy_target": torch.linspace(0.1, 0.8, 8),
         "direction_id": ["", "", "", "", "d1", "d1", "d2", "d2"],
         "direction_sign": torch.tensor([0, 0, 0, 0, -1, 1, -1, 1]),
@@ -218,6 +219,32 @@ def test_lte_model_losses_and_one_shot_guidance() -> None:
     losses = pitch3_lte_raw_losses(predicted, batch, huber_delta=1.0, rank_min_delta=1e-6)
     assert set(losses) == {"value", "prompt_rank", "local_fd"}
     assert all(torch.isfinite(value) and value >= 0 for value in losses.values())
+    robust = pitch3_lte_raw_losses(
+        predicted,
+        batch,
+        huber_delta=1.0,
+        rank_min_delta=1e-6,
+        local_objective="robust_direction_v31",
+        local_derivative_scale=0.5,
+        local_delta_scale=0.1,
+    )
+    assert set(robust) == {"value", "prompt_rank", "local_robust"}
+    assert all(torch.isfinite(value) and value >= 0 for value in robust.values())
+
+    residual_model = PromptConditionedTopologyEnergy(
+        Pitch3LTEConfig(
+            model_dim=16,
+            transformer_heads=4,
+            transformer_layers=1,
+            feedforward_dim=32,
+            temporal_stride=2,
+            dropout=0.0,
+            fusion_mode="latent_primary_residual_v31",
+        )
+    ).eval()
+    residual_first = residual_model(latent, latent_mask, text, text_mask).energy
+    residual_second = residual_model(latent, latent_mask, text.flip(1), text_mask).energy
+    assert torch.allclose(residual_first, residual_second)
 
     corrector = Pitch3LTECorrector(
         model,
