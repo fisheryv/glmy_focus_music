@@ -248,3 +248,44 @@ class AceStepAdapter:
         soundfile.write(str(temporary), audio, int(self._handler.sample_rate), subtype="FLOAT")
         temporary.replace(output_path)
         return output_path.resolve()
+
+    def encode_generation_prompt(
+        self,
+        caption: str,
+        *,
+        duration_seconds: float,
+        bpm: int | None = None,
+        keyscale: str = "",
+        timesignature: str = "",
+    ) -> tuple[Any, Any, str]:
+        """Return the frozen ACE text state used by ordinary generation.
+
+        V3-LTE must condition on the real ACE prompt representation rather
+        than a learned prompt identifier.  This helper deliberately delegates
+        formatting, tokenization, and encoding to the initialized ACE handler
+        so the cached state follows the same 256-token DiT caption contract as
+        :meth:`generate`.
+        """
+
+        if not caption.strip():
+            raise ValueError("ACE prompt caption must be non-empty")
+        if duration_seconds <= 0:
+            raise ValueError("ACE prompt duration must be positive")
+        self.initialize()
+        assert self._handler is not None
+        metadata = {
+            "bpm": bpm if bpm is not None else "N/A",
+            "keyscale": keyscale.strip() or "N/A",
+            "timesignature": timesignature.strip() or "N/A",
+            "duration": float(duration_seconds),
+        }
+        caption_input, _ = self._handler.build_dit_inputs(
+            task="text2music",
+            instruction=None,
+            caption=caption,
+            lyrics="[Instrumental]",
+            metas=metadata,
+            vocal_language="en",
+        )
+        hidden, mask = self._handler._get_text_hidden_states(caption_input)
+        return hidden.detach().float().cpu(), mask.detach().bool().cpu(), caption_input
