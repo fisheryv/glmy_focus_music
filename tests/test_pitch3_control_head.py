@@ -13,6 +13,7 @@ from generation.latent_topology_control_head import (  # noqa: E402
     PITCH3_OOD_STAT_FEATURES,
     LatentTopologyControlHead,
     Pitch3ControlHeadConfig,
+    Pitch3ControlOutput,
 )
 from generation.ltsn_contract import sha256_file  # noqa: E402
 from generation.pitch3_contract import load_pitch3_contract  # noqa: E402
@@ -20,6 +21,7 @@ from generation.pitch3_training import (  # noqa: E402
     Pitch3BalancedBatchSampler,
     Pitch3LossWeights,
     Pitch3Snapshot,
+    load_pitch3_training_config,
     pitch3_loss,
     read_pitch3_manifest,
     train_pitch3_control_head,
@@ -74,11 +76,104 @@ def test_pitch3_control_head_shapes_gradients_and_parameter_budget() -> None:
         "ood",
         "band",
         "band_rank",
+        "band_region",
         "ood_margin",
     }
     assert torch.isfinite(loss)
     assert latent.grad is not None and torch.isfinite(latent.grad).all()
     assert model.trainable_parameters < 7_000_000
+
+
+def _loss_output(coordinate_mean: torch.Tensor) -> Pitch3ControlOutput:
+    batch = coordinate_mean.shape[0]
+    return Pitch3ControlOutput(
+        coordinate_mean=coordinate_mean,
+        coordinate_logvar=torch.zeros_like(coordinate_mean),
+        ood_logit=torch.zeros(batch),
+        focus_logit=torch.zeros(batch),
+    )
+
+
+def test_pitch3_v24_region_loss_corrects_false_inside_prediction() -> None:
+    contract = load_pitch3_contract(PROFILE)
+    lower = torch.tensor(contract.target_lower)
+    upper = torch.tensor(contract.target_upper)
+    distance_weights = torch.tensor(contract.distance_weights)
+    predicted = ((lower + upper) / 2.0).unsqueeze(0).requires_grad_(True)
+    exact = predicted.detach().clone()
+    exact[0, 2] = upper[2] + 1.0
+
+    _, parts = pitch3_loss(
+        _loss_output(predicted),
+        exact,
+        torch.zeros(1),
+        torch.zeros(1),
+        Pitch3LossWeights(band_region=1.0),
+        target_lower=lower,
+        target_upper=upper,
+        distance_weights=distance_weights,
+    )
+    parts["band_region"].backward()
+
+    assert parts["band_region"] > 0.0
+    assert predicted.grad is not None
+    assert predicted.grad[0, 2] < 0.0
+    assert torch.equal(predicted.grad[0, :2], torch.zeros(2))
+
+
+def test_pitch3_v24_smooth_band_restores_near_boundary_gradient() -> None:
+    contract = load_pitch3_contract(PROFILE)
+    lower = torch.tensor(contract.target_lower)
+    upper = torch.tensor(contract.target_upper)
+    distance_weights = torch.tensor(contract.distance_weights)
+    exact = ((lower + upper) / 2.0).unsqueeze(0)
+    exact[0, 2] = upper[2] + 0.5
+
+    hard_predicted = ((lower + upper) / 2.0).unsqueeze(0)
+    hard_predicted[0, 2] = upper[2] - 0.01
+    hard_predicted.requires_grad_(True)
+    _, hard_parts = pitch3_loss(
+        _loss_output(hard_predicted),
+        exact,
+        torch.zeros(1),
+        torch.zeros(1),
+        Pitch3LossWeights(band=1.0),
+        target_lower=lower,
+        target_upper=upper,
+        distance_weights=distance_weights,
+    )
+    hard_parts["band"].backward()
+
+    smooth_predicted = hard_predicted.detach().clone().requires_grad_(True)
+    _, smooth_parts = pitch3_loss(
+        _loss_output(smooth_predicted),
+        exact,
+        torch.zeros(1),
+        torch.zeros(1),
+        Pitch3LossWeights(band=1.0, band_smooth_temperature_fraction=0.05),
+        target_lower=lower,
+        target_upper=upper,
+        distance_weights=distance_weights,
+    )
+    smooth_parts["band"].backward()
+
+    assert hard_predicted.grad is not None
+    assert hard_predicted.grad[0, 2] == 0.0
+    assert smooth_predicted.grad is not None
+    assert smooth_predicted.grad[0, 2] < 0.0
+
+
+def test_pitch3_v24_config_is_a_controlled_v23_objective_ablation() -> None:
+    model, training, weights = load_pitch3_training_config(
+        ROOT / "configs" / "pitch3_control_head_training_v24.toml"
+    )
+
+    assert model.ood_stats_dim == 32
+    assert training.seed == 20260917
+    assert training.id_band_stratified is True
+    assert training.scale_high_training_target_scales == (2.5, 3.5, 4.0)
+    assert weights.band_region == 0.25
+    assert weights.band_smooth_temperature_fraction == 0.05
 
 
 def test_pitch3_v23_raw_ood_statistics_preserve_scale_signal() -> None:
@@ -222,6 +317,12 @@ ood = 0.1
         "development": {"id": 1, "ood": 1},
     }
     assert result["production_authorization"] is False
+    assert result["band_training_objective"] == {
+        "kind": "hard_excursion_v23_compatible",
+        "region_consistency_weight": 0.0,
+        "smooth_temperature_fraction_of_band_width": 0.0,
+        "evaluation_band_formula_changed": False,
+    }
     augmentation = result["training_virtual_ood_augmentation"]
     assert augmentation["assignment_count"] == 1
     assert augmentation["target_scales"] == [2.5, 3.5, 4.0]
