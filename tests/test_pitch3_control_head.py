@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from dataclasses import asdict
 from pathlib import Path
 
 import numpy as np
@@ -174,6 +175,24 @@ def test_pitch3_v24_config_is_a_controlled_v23_objective_ablation() -> None:
     assert training.scale_high_training_target_scales == (2.5, 3.5, 4.0)
     assert weights.band_region == 0.25
     assert weights.band_smooth_temperature_fraction == 0.05
+
+
+def test_pitch3_v24r_only_disables_smooth_band_training() -> None:
+    v24_model, v24_training, v24_weights = load_pitch3_training_config(
+        ROOT / "configs" / "pitch3_control_head_training_v24.toml"
+    )
+    v24r_model, v24r_training, v24r_weights = load_pitch3_training_config(
+        ROOT / "configs" / "pitch3_control_head_training_v24r.toml"
+    )
+
+    assert asdict(v24r_model) == asdict(v24_model)
+    assert asdict(v24r_training) == asdict(v24_training)
+    changed = {
+        name for name, value in asdict(v24_weights).items() if asdict(v24r_weights)[name] != value
+    }
+    assert changed == {"band_smooth_temperature_fraction"}
+    assert v24r_weights.band_region == 0.25
+    assert v24r_weights.band_smooth_temperature_fraction == 0.0
 
 
 def test_pitch3_v23_raw_ood_statistics_preserve_scale_signal() -> None:
