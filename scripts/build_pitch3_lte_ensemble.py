@@ -16,7 +16,7 @@ from generation.pitch3_lte_ensemble import (  # noqa: E402
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Build an equal-weight V3.3 LTE ensemble")
+    parser = argparse.ArgumentParser(description="Build an equal-weight V3.3/V3.4 LTE ensemble")
     parser.add_argument("--manifest", type=Path, action="append", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()

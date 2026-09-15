@@ -27,6 +27,7 @@ class Pitch3LTEPotentialComponents(NamedTuple):
     energy: Tensor
     global_energy: Tensor
     local_energy: Tensor
+    coordinates: Tensor | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +45,15 @@ class Pitch3LTEConfig:
     latent_stem_mode: str = "normalized_v3"
     potential_mode: str = "single_v3"
     local_residual_scale: float = 1.0
+    coordinate_lower: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    coordinate_upper: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    coordinate_center: tuple[float, float, float] = (0.5, 0.5, 0.5)
+    coordinate_distance_weights: tuple[float, float, float] = (
+        1.0 / 3.0,
+        1.0 / 3.0,
+        1.0 / 3.0,
+    )
+    prompt_film_fraction: float = 0.25
 
     def validate(self) -> None:
         if self.model_dim % self.transformer_heads:
@@ -58,14 +68,41 @@ class Pitch3LTEConfig:
             raise ValueError("V3-LTE prompt residual scale must be positive")
         if self.latent_stem_mode not in {"normalized_v3", "dual_rms_v32"}:
             raise ValueError("unknown V3-LTE latent stem mode")
-        if self.potential_mode not in {"single_v3", "global_local_v33"}:
+        if self.potential_mode not in {
+            "single_v3",
+            "global_local_v33",
+            "structured_coordinate_v34",
+        }:
             raise ValueError("unknown V3-LTE potential mode")
-        if self.potential_mode == "global_local_v33" and self.fusion_mode != (
-            "latent_primary_residual_v31"
-        ):
-            raise ValueError("V3.3 potential decomposition requires latent-primary fusion")
+        if self.potential_mode in {
+            "global_local_v33",
+            "structured_coordinate_v34",
+        } and self.fusion_mode != "latent_primary_residual_v31":
+            raise ValueError("decomposed LTE potentials require latent-primary fusion")
         if self.local_residual_scale <= 0:
             raise ValueError("V3-LTE local residual scale must be positive")
+        coordinate_vectors = (
+            self.coordinate_lower,
+            self.coordinate_upper,
+            self.coordinate_center,
+            self.coordinate_distance_weights,
+        )
+        if any(len(values) != 3 for values in coordinate_vectors):
+            raise ValueError("V3.4 coordinate contract must contain three values")
+        if self.potential_mode == "structured_coordinate_v34":
+            if any(
+                lower >= upper
+                for lower, upper in zip(
+                    self.coordinate_lower, self.coordinate_upper, strict=True
+                )
+            ):
+                raise ValueError("V3.4 coordinate bounds are invalid")
+            if any(value <= 0 for value in self.coordinate_distance_weights) or not math.isclose(
+                sum(self.coordinate_distance_weights), 1.0, abs_tol=1e-8
+            ):
+                raise ValueError("V3.4 coordinate weights must be positive and sum to one")
+            if not 0.0 < self.prompt_film_fraction < 1.0:
+                raise ValueError("V3.4 prompt FiLM fraction must lie in (0,1)")
 
 
 class PromptConditionedTopologyEnergy(nn.Module):
@@ -135,7 +172,32 @@ class PromptConditionedTopologyEnergy(nn.Module):
             nn.Linear(cfg.model_dim * 2, cfg.model_dim),
             nn.SiLU(),
         )
-        if cfg.fusion_mode == "joint_v3":
+        if cfg.potential_mode == "structured_coordinate_v34":
+            self.coordinate_head = nn.Sequential(
+                nn.Linear(cfg.model_dim, cfg.model_dim),
+                nn.SiLU(),
+                nn.Linear(cfg.model_dim, 3),
+            )
+            self.coordinate_prompt_film = nn.Linear(cfg.model_dim, 6)
+            nn.init.zeros_(self.coordinate_prompt_film.weight)
+            nn.init.zeros_(self.coordinate_prompt_film.bias)
+            self.register_buffer(
+                "coordinate_lower",
+                torch.tensor(cfg.coordinate_lower, dtype=torch.float32),
+            )
+            self.register_buffer(
+                "coordinate_upper",
+                torch.tensor(cfg.coordinate_upper, dtype=torch.float32),
+            )
+            self.register_buffer(
+                "coordinate_center",
+                torch.tensor(cfg.coordinate_center, dtype=torch.float32),
+            )
+            self.register_buffer(
+                "coordinate_distance_weights",
+                torch.tensor(cfg.coordinate_distance_weights, dtype=torch.float32),
+            )
+        elif cfg.fusion_mode == "joint_v3":
             self.energy_head = nn.Linear(cfg.model_dim, 1)
         else:
             self.latent_energy_head = nn.Sequential(
@@ -146,7 +208,7 @@ class PromptConditionedTopologyEnergy(nn.Module):
             self.interaction_energy_head = nn.Linear(cfg.model_dim, 1)
             nn.init.zeros_(self.interaction_energy_head.weight)
             nn.init.zeros_(self.interaction_energy_head.bias)
-        if cfg.potential_mode == "global_local_v33":
+        if cfg.potential_mode in {"global_local_v33", "structured_coordinate_v34"}:
             self.local_energy_head = nn.Sequential(
                 nn.Linear(cfg.model_dim, cfg.model_dim),
                 nn.SiLU(),
@@ -242,7 +304,24 @@ class PromptConditionedTopologyEnergy(nn.Module):
                 dim=1,
             )
         )
-        if self.config.fusion_mode == "joint_v3":
+        coordinates: Tensor | None = None
+        if self.config.potential_mode == "structured_coordinate_v34":
+            raw_coordinates = self.coordinate_head(latent_state)
+            film_scale, film_offset = self.coordinate_prompt_film(prompt_state).chunk(2, dim=1)
+            fraction = self.config.prompt_film_fraction
+            scale = 1.0 + fraction * torch.tanh(film_scale)
+            width = self.coordinate_upper - self.coordinate_lower
+            offset = fraction * torch.tanh(film_offset) * width
+            coordinates = self.coordinate_center + scale * (
+                raw_coordinates - self.coordinate_center
+            ) + offset
+            below = torch.relu(self.coordinate_lower - coordinates)
+            above = torch.relu(coordinates - self.coordinate_upper)
+            band = ((below.square() + above.square()) * self.coordinate_distance_weights).sum(
+                dim=1
+            )
+            global_energy = torch.log1p(band)
+        elif self.config.fusion_mode == "joint_v3":
             global_energy = self.energy_head(fused).squeeze(-1)
         else:
             latent_energy = self.latent_energy_head(latent_state).squeeze(-1)
@@ -250,7 +329,7 @@ class PromptConditionedTopologyEnergy(nn.Module):
                 self.interaction_energy_head(fused).squeeze(-1)
             )
             global_energy = latent_energy + interaction
-        if self.config.potential_mode == "global_local_v33":
+        if self.config.potential_mode in {"global_local_v33", "structured_coordinate_v34"}:
             local_energy = self.config.local_residual_scale * self.local_energy_head(fused).squeeze(
                 -1
             )
@@ -258,7 +337,10 @@ class PromptConditionedTopologyEnergy(nn.Module):
             local_energy = torch.zeros_like(global_energy)
         energy = global_energy + local_energy
         return Pitch3LTEPotentialComponents(
-            energy.float(), global_energy.float(), local_energy.float()
+            energy.float(),
+            global_energy.float(),
+            local_energy.float(),
+            coordinates.float() if coordinates is not None else None,
         )
 
     @property

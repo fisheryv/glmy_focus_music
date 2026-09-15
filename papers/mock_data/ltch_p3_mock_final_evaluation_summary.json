@@ -1,0 +1,78 @@
+{
+  "artifact_role": "synthetic_layout_and_analysis_placeholder_only",
+  "synthetic": true,
+  "scientific_evidence": false,
+  "qualification_result": false,
+  "production_authorization": false,
+  "mock_seed": 20260915,
+  "bootstrap_seed": 20260916,
+  "bootstrap_replicates": 2000,
+  "pairs": 256,
+  "prompts": 32,
+  "seeds_per_prompt": 8,
+  "positive_pairs": 180,
+  "positive_rate": 0.703125,
+  "positive_rate_cluster_bootstrap_95_ci": [
+    0.671875,
+    0.734375
+  ],
+  "neutral_pairs": 28,
+  "neutral_rate": 0.109375,
+  "worsened_pairs": 48,
+  "worsened_rate": 0.1875,
+  "median_delta": -0.09984021882182226,
+  "median_delta_cluster_bootstrap_95_ci": [
+    -0.11076333867715751,
+    -0.0888214441983734
+  ],
+  "hodges_lehmann_delta": -0.09592085746152205,
+  "hodges_lehmann_cluster_bootstrap_95_ci": [
+    -0.10844374719750835,
+    -0.08386461786908969
+  ],
+  "baseline_hit_rate": 0.109375,
+  "guided_hit_rate": 0.2265625,
+  "hit_rate_gain": 0.1171875,
+  "hit_rate_gain_cluster_bootstrap_95_ci": [
+    0.08203125,
+    0.15625
+  ],
+  "family_metrics": {
+    "p04_piano_strings": {
+      "pairs": 64,
+      "positive_pairs": 42,
+      "positive_rate": 0.65625,
+      "wilson_95_ci": [
+        0.5340364020991819,
+        0.7607685792155665
+      ]
+    },
+    "p16_bell_texture": {
+      "pairs": 64,
+      "positive_pairs": 44,
+      "positive_rate": 0.6875,
+      "wilson_95_ci": [
+        0.5660766429725185,
+        0.7876893346051795
+      ]
+    },
+    "p23_rhodes_bass": {
+      "pairs": 64,
+      "positive_pairs": 46,
+      "positive_rate": 0.71875,
+      "wilson_95_ci": [
+        0.5986606971779259,
+        0.8140662766627217
+      ]
+    },
+    "p28_flowing_texture": {
+      "pairs": 64,
+      "positive_pairs": 48,
+      "positive_rate": 0.75,
+      "wilson_95_ci": [
+        0.631837235413303,
+        0.8398507346902941
+      ]
+    }
+  }
+}

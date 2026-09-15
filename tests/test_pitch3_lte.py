@@ -302,6 +302,63 @@ def test_lte_model_losses_and_one_shot_guidance() -> None:
     components = v33_model.potential_components_from_states(latent_state, prompt_state)
     assert torch.allclose(components.energy, components.global_energy + components.local_energy)
     assert torch.count_nonzero(components.local_energy) == 0
+
+    v34_model = PromptConditionedTopologyEnergy(
+        Pitch3LTEConfig(
+            model_dim=16,
+            transformer_heads=4,
+            transformer_layers=1,
+            feedforward_dim=32,
+            temporal_stride=2,
+            dropout=0.0,
+            fusion_mode="latent_primary_residual_v31",
+            latent_stem_mode="dual_rms_v32",
+            potential_mode="structured_coordinate_v34",
+        )
+    ).eval()
+    v34_latent_state = v34_model.encode_latent(latent, latent_mask)
+    v34_prompt_state = v34_model.encode_prompt(text, text_mask)
+    v34_components = v34_model.potential_components_from_states(
+        v34_latent_state, v34_prompt_state
+    )
+    assert v34_components.coordinates is not None
+    below = torch.relu(v34_model.coordinate_lower - v34_components.coordinates)
+    above = torch.relu(v34_components.coordinates - v34_model.coordinate_upper)
+    analytic = torch.log1p(
+        (
+            (below.square() + above.square())
+            * v34_model.coordinate_distance_weights
+        ).sum(dim=1)
+    )
+    assert v34_components.coordinates.shape == (8, 3)
+    assert torch.allclose(v34_components.global_energy, analytic)
+    assert torch.allclose(
+        v34_components.energy,
+        v34_components.global_energy + v34_components.local_energy,
+    )
+    assert torch.count_nonzero(v34_components.local_energy) == 0
+    v34_batch = {
+        **batch,
+        "source_kind": ["base_step4_seed"] * 8,
+        "prompt_id": ["p1"] * 8,
+        "prompt_family": ["family_a"] * 8,
+        "coordinates": torch.randn(8, 3),
+        "direction_id": [""] * 8,
+        "direction_sign": torch.zeros(8, dtype=torch.long),
+        "epsilon": torch.zeros(8),
+    }
+    v34_losses = pitch3_lte_raw_losses(
+        v34_components.global_energy,
+        v34_batch,
+        huber_delta=1.0,
+        rank_min_delta=1e-6,
+        predicted_coordinates=v34_components.coordinates,
+        include_coordinate_loss=True,
+        include_family_listwise=True,
+        family_rank_temperature=0.1,
+    )
+    assert {"coordinate", "family_listwise"} <= set(v34_losses)
+    assert all(torch.isfinite(value) and value >= 0 for value in v34_losses.values())
     ensemble = Pitch3LTEEnergyEnsemble([dual_model.eval(), v33_model])
     ensemble_energy = ensemble(latent, latent_mask, text, text_mask).energy
     expected_energy = 0.5 * (
@@ -386,6 +443,51 @@ def test_lte_v33_family_round_robin_covers_within_family_pairs() -> None:
             assert len(families) == 1
             observed[families.pop()].add(tuple(prompt_ids))
     assert all(len(pairs) == 6 for pairs in observed.values())
+
+
+@pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")
+def test_lte_v34_full_family_sampler_uses_all_base_rows() -> None:
+    from generation.pitch3_lte_training import PromptBatchSampler
+
+    records = []
+    for family in ("family_a", "family_b"):
+        for variant in range(16):
+            prompt_id = f"{family}__v{variant:02d}"
+            records.extend(
+                SimpleNamespace(
+                    prompt_id=prompt_id,
+                    prompt_family=family,
+                    source_kind="base_step4_seed",
+                    direction_sign=0,
+                    direction_id="",
+                )
+                for _ in range(4)
+            )
+            for direction in range(2):
+                for sign in (-1, 1):
+                    records.append(
+                        SimpleNamespace(
+                            prompt_id=prompt_id,
+                            prompt_family=family,
+                            source_kind="local_finite_difference",
+                            direction_sign=sign,
+                            direction_id=f"{prompt_id}__d{direction}",
+                        )
+                    )
+    sampler = PromptBatchSampler(
+        records,
+        seed=23,
+        shuffle=False,
+        groups_per_batch=16,
+        pairing_mode="family_full_base_v34",
+    )
+    batches = list(sampler)
+    assert len(batches) == 2
+    for batch in batches:
+        assert len(batch) == 64
+        assert len({records[index].prompt_id for index in batch}) == 16
+        assert len({records[index].prompt_family for index in batch}) == 1
+        assert {records[index].source_kind for index in batch} == {"base_step4_seed"}
 
 
 @pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")

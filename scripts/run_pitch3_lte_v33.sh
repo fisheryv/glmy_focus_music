@@ -7,7 +7,8 @@ export PYTHONPATH="${PROJECT_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 STAGE="${1:-all}"
 DATA_ROOT="${LTE_DATA_ROOT:-${PROJECT_ROOT}/runs/pitch3_lte_v3}"
 RUN_ROOT="${LTE_V33_RUN_ROOT:-${PROJECT_ROOT}/runs/pitch3_lte_v33}"
-CONFIG="${PROJECT_ROOT}/configs/pitch3_lte_v33.toml"
+CONFIG="${LTE_TRAIN_CONFIG:-${PROJECT_ROOT}/configs/pitch3_lte_v33.toml}"
+VERSION_LABEL="${LTE_VERSION_LABEL:-V3.3}"
 SOURCE_MANIFEST="${LTE_SOURCE_MANIFEST:-${PROJECT_ROOT}/runs/pitch3_ltch/ood_v2/pitch3_training_manifest_augmented.csv}"
 DATA_DIR="${DATA_ROOT}/exact_local_dataset"
 ENSEMBLE_MANIFEST="${RUN_ROOT}/pitch3_lte_ensemble.json"
@@ -20,7 +21,7 @@ DEVICES=(${LTE_DEVICES:-cuda:1 cuda:2 cuda:3})
 mkdir -p "${RUN_ROOT}"
 
 if [[ "${#SEEDS[@]}" -ne "${#DEVICES[@]}" ]]; then
-  echo "LTE_V33_SEEDS and LTE_DEVICES must contain the same number of entries" >&2
+  echo "seed list and LTE_DEVICES must contain the same number of entries" >&2
   exit 2
 fi
 
@@ -48,7 +49,7 @@ train_all() {
   local failed=0
   for index in "${!pids[@]}"; do
     if ! wait "${pids[$index]}"; then
-      echo "V3.3 seed ${SEEDS[$index]} failed; inspect ${RUN_ROOT}/seed_${SEEDS[$index]}_train.log" >&2
+      echo "${VERSION_LABEL} seed ${SEEDS[$index]} failed; inspect ${RUN_ROOT}/seed_${SEEDS[$index]}_train.log" >&2
       failed=1
     fi
   done
@@ -88,7 +89,7 @@ screen_seeds() {
   local failed=0
   for index in "${!pids[@]}"; do
     if ! wait "${pids[$index]}"; then
-      echo "V3.3 seed ${SEEDS[$index]} screen failed; inspect ${RUN_ROOT}/seed_${SEEDS[$index]}_screen.log" >&2
+      echo "${VERSION_LABEL} seed ${SEEDS[$index]} screen failed; inspect ${RUN_ROOT}/seed_${SEEDS[$index]}_screen.log" >&2
       failed=1
     fi
   done
