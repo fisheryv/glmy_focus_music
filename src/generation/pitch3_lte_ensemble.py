@@ -1,4 +1,4 @@
-"""Auditable equal-weight scalar-energy ensembles for V3.3/V3.4 latent guidance."""
+"""Auditable equal-weight scalar-energy ensembles for V3.3--V3.5 guidance."""
 
 from __future__ import annotations
 
@@ -17,6 +17,9 @@ from .pitch3_lte_training import load_pitch3_lte_checkpoint
 _ENSEMBLE_KINDS = {
     "v3.3_family_round_robin_dual_potential": "equal_weight_scalar_energy_v33",
     "v3.4_structured_coordinate_family_energy": "equal_weight_scalar_energy_v34",
+    "v3.5_structured_anchored_coordinate_potential": (
+        "equal_weight_anchored_scalar_energy_v35"
+    ),
 }
 
 
@@ -76,9 +79,13 @@ def build_pitch3_lte_ensemble_manifest(
     report = {
         "schema_version": 1,
         "stage": (
-            "pitch3_lte_v34_ensemble"
-            if ensemble_kind == "equal_weight_scalar_energy_v34"
-            else "pitch3_lte_v33_ensemble"
+            "pitch3_lte_v35_ensemble"
+            if ensemble_kind == "equal_weight_anchored_scalar_energy_v35"
+            else (
+                "pitch3_lte_v34_ensemble"
+                if ensemble_kind == "equal_weight_scalar_energy_v34"
+                else "pitch3_lte_v33_ensemble"
+            )
         ),
         "model_family": LTE_MODEL_FAMILY,
         "architecture_revision": architecture_revision,

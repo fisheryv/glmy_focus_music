@@ -72,11 +72,13 @@ class Pitch3LTEConfig:
             "single_v3",
             "global_local_v33",
             "structured_coordinate_v34",
+            "structured_anchored_v35",
         }:
             raise ValueError("unknown V3-LTE potential mode")
         if self.potential_mode in {
             "global_local_v33",
             "structured_coordinate_v34",
+            "structured_anchored_v35",
         } and self.fusion_mode != "latent_primary_residual_v31":
             raise ValueError("decomposed LTE potentials require latent-primary fusion")
         if self.local_residual_scale <= 0:
@@ -89,7 +91,10 @@ class Pitch3LTEConfig:
         )
         if any(len(values) != 3 for values in coordinate_vectors):
             raise ValueError("V3.4 coordinate contract must contain three values")
-        if self.potential_mode == "structured_coordinate_v34":
+        if self.potential_mode in {
+            "structured_coordinate_v34",
+            "structured_anchored_v35",
+        }:
             if any(
                 lower >= upper
                 for lower, upper in zip(
@@ -172,7 +177,10 @@ class PromptConditionedTopologyEnergy(nn.Module):
             nn.Linear(cfg.model_dim * 2, cfg.model_dim),
             nn.SiLU(),
         )
-        if cfg.potential_mode == "structured_coordinate_v34":
+        if cfg.potential_mode in {
+            "structured_coordinate_v34",
+            "structured_anchored_v35",
+        }:
             self.coordinate_head = nn.Sequential(
                 nn.Linear(cfg.model_dim, cfg.model_dim),
                 nn.SiLU(),
@@ -208,7 +216,11 @@ class PromptConditionedTopologyEnergy(nn.Module):
             self.interaction_energy_head = nn.Linear(cfg.model_dim, 1)
             nn.init.zeros_(self.interaction_energy_head.weight)
             nn.init.zeros_(self.interaction_energy_head.bias)
-        if cfg.potential_mode in {"global_local_v33", "structured_coordinate_v34"}:
+        if cfg.potential_mode in {
+            "global_local_v33",
+            "structured_coordinate_v34",
+            "structured_anchored_v35",
+        }:
             self.local_energy_head = nn.Sequential(
                 nn.Linear(cfg.model_dim, cfg.model_dim),
                 nn.SiLU(),
@@ -263,15 +275,53 @@ class PromptConditionedTopologyEnergy(nn.Module):
         attention_mask: Tensor,
         text_hidden: Tensor,
         text_mask: Tensor,
+        anchor_latent: Tensor | None = None,
+        anchor_attention_mask: Tensor | None = None,
     ) -> Pitch3LTEOutput:
+        return Pitch3LTEOutput(
+            self.potential_components(
+                latent,
+                attention_mask,
+                text_hidden,
+                text_mask,
+                anchor_latent=anchor_latent,
+                anchor_attention_mask=anchor_attention_mask,
+            ).energy
+        )
+
+    def potential_components(
+        self,
+        latent: Tensor,
+        attention_mask: Tensor,
+        text_hidden: Tensor,
+        text_mask: Tensor,
+        *,
+        anchor_latent: Tensor | None = None,
+        anchor_attention_mask: Tensor | None = None,
+    ) -> Pitch3LTEPotentialComponents:
         latent_state = self.encode_latent(latent, attention_mask)
         prompt_state = self.encode_prompt(text_hidden, text_mask)
-        return self.energy_from_states(latent_state, prompt_state)
+        anchor_state: Tensor | None = None
+        if self.config.potential_mode == "structured_anchored_v35":
+            if anchor_latent is None:
+                anchor_state = latent_state.detach()
+            else:
+                if anchor_attention_mask is None:
+                    raise ValueError("V3.5 anchor mask is required with anchor latent")
+                anchor_state = self.encode_latent(
+                    anchor_latent.detach(), anchor_attention_mask
+                ).detach()
+        return self.potential_components_from_states(
+            latent_state,
+            prompt_state,
+            anchor_latent_state=anchor_state,
+        )
 
     def energy_from_states(
         self,
         latent_state: Tensor,
         prompt_state: Tensor,
+        anchor_latent_state: Tensor | None = None,
     ) -> Pitch3LTEOutput:
         """Read energy from reusable latent/prompt states.
 
@@ -279,13 +329,18 @@ class PromptConditionedTopologyEnergy(nn.Module):
         consistency without recomputing the expensive temporal transformer.
         """
 
-        components = self.potential_components_from_states(latent_state, prompt_state)
+        components = self.potential_components_from_states(
+            latent_state,
+            prompt_state,
+            anchor_latent_state=anchor_latent_state,
+        )
         return Pitch3LTEOutput(components.energy)
 
     def potential_components_from_states(
         self,
         latent_state: Tensor,
         prompt_state: Tensor,
+        anchor_latent_state: Tensor | None = None,
     ) -> Pitch3LTEPotentialComponents:
         """Return the global and conservative local-residual scalar potentials."""
 
@@ -305,7 +360,10 @@ class PromptConditionedTopologyEnergy(nn.Module):
             )
         )
         coordinates: Tensor | None = None
-        if self.config.potential_mode == "structured_coordinate_v34":
+        if self.config.potential_mode in {
+            "structured_coordinate_v34",
+            "structured_anchored_v35",
+        }:
             raw_coordinates = self.coordinate_head(latent_state)
             film_scale, film_offset = self.coordinate_prompt_film(prompt_state).chunk(2, dim=1)
             fraction = self.config.prompt_film_fraction
@@ -329,10 +387,31 @@ class PromptConditionedTopologyEnergy(nn.Module):
                 self.interaction_energy_head(fused).squeeze(-1)
             )
             global_energy = latent_energy + interaction
-        if self.config.potential_mode in {"global_local_v33", "structured_coordinate_v34"}:
-            local_energy = self.config.local_residual_scale * self.local_energy_head(fused).squeeze(
-                -1
+        if self.config.potential_mode == "structured_anchored_v35":
+            if anchor_latent_state is None:
+                raise ValueError("V3.5 anchored potential requires an anchor latent state")
+            if anchor_latent_state.shape != latent_state.shape:
+                raise ValueError("V3.5 anchor and current latent states must align")
+            anchor_fused = self.joint(
+                torch.cat(
+                    (
+                        anchor_latent_state,
+                        prompt_state,
+                        anchor_latent_state * prompt_state,
+                        (anchor_latent_state - prompt_state).abs(),
+                    ),
+                    dim=1,
+                )
             )
+            current_residual = self.local_energy_head(fused).squeeze(-1)
+            anchor_residual = self.local_energy_head(anchor_fused).squeeze(-1)
+            local_energy = self.config.local_residual_scale * (
+                current_residual - anchor_residual
+            )
+        elif self.config.potential_mode in {"global_local_v33", "structured_coordinate_v34"}:
+            local_energy = self.config.local_residual_scale * self.local_energy_head(
+                fused
+            ).squeeze(-1)
         else:
             local_energy = torch.zeros_like(global_energy)
         energy = global_energy + local_energy
@@ -375,16 +454,60 @@ class Pitch3LTEEnergyEnsemble(nn.Module):
         attention_mask: Tensor,
         text_hidden: Tensor,
         text_mask: Tensor,
+        anchor_latent: Tensor | None = None,
+        anchor_attention_mask: Tensor | None = None,
     ) -> Pitch3LTEOutput:
-        energies = torch.stack(
-            [
-                model(latent, attention_mask, text_hidden, text_mask).energy
-                for model in self.models
-            ],
-            dim=0,
+        return Pitch3LTEOutput(
+            self.potential_components(
+                latent,
+                attention_mask,
+                text_hidden,
+                text_mask,
+                anchor_latent=anchor_latent,
+                anchor_attention_mask=anchor_attention_mask,
+            ).energy
         )
+
+    def potential_components(
+        self,
+        latent: Tensor,
+        attention_mask: Tensor,
+        text_hidden: Tensor,
+        text_mask: Tensor,
+        *,
+        anchor_latent: Tensor | None = None,
+        anchor_attention_mask: Tensor | None = None,
+    ) -> Pitch3LTEPotentialComponents:
+        components = [
+            model.potential_components(
+                latent,
+                attention_mask,
+                text_hidden,
+                text_mask,
+                anchor_latent=anchor_latent,
+                anchor_attention_mask=anchor_attention_mask,
+            )
+            for model in self.models
+        ]
+        energies = torch.stack([item.energy for item in components], dim=0)
+        global_energies = torch.stack(
+            [item.global_energy for item in components], dim=0
+        )
+        local_energies = torch.stack([item.local_energy for item in components], dim=0)
         weights = self.weights.to(device=energies.device, dtype=energies.dtype)
-        return Pitch3LTEOutput((energies * weights[:, None]).sum(dim=0).float())
+        coordinate_values = [item.coordinates for item in components]
+        coordinates = None
+        if all(value is not None for value in coordinate_values):
+            stacked = torch.stack(
+                [value for value in coordinate_values if value is not None], dim=0
+            )
+            coordinates = (stacked * weights[:, None, None]).sum(dim=0).float()
+        return Pitch3LTEPotentialComponents(
+            (energies * weights[:, None]).sum(dim=0).float(),
+            (global_energies * weights[:, None]).sum(dim=0).float(),
+            (local_energies * weights[:, None]).sum(dim=0).float(),
+            coordinates,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -479,7 +602,15 @@ class Pitch3LTECorrector:
             prompt_mask = prompt_mask.expand(clean.shape[0], -1)
         with torch.inference_mode(False), torch.enable_grad():
             variable = clean.detach().float().clone().requires_grad_(True)
-            before = self.model(variable, mask, prompt_hidden.float(), prompt_mask).energy
+            anchor = clean.detach().float().clone()
+            before = self.model(
+                variable,
+                mask,
+                prompt_hidden.float(),
+                prompt_mask,
+                anchor_latent=anchor,
+                anchor_attention_mask=mask,
+            ).energy
             gradient = torch.autograd.grad(before.sum(), variable, allow_unused=False)[0]
             gradient = self._low_pass(gradient)
             finite = (
@@ -497,11 +628,25 @@ class Pitch3LTECorrector:
             update = -gradient * scale[:, None, None]
             update = update * mask[:, :, None].to(update.dtype)
             candidate = variable + update
-            after = self.model(candidate, mask, prompt_hidden.float(), prompt_mask).energy
+            after = self.model(
+                candidate,
+                mask,
+                prompt_hidden.float(),
+                prompt_mask,
+                anchor_latent=anchor,
+                anchor_attention_mask=mask,
+            ).energy
             needs_backtrack = valid & (~torch.isfinite(after) | (after > before))
             update = torch.where(needs_backtrack[:, None, None], update * 0.5, update)
             candidate = variable + update
-            after = self.model(candidate, mask, prompt_hidden.float(), prompt_mask).energy
+            after = self.model(
+                candidate,
+                mask,
+                prompt_hidden.float(),
+                prompt_mask,
+                anchor_latent=anchor,
+                anchor_attention_mask=mask,
+            ).energy
             energy_decreased = torch.isfinite(after) & (after < before - self.config.epsilon)
             applied = (
                 valid & energy_decreased & (self._masked_rms(update, mask) > self.config.epsilon)

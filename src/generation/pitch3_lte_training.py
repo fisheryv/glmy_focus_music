@@ -73,6 +73,13 @@ class Pitch3LTETrainingConfig:
     family_listwise_weight: float = 0.0
     family_rank_temperature: float = 0.1
     full_family_global_batches: bool = False
+    boundary_region_weight: float = 0.0
+    band_component_weight: float = 0.0
+    coordinate_fd_weight: float = 0.0
+    coordinate_prompt_consistency_weight: float = 0.0
+    boundary_temperature_fraction: float = 0.05
+    global_stage_minimum_epochs: int = 0
+    global_early_stopping_patience: int = 0
 
     def validate(self) -> None:
         if self.max_epochs < 1 or not 1 <= self.minimum_epochs <= self.max_epochs:
@@ -122,11 +129,13 @@ class Pitch3LTETrainingConfig:
             "joint_v3",
             "global_then_local_v33",
             "structured_global_then_local_v34",
+            "structured_anchored_global_then_local_v35",
         }:
             raise ValueError("unknown V3-LTE training schedule")
         if self.training_schedule in {
             "global_then_local_v33",
             "structured_global_then_local_v34",
+            "structured_anchored_global_then_local_v35",
         }:
             if not 1 <= self.global_stage_epochs < self.max_epochs:
                 raise ValueError("V3.3 global stage must end before max_epochs")
@@ -136,10 +145,15 @@ class Pitch3LTETrainingConfig:
                 raise ValueError("V3.3 local-stage minimum is invalid")
             if self.prompt_frozen_epochs != 0:
                 raise ValueError("V3.3 uses stage freezing, not prompt-only freezing")
-            if self.local_anchor_weight <= 0 or self.local_anchor_normalizer < 0:
-                raise ValueError("V3.3 local residual anchor is invalid")
-            if not self.global_value_base_only:
-                raise ValueError("V3.3 global value loss must be restricted to base latents")
+            if self.local_anchor_normalizer < 0:
+                raise ValueError("staged LTE local residual anchor is invalid")
+            if self.training_schedule != "structured_anchored_global_then_local_v35":
+                if self.local_anchor_weight <= 0:
+                    raise ValueError("V3.3/V3.4 require a positive soft local anchor")
+                if not self.global_value_base_only:
+                    raise ValueError(
+                        "V3.3/V3.4 global value loss must be restricted to base latents"
+                    )
         if min(self.coordinate_loss_weight, self.family_listwise_weight) < 0:
             raise ValueError("V3.4 structured loss weights must be non-negative")
         if self.family_rank_temperature <= 0:
@@ -156,6 +170,32 @@ class Pitch3LTETrainingConfig:
                 "V3.4 requires coordinate supervision, full-family global batches, "
                 "and same-family paired local batches"
             )
+        structured_weights = (
+            self.boundary_region_weight,
+            self.band_component_weight,
+            self.coordinate_fd_weight,
+            self.coordinate_prompt_consistency_weight,
+        )
+        if min(structured_weights) < 0 or self.boundary_temperature_fraction <= 0:
+            raise ValueError("V3.5 structured auxiliary losses are invalid")
+        if self.training_schedule == "structured_anchored_global_then_local_v35":
+            if (
+                self.coordinate_loss_weight <= 0
+                or self.family_listwise_weight <= 0
+                or min(structured_weights) <= 0
+                or not self.full_family_global_batches
+                or self.batch_pairing_mode != "family_round_robin_v33"
+                or self.prompt_groups_per_batch != 2
+                or not self.cross_prompt_family_only
+                or self.global_value_base_only
+                or self.local_anchor_weight != 0
+                or not 1 <= self.global_stage_minimum_epochs <= self.global_stage_epochs
+                or self.global_early_stopping_patience < 1
+            ):
+                raise ValueError(
+                    "V3.5 requires all structured losses, all-row value supervision, "
+                    "strict anchoring, and independent global early stopping"
+                )
         if not 0.0 <= self.ema_decay < 1.0:
             raise ValueError("V3-LTE EMA decay must lie in [0,1)")
 
@@ -267,6 +307,25 @@ class Pitch3LTEDataset(Dataset[dict[str, Any]]):
     def __init__(self, records: list[Pitch3LTEExample]) -> None:
         self.records = records
         self._prompt_cache: dict[Path, tuple[Tensor, Tensor]] = {}
+        base_by_sample = {
+            record.sample_id: record
+            for record in records
+            if record.source_kind == "base_step4_seed"
+        }
+        self.anchor_records = []
+        for record in records:
+            anchor = (
+                record
+                if record.source_kind == "base_step4_seed"
+                else base_by_sample.get(record.trajectory_id)
+            )
+            if anchor is None:
+                raise LTSNContractError(
+                    f"V3.5 local row has no base anchor: {record.sample_id}"
+                )
+            if anchor.prompt_id != record.prompt_id or anchor.split != record.split:
+                raise LTSNContractError("V3.5 local anchor crosses prompt or split")
+            self.anchor_records.append(anchor)
 
     def __len__(self) -> int:
         return len(self.records)
@@ -276,6 +335,16 @@ class Pitch3LTEDataset(Dataset[dict[str, Any]]):
         latent = np.load(record.latent_path, allow_pickle=False)
         if latent.ndim != 2 or latent.shape[1] != 64 or not np.isfinite(latent).all():
             raise LTSNContractError(f"invalid V3-LTE latent: {record.latent_path}")
+        anchor_record = self.anchor_records[index]
+        anchor_latent = np.load(anchor_record.latent_path, allow_pickle=False)
+        if (
+            anchor_latent.ndim != 2
+            or anchor_latent.shape[1] != 64
+            or not np.isfinite(anchor_latent).all()
+        ):
+            raise LTSNContractError(
+                f"invalid V3.5 anchor latent: {anchor_record.latent_path}"
+            )
         prompt = self._prompt_cache.get(record.prompt_embedding_path)
         if prompt is None:
             with np.load(record.prompt_embedding_path, allow_pickle=False) as payload:
@@ -291,6 +360,10 @@ class Pitch3LTEDataset(Dataset[dict[str, Any]]):
             "prompt_family": record.prompt_family,
             "source_kind": record.source_kind,
             "latent": torch.from_numpy(np.asarray(latent, dtype=np.float32)),
+            "anchor_sample_id": anchor_record.sample_id,
+            "anchor_latent": torch.from_numpy(
+                np.asarray(anchor_latent, dtype=np.float32)
+            ),
             "text_hidden": prompt[0],
             "text_mask": prompt[1],
             "exact_band": torch.tensor(record.exact_band, dtype=torch.float32),
@@ -309,6 +382,9 @@ def collate_pitch3_lte(items: list[dict[str, Any]]) -> dict[str, Any]:
     tokens = max(int(item["text_hidden"].shape[0]) for item in items)
     latent = torch.zeros(len(items), frames, 64, dtype=torch.float32)
     latent_mask = torch.zeros(len(items), frames, dtype=torch.bool)
+    anchor_frames = max(int(item["anchor_latent"].shape[0]) for item in items)
+    anchor_latent = torch.zeros(len(items), anchor_frames, 64, dtype=torch.float32)
+    anchor_mask = torch.zeros(len(items), anchor_frames, dtype=torch.bool)
     text_hidden = torch.zeros(len(items), tokens, 1024, dtype=torch.float32)
     text_mask = torch.zeros(len(items), tokens, dtype=torch.bool)
     for index, item in enumerate(items):
@@ -316,6 +392,9 @@ def collate_pitch3_lte(items: list[dict[str, Any]]) -> dict[str, Any]:
         token_count = int(item["text_hidden"].shape[0])
         latent[index, :frame_count] = item["latent"]
         latent_mask[index, :frame_count] = True
+        anchor_frame_count = int(item["anchor_latent"].shape[0])
+        anchor_latent[index, :anchor_frame_count] = item["anchor_latent"]
+        anchor_mask[index, :anchor_frame_count] = True
         text_hidden[index, :token_count] = item["text_hidden"]
         text_mask[index, :token_count] = item["text_mask"]
     return {
@@ -323,8 +402,11 @@ def collate_pitch3_lte(items: list[dict[str, Any]]) -> dict[str, Any]:
         "prompt_id": [item["prompt_id"] for item in items],
         "prompt_family": [item["prompt_family"] for item in items],
         "source_kind": [item["source_kind"] for item in items],
+        "anchor_sample_id": [item["anchor_sample_id"] for item in items],
         "latent": latent,
         "attention_mask": latent_mask,
+        "anchor_latent": anchor_latent,
+        "anchor_attention_mask": anchor_mask,
         "text_hidden": text_hidden,
         "text_mask": text_mask,
         "exact_band": torch.stack([item["exact_band"] for item in items]),
@@ -386,6 +468,7 @@ class PromptBatchSampler(Sampler[list[int]]):
             "random_prompt_v32",
             "family_round_robin_v33",
             "family_full_base_v34",
+            "family_full_all_v35",
         }:
             raise ValueError("unknown V3-LTE prompt pairing mode")
         if pairing_mode == "family_round_robin_v33" and groups_per_batch != 2:
@@ -402,6 +485,9 @@ class PromptBatchSampler(Sampler[list[int]]):
             return
         if self.pairing_mode == "family_full_base_v34":
             yield from self._family_full_base_batches()
+            return
+        if self.pairing_mode == "family_full_all_v35":
+            yield from self._family_full_all_batches()
             return
         groups = [values.copy() for values in self.groups]
         if self.shuffle:
@@ -445,7 +531,25 @@ class PromptBatchSampler(Sampler[list[int]]):
             random.Random(self.seed + 1_000_003 * self.epoch).shuffle(batches)
         yield from batches
 
+    def _family_full_all_batches(self) -> Iterator[list[int]]:
+        by_family: dict[str, list[list[int]]] = defaultdict(list)
+        for family, group in zip(self.group_families, self.groups, strict=True):
+            by_family[family].append(group.copy())
+        batches = []
+        for family, groups in sorted(by_family.items()):
+            if len(groups) != 16 or any(len(group) != 8 for group in groups):
+                raise LTSNContractError(
+                    f"V3.5 full-family batch requires 16 complete prompt groups: {family}"
+                )
+            batches.append([index for group in groups for index in group[:4]])
+            batches.append([index for group in groups for index in group[4:]])
+        if self.shuffle:
+            random.Random(self.seed + 1_000_003 * self.epoch).shuffle(batches)
+        yield from batches
+
     def __len__(self) -> int:
+        if self.pairing_mode == "family_full_all_v35":
+            return 2 * len(set(self.group_families))
         if self.pairing_mode == "family_full_base_v34":
             return len(set(self.group_families))
         return math.ceil(len(self.groups) / self.groups_per_batch)
@@ -536,6 +640,17 @@ def pitch3_lte_raw_losses(
     include_coordinate_loss: bool = False,
     include_family_listwise: bool = False,
     family_rank_temperature: float = 0.1,
+    predicted_coordinates_shuffled: Tensor | None = None,
+    include_boundary_region: bool = False,
+    include_band_component: bool = False,
+    include_coordinate_fd: bool = False,
+    include_coordinate_prompt_consistency: bool = False,
+    coordinate_lower: Sequence[float] = (),
+    coordinate_upper: Sequence[float] = (),
+    coordinate_distance_weights: Sequence[float] = (),
+    coordinate_region_weights: Sequence[Sequence[float]] = (),
+    coordinate_fd_scales: Sequence[float] = (),
+    boundary_temperature_fraction: float = 0.05,
 ) -> dict[str, Tensor]:
     target = batch["energy_target"].float()
     value_terms = F.huber_loss(
@@ -619,6 +734,122 @@ def pitch3_lte_raw_losses(
             predicted_coordinates[value_mask].float(),
             batch["coordinates"][value_mask].float(),
             delta=huber_delta,
+        )
+    structured_coordinate_loss = any(
+        (
+            include_boundary_region,
+            include_band_component,
+            include_coordinate_fd,
+            include_coordinate_prompt_consistency,
+        )
+    )
+    if structured_coordinate_loss:
+        if predicted_coordinates is None or predicted_coordinates.shape != batch[
+            "coordinates"
+        ].shape:
+            raise LTSNContractError("V3.5 structured coordinate predictions are missing")
+        if not (
+            len(coordinate_lower)
+            == len(coordinate_upper)
+            == len(coordinate_distance_weights)
+            == 3
+        ):
+            raise LTSNContractError("V3.5 frozen coordinate contract is incomplete")
+        lower = predicted_coordinates.new_tensor(tuple(coordinate_lower))
+        upper = predicted_coordinates.new_tensor(tuple(coordinate_upper))
+        widths = upper - lower
+        target_coordinates = batch["coordinates"].float()
+    if include_boundary_region:
+        if len(coordinate_region_weights) != 3 or any(
+            len(values) != 3 for values in coordinate_region_weights
+        ):
+            raise LTSNContractError("V3.5 boundary-region weights are malformed")
+        temperature = widths * boundary_temperature_fraction
+        inside_margin = torch.minimum(
+            predicted_coordinates - lower,
+            upper - predicted_coordinates,
+        )
+        logits = torch.stack(
+            (
+                (lower - predicted_coordinates) / temperature,
+                inside_margin / temperature,
+                (predicted_coordinates - upper) / temperature,
+            ),
+            dim=2,
+        )
+        region_targets = torch.where(
+            target_coordinates < lower,
+            torch.zeros_like(target_coordinates, dtype=torch.long),
+            torch.where(
+                target_coordinates > upper,
+                torch.full_like(target_coordinates, 2, dtype=torch.long),
+                torch.ones_like(target_coordinates, dtype=torch.long),
+            ),
+        )
+        region_terms = [
+            F.cross_entropy(
+                logits[:, coordinate_index, :],
+                region_targets[:, coordinate_index],
+                weight=predicted_coordinates.new_tensor(
+                    tuple(coordinate_region_weights[coordinate_index])
+                ),
+            )
+            for coordinate_index in range(3)
+        ]
+        losses["boundary_region"] = torch.stack(region_terms).mean()
+    if include_band_component:
+        distance_weights = predicted_coordinates.new_tensor(
+            tuple(coordinate_distance_weights)
+        )
+        predicted_below = torch.relu(lower - predicted_coordinates)
+        predicted_above = torch.relu(predicted_coordinates - upper)
+        target_below = torch.relu(lower - target_coordinates)
+        target_above = torch.relu(target_coordinates - upper)
+        predicted_components = distance_weights * (
+            predicted_below.square() + predicted_above.square()
+        )
+        target_components = distance_weights * (
+            target_below.square() + target_above.square()
+        )
+        losses["band_component"] = F.huber_loss(
+            torch.log1p(predicted_components),
+            torch.log1p(target_components),
+            delta=huber_delta,
+        )
+    if include_coordinate_fd:
+        if len(coordinate_fd_scales) != 3 or any(
+            value <= 0 for value in coordinate_fd_scales
+        ):
+            raise LTSNContractError("V3.5 coordinate derivative scales are invalid")
+        scales = predicted_coordinates.new_tensor(tuple(coordinate_fd_scales))
+        coordinate_fd_terms = []
+        for minus, plus in fd_pairs:
+            epsilon = batch["epsilon"][minus].float()
+            predicted_derivative = (
+                predicted_coordinates[plus] - predicted_coordinates[minus]
+            ) / (2.0 * epsilon)
+            exact_derivative = (
+                target_coordinates[plus] - target_coordinates[minus]
+            ) / (2.0 * epsilon)
+            coordinate_fd_terms.append(
+                F.huber_loss(
+                    predicted_derivative / scales,
+                    exact_derivative / scales,
+                    delta=huber_delta,
+                )
+            )
+        losses["coordinate_fd"] = (
+            torch.stack(coordinate_fd_terms).mean() if coordinate_fd_terms else zero
+        )
+    if include_coordinate_prompt_consistency:
+        if (
+            predicted_coordinates_shuffled is None
+            or predicted_coordinates_shuffled.shape != predicted_coordinates.shape
+        ):
+            raise LTSNContractError("V3.5 shuffled-prompt coordinates are missing")
+        losses["coordinate_prompt_consistency"] = F.smooth_l1_loss(
+            (predicted_coordinates - predicted_coordinates_shuffled) / widths,
+            torch.zeros_like(predicted_coordinates),
         )
     if include_family_listwise:
         family_indices: dict[str, list[int]] = defaultdict(list)
@@ -721,11 +952,71 @@ def _energy_strata(
     }
 
 
+def _coordinate_auxiliary_contract(
+    records: Sequence[Pitch3LTEExample],
+    model_config: Pitch3LTEConfig,
+) -> dict[str, Any]:
+    lower = np.asarray(model_config.coordinate_lower, dtype=np.float64)
+    upper = np.asarray(model_config.coordinate_upper, dtype=np.float64)
+    coordinates = np.asarray([record.coordinates for record in records], dtype=np.float64)
+    region_weights = []
+    for coordinate_index in range(3):
+        target = coordinates[:, coordinate_index]
+        regions = np.where(
+            target < lower[coordinate_index],
+            0,
+            np.where(target > upper[coordinate_index], 2, 1),
+        )
+        counts = np.bincount(regions, minlength=3)
+        if np.any(counts <= 0):
+            raise LTSNContractError("V3.5 coordinate region has an empty train class")
+        inverse = len(regions) / (3.0 * counts.astype(np.float64))
+        region_weights.append([float(value) for value in inverse])
+    signed: dict[str, dict[int, Pitch3LTEExample]] = defaultdict(dict)
+    for record in records:
+        if record.direction_id:
+            signed[record.direction_id][record.direction_sign] = record
+    derivatives = []
+    for pair in signed.values():
+        if set(pair) != {-1, 1}:
+            raise LTSNContractError("V3.5 coordinate scale found an incomplete local pair")
+        minus, plus = pair[-1], pair[1]
+        derivatives.append(
+            (
+                np.asarray(plus.coordinates, dtype=np.float64)
+                - np.asarray(minus.coordinates, dtype=np.float64)
+            )
+            / (2.0 * minus.epsilon)
+        )
+    derivative_values = np.abs(np.asarray(derivatives, dtype=np.float64))
+    fd_scales = []
+    for coordinate_index in range(3):
+        positive = derivative_values[:, coordinate_index]
+        positive = positive[positive > 1e-12]
+        if not len(positive):
+            raise LTSNContractError("V3.5 coordinate derivative scale is degenerate")
+        fd_scales.append(float(np.median(positive)))
+    return {
+        "coordinate_lower": [float(value) for value in lower],
+        "coordinate_upper": [float(value) for value in upper],
+        "coordinate_distance_weights": [
+            float(value) for value in model_config.coordinate_distance_weights
+        ],
+        "coordinate_region_weights": region_weights,
+        "coordinate_fd_scales": fd_scales,
+        "source": "train_split_only",
+    }
+
+
 def _raw_loss_kwargs(
     training: Pitch3LTETrainingConfig,
     local_scales: Mapping[str, float],
     energy_strata: Mapping[str, Any],
+    coordinate_auxiliary: Mapping[str, Any] | None = None,
+    *,
+    include_structured: bool = True,
 ) -> dict[str, Any]:
+    coordinate_auxiliary = coordinate_auxiliary or {}
     return {
         "huber_delta": training.huber_delta,
         "rank_min_delta": training.rank_min_delta,
@@ -739,9 +1030,28 @@ def _raw_loss_kwargs(
         "energy_strata_thresholds": tuple(energy_strata["thresholds"]),
         "energy_strata_weights": tuple(energy_strata["weights"]),
         "value_base_only": training.global_value_base_only,
-        "include_coordinate_loss": training.coordinate_loss_weight > 0,
-        "include_family_listwise": training.family_listwise_weight > 0,
+        "include_coordinate_loss": include_structured and training.coordinate_loss_weight > 0,
+        "include_family_listwise": include_structured and training.family_listwise_weight > 0,
         "family_rank_temperature": training.family_rank_temperature,
+        "include_boundary_region": include_structured and training.boundary_region_weight > 0,
+        "include_band_component": include_structured and training.band_component_weight > 0,
+        "include_coordinate_fd": include_structured and training.coordinate_fd_weight > 0,
+        "include_coordinate_prompt_consistency": (
+            include_structured and training.coordinate_prompt_consistency_weight > 0
+        ),
+        "coordinate_lower": tuple(coordinate_auxiliary.get("coordinate_lower", ())),
+        "coordinate_upper": tuple(coordinate_auxiliary.get("coordinate_upper", ())),
+        "coordinate_distance_weights": tuple(
+            coordinate_auxiliary.get("coordinate_distance_weights", ())
+        ),
+        "coordinate_region_weights": tuple(
+            tuple(values)
+            for values in coordinate_auxiliary.get("coordinate_region_weights", ())
+        ),
+        "coordinate_fd_scales": tuple(
+            coordinate_auxiliary.get("coordinate_fd_scales", ())
+        ),
+        "boundary_temperature_fraction": training.boundary_temperature_fraction,
     }
 
 
@@ -760,6 +1070,10 @@ def _loss_component_weights(
         "local_flat": training.local_flat_weight,
         "coordinate": training.coordinate_loss_weight,
         "family_listwise": training.family_listwise_weight,
+        "boundary_region": training.boundary_region_weight,
+        "band_component": training.band_component_weight,
+        "coordinate_fd": training.coordinate_fd_weight,
+        "coordinate_prompt_consistency": training.coordinate_prompt_consistency_weight,
     }
     weights = {name: float(configured[name]) for name in names}
     if any(value <= 0 for value in weights.values()):
@@ -863,6 +1177,7 @@ def _training_stage(training: Pitch3LTETrainingConfig, epoch: int) -> str:
     if training.training_schedule not in {
         "global_then_local_v33",
         "structured_global_then_local_v34",
+        "structured_anchored_global_then_local_v35",
     }:
         return "joint"
     return "global" if epoch <= training.global_stage_epochs else "local"
@@ -876,6 +1191,7 @@ def _set_training_stage_trainable(
     if training.training_schedule not in {
         "global_then_local_v33",
         "structured_global_then_local_v34",
+        "structured_anchored_global_then_local_v35",
     }:
         _set_prompt_interaction_trainable(model, stage != "prompt_frozen")
         model.train()
@@ -883,6 +1199,7 @@ def _set_training_stage_trainable(
     if model.config.potential_mode not in {
         "global_local_v33",
         "structured_coordinate_v34",
+        "structured_anchored_v35",
     }:
         raise LTSNContractError("staged LTE training requires decomposed scalar potentials")
     if stage == "global":
@@ -922,10 +1239,33 @@ def _to_device(batch: dict[str, Any], device: torch.device) -> dict[str, Any]:
 def _model_potentials(
     model: PromptConditionedTopologyEnergy,
     batch: Mapping[str, Any],
-) -> Any:
+) -> tuple[Any, Tensor | None]:
     latent_state = model.encode_latent(batch["latent"], batch["attention_mask"])
     prompt_state = model.encode_prompt(batch["text_hidden"], batch["text_mask"])
-    return model.potential_components_from_states(latent_state, prompt_state)
+    anchor_state = None
+    if model.config.potential_mode == "structured_anchored_v35":
+        anchor_state = model.encode_latent(
+            batch["anchor_latent"], batch["anchor_attention_mask"]
+        ).detach()
+    components = model.potential_components_from_states(
+        latent_state,
+        prompt_state,
+        anchor_latent_state=anchor_state,
+    )
+    shuffled_coordinates = None
+    permutation = _prompt_permutation(batch["prompt_id"], prompt_state.device)
+    if (
+        permutation is not None
+        and model.config.potential_mode == "structured_anchored_v35"
+    ):
+        shuffled_coordinates = model.potential_components_from_states(
+            latent_state,
+            prompt_state[permutation],
+            anchor_latent_state=anchor_state,
+        ).coordinates
+    elif model.config.potential_mode == "structured_anchored_v35":
+        shuffled_coordinates = components.coordinates.detach()
+    return components, shuffled_coordinates
 
 
 def _rank(values: np.ndarray) -> np.ndarray:
@@ -966,12 +1306,15 @@ def _prediction_rows(
                 dtype=torch.bfloat16,
                 enabled=use_bf16 and device.type == "cuda",
             ):
-                predicted = model(
+                potentials = model.potential_components(
                     batch["latent"],
                     batch["attention_mask"],
                     batch["text_hidden"],
                     batch["text_mask"],
-                ).energy
+                    anchor_latent=batch["anchor_latent"],
+                    anchor_attention_mask=batch["anchor_attention_mask"],
+                )
+                predicted = potentials.energy
             for index, sample_id in enumerate(raw["sample_id"]):
                 rows.append(
                     {
@@ -985,6 +1328,21 @@ def _prediction_rows(
                         "exact_band": float(raw["exact_band"][index]),
                         "exact_energy": float(raw["energy_target"][index]),
                         "predicted_energy": float(predicted[index].float().cpu()),
+                        "predicted_global_energy": float(
+                            potentials.global_energy[index].float().cpu()
+                        ),
+                        "predicted_local_energy": float(
+                            potentials.local_energy[index].float().cpu()
+                        ),
+                        "predicted_coordinates_json": (
+                            json.dumps(
+                                potentials.coordinates[index].float().cpu().tolist(),
+                                separators=(",", ":"),
+                            )
+                            if potentials.coordinates is not None
+                            else ""
+                        ),
+                        "anchor_sample_id": raw["anchor_sample_id"][index],
                     }
                 )
     return rows
@@ -1112,12 +1470,21 @@ def _loss_normalizers(
     training: Pitch3LTETrainingConfig,
     local_scales: Mapping[str, float],
     energy_strata: Mapping[str, Any],
+    coordinate_auxiliary: Mapping[str, Any],
 ) -> tuple[dict[str, float], dict[str, float], dict[str, str]]:
     names = ["value", "prompt_rank"]
     if training.coordinate_loss_weight > 0:
         names.append("coordinate")
     if training.family_listwise_weight > 0:
         names.append("family_listwise")
+    if training.boundary_region_weight > 0:
+        names.append("boundary_region")
+    if training.band_component_weight > 0:
+        names.append("band_component")
+    if training.coordinate_fd_weight > 0:
+        names.append("coordinate_fd")
+    if training.coordinate_prompt_consistency_weight > 0:
+        names.append("coordinate_prompt_consistency")
     if training.cross_prompt_rank_weight > 0:
         names.append("cross_prompt_rank")
     if training.local_objective == "central_difference_huber_v3":
@@ -1131,23 +1498,33 @@ def _loss_normalizers(
     with torch.inference_mode():
         for raw in loader:
             batch = _to_device(raw, device)
-            potentials = _model_potentials(model, batch)
+            potentials, shuffled_coordinates = _model_potentials(model, batch)
             predicted = potentials.energy
             losses = pitch3_lte_raw_losses(
                 predicted,
                 batch,
                 predicted_coordinates=potentials.coordinates,
-                **_raw_loss_kwargs(training, local_scales, energy_strata),
+                predicted_coordinates_shuffled=shuffled_coordinates,
+                **_raw_loss_kwargs(
+                    training,
+                    local_scales,
+                    energy_strata,
+                    coordinate_auxiliary,
+                ),
             )
             for name, loss in losses.items():
                 value = float(loss.detach().cpu())
                 if math.isfinite(value) and value > 0:
                     values[name].append(value)
     medians = {name: float(np.median(items)) if items else 0.0 for name, items in values.items()}
+    if medians.get("coordinate_prompt_consistency", 0.0) <= 0:
+        medians["coordinate_prompt_consistency"] = medians.get("coordinate", 1.0)
     if any(value <= 0 or not math.isfinite(value) for value in medians.values()):
         raise LTSNContractError("V3-LTE first-epoch loss normalization found an empty component")
     normalizers = dict(medians)
     policies = {name: "initial_batch_median" for name in normalizers}
+    if "coordinate_prompt_consistency" in normalizers:
+        policies["coordinate_prompt_consistency"] = "shared_coordinate_initial_scale"
     if "local_flat" in normalizers and training.local_flat_normalizer > 0:
         normalizers["local_flat"] = training.local_flat_normalizer
         policies["local_flat"] = "fixed_dimensionless_scale"
@@ -1163,19 +1540,26 @@ def _normalized_dataset_loss(
     local_scales: Mapping[str, float],
     energy_strata: Mapping[str, Any],
     component_weights: Mapping[str, float],
+    coordinate_auxiliary: Mapping[str, Any],
 ) -> float:
     totals: list[float] = []
     model.eval()
     with torch.inference_mode():
         for raw in loader:
             batch = _to_device(raw, device)
-            potentials = _model_potentials(model, batch)
+            potentials, shuffled_coordinates = _model_potentials(model, batch)
             predicted = potentials.energy
             losses = pitch3_lte_raw_losses(
                 predicted,
                 batch,
                 predicted_coordinates=potentials.coordinates,
-                **_raw_loss_kwargs(training, local_scales, energy_strata),
+                predicted_coordinates_shuffled=shuffled_coordinates,
+                **_raw_loss_kwargs(
+                    training,
+                    local_scales,
+                    energy_strata,
+                    coordinate_auxiliary,
+                ),
             )
             totals.append(
                 sum(
@@ -1241,7 +1625,10 @@ def train_pitch3_lte(
         effective_training_config_sha256 = sha256_file(effective_config_path)
     v33_enabled = training.training_schedule == "global_then_local_v33"
     v34_enabled = training.training_schedule == "structured_global_then_local_v34"
-    staged_training = v33_enabled or v34_enabled
+    v35_enabled = (
+        training.training_schedule == "structured_anchored_global_then_local_v35"
+    )
+    staged_training = v33_enabled or v34_enabled or v35_enabled
     if v33_enabled != (model_config.potential_mode == "global_local_v33"):
         raise LTSNContractError(
             "V3.3 model and two-stage training contracts must be enabled together"
@@ -1250,7 +1637,11 @@ def train_pitch3_lte(
         raise LTSNContractError(
             "V3.4 structured-coordinate model and training contracts must be enabled together"
         )
-    if v34_enabled:
+    if v35_enabled != (model_config.potential_mode == "structured_anchored_v35"):
+        raise LTSNContractError(
+            "V3.5 anchored-coordinate model and training contracts must be enabled together"
+        )
+    if v34_enabled or v35_enabled:
         frozen_vectors = {
             "coordinate_lower": contract.target_lower,
             "coordinate_upper": contract.target_upper,
@@ -1278,7 +1669,7 @@ def train_pitch3_lte(
     ) != sha256_file(dataset_manifest):
         raise LTSNContractError("V3-LTE dataset failed or is detached from its preflight")
     records = _read_examples(dataset_manifest, contract.artifact_sha256)
-    if v34_enabled:
+    if v34_enabled or v35_enabled:
         for record in records:
             below = [
                 max(lower - value, 0.0)
@@ -1321,6 +1712,11 @@ def train_pitch3_lte(
     if not any(record.source_kind == "local_finite_difference" for record in development_records):
         raise LTSNContractError("V3-LTE checkpoint selection requires held-out local pairs")
     local_scales = _local_training_scales(train_records, training.rank_min_delta)
+    coordinate_auxiliary = (
+        _coordinate_auxiliary_contract(train_records, model_config)
+        if v35_enabled
+        else {}
+    )
     energy_strata_records = (
         [record for record in train_records if record.source_kind == "base_step4_seed"]
         if training.global_value_base_only
@@ -1358,13 +1754,15 @@ def train_pitch3_lte(
     )
     global_sampler: PromptBatchSampler | None = None
     global_loader: DataLoader[dict[str, Any]] | None = None
-    if v34_enabled:
+    if v34_enabled or v35_enabled:
         global_sampler = PromptBatchSampler(
             train_records,
             training.seed,
             True,
             groups_per_batch=16,
-            pairing_mode="family_full_base_v34",
+            pairing_mode=(
+                "family_full_all_v35" if v35_enabled else "family_full_base_v34"
+            ),
         )
         global_loader = DataLoader(
             train_dataset,
@@ -1387,6 +1785,7 @@ def train_pitch3_lte(
         training,
         local_scales,
         energy_strata,
+        coordinate_auxiliary,
     )
     component_weights = _loss_component_weights(training, tuple(normalizers))
     local_anchor_scale = (
@@ -1409,6 +1808,10 @@ def train_pitch3_lte(
         "global_energy": output_dir / f"pitch3_lte_seed_{training.seed}_best_energy.pt",
         "local_direction": output_dir / f"pitch3_lte_seed_{training.seed}_best_direction.pt",
     }
+    if v35_enabled:
+        candidate_paths["global_stage"] = (
+            output_dir / f"pitch3_lte_seed_{training.seed}_best_global_stage.pt"
+        )
     candidate_keys: dict[str, tuple[float, ...]] = {
         name: (float("inf"),) for name in candidate_paths
     }
@@ -1433,18 +1836,22 @@ def train_pitch3_lte(
         "device": device_name,
         "precision": "bf16_forward_fp32_loss" if training.use_bf16 else "fp32",
         "architecture_revision": (
-            "v3.4_structured_coordinate_family_energy"
-            if model_config.potential_mode == "structured_coordinate_v34"
+            "v3.5_structured_anchored_coordinate_potential"
+            if model_config.potential_mode == "structured_anchored_v35"
             else (
-                "v3.3_family_round_robin_dual_potential"
-                if model_config.potential_mode == "global_local_v33"
+                "v3.4_structured_coordinate_family_energy"
+                if model_config.potential_mode == "structured_coordinate_v34"
                 else (
-                    "v3.2_dual_rms_latent_primary_prompt_residual"
-                    if model_config.latent_stem_mode == "dual_rms_v32"
+                    "v3.3_family_round_robin_dual_potential"
+                    if model_config.potential_mode == "global_local_v33"
                     else (
-                        "v3.1_latent_primary_prompt_residual"
-                        if model_config.fusion_mode == "latent_primary_residual_v31"
-                        else "v3_joint_fusion"
+                        "v3.2_dual_rms_latent_primary_prompt_residual"
+                        if model_config.latent_stem_mode == "dual_rms_v32"
+                        else (
+                            "v3.1_latent_primary_prompt_residual"
+                            if model_config.fusion_mode == "latent_primary_residual_v31"
+                            else "v3_joint_fusion"
+                        )
                     )
                 )
             )
@@ -1482,20 +1889,39 @@ def train_pitch3_lte(
             "local_anchor_scale": local_anchor_scale,
             "ema_decay": training.ema_decay,
             "coordinate_target": (
-                "coordinates_json" if v34_enabled else None
+                "coordinates_json" if v34_enabled or v35_enabled else None
             ),
             "coordinate_source": (
-                "exact_frozen_pitch3_snapshot_descriptor" if v34_enabled else None
+                "exact_frozen_pitch3_snapshot_descriptor"
+                if v34_enabled or v35_enabled
+                else None
             ),
             "coordinate_loss_weight": training.coordinate_loss_weight,
             "family_listwise_weight": training.family_listwise_weight,
             "family_rank_temperature": training.family_rank_temperature,
-            "full_family_global_batch_size": 64 if v34_enabled else None,
+            "full_family_global_batch_size": (
+                64 if v34_enabled or v35_enabled else None
+            ),
+            "full_family_global_batches_per_family": 2 if v35_enabled else None,
             "frozen_band_formula": (
                 "sum_i(weight_i*(relu(lower_i-q_i)^2+relu(q_i-upper_i)^2))"
-                if v34_enabled
+                if v34_enabled or v35_enabled
                 else None
             ),
+            "anchor_contract": (
+                "R(z,c)-R(z0,c); z0=fixed_step4_base; exact_zero_at_base"
+                if v35_enabled
+                else None
+            ),
+            "coordinate_auxiliary": coordinate_auxiliary if v35_enabled else None,
+            "boundary_region_weight": training.boundary_region_weight,
+            "band_component_weight": training.band_component_weight,
+            "coordinate_fd_weight": training.coordinate_fd_weight,
+            "coordinate_prompt_consistency_weight": (
+                training.coordinate_prompt_consistency_weight
+            ),
+            "global_stage_minimum_epochs": training.global_stage_minimum_epochs,
+            "global_early_stopping_patience": training.global_early_stopping_patience,
             "evaluation_band_formula_changed": False,
         },
         "prompt_collapse_gate": {
@@ -1559,6 +1985,10 @@ def train_pitch3_lte(
         "cross_prompt_rank",
         "coordinate",
         "family_listwise",
+        "boundary_region",
+        "band_component",
+        "coordinate_fd",
+        "coordinate_prompt_consistency",
     }
     local_component_names = {
         "local_fd",
@@ -1567,18 +1997,25 @@ def train_pitch3_lte(
         "local_shape",
         "local_flat",
     }
+    v35_stage = "global"
+    v35_local_start_epoch: int | None = None
+    global_patience = 0
+    best_global_gate_key: tuple[float, float] = (float("inf"), float("inf"))
     for epoch in range(1, training.max_epochs + 1):
         train_sampler.set_epoch(epoch)
         if global_sampler is not None:
             global_sampler.set_epoch(epoch)
-        stage = _training_stage(training, epoch)
+        stage = v35_stage if v35_enabled else _training_stage(training, epoch)
         if staged_training:
             _set_training_stage_trainable(model, training, stage)
             prompt_interaction_enabled = stage == "global"
             active_names = (
                 global_component_names if stage == "global" else local_component_names
             ) & set(normalizers)
-            if stage == "local" and epoch == training.global_stage_epochs + 1:
+            if stage == "local" and (
+                (not v35_enabled and epoch == training.global_stage_epochs + 1)
+                or (v35_enabled and epoch == v35_local_start_epoch)
+            ):
                 patience = 0
         else:
             prompt_interaction_enabled = epoch > training.prompt_frozen_epochs
@@ -1591,7 +2028,9 @@ def train_pitch3_lte(
         sums.update({"prompt_consistency": 0.0, "local_anchor": 0.0, "total": 0.0})
         batches = 0
         epoch_loader = (
-            global_loader if v34_enabled and stage == "global" else train_loader
+            global_loader
+            if (v34_enabled or v35_enabled) and stage == "global"
+            else train_loader
         )
         if epoch_loader is None:
             raise LTSNContractError("V3.4 global full-family loader is missing")
@@ -1604,22 +2043,50 @@ def train_pitch3_lte(
                 enabled=training.use_bf16 and device.type == "cuda",
             ):
                 predicted_coordinates: Tensor | None = None
+                predicted_coordinates_shuffled: Tensor | None = None
                 if staged_training:
                     latent_state = model.encode_latent(batch["latent"], batch["attention_mask"])
                     prompt_state = model.encode_prompt(batch["text_hidden"], batch["text_mask"])
+                    anchor_state = None
+                    if v35_enabled:
+                        anchor_state = (
+                            latent_state.detach()
+                            if stage == "global"
+                            else model.encode_latent(
+                                batch["anchor_latent"],
+                                batch["anchor_attention_mask"],
+                            ).detach()
+                        )
                     potentials = model.potential_components_from_states(
-                        latent_state, prompt_state
+                        latent_state,
+                        prompt_state,
+                        anchor_latent_state=anchor_state,
                     )
                     predicted = (
                         potentials.global_energy if stage == "global" else potentials.energy
                     )
                     predicted_coordinates = potentials.coordinates
+                    if v35_enabled and stage == "global":
+                        permutation = _prompt_permutation(
+                            batch["prompt_id"], prompt_state.device
+                        )
+                        if permutation is None:
+                            raise LTSNContractError(
+                                "V3.5 prompt consistency requires multiple prompts"
+                            )
+                        predicted_coordinates_shuffled = (
+                            model.potential_components_from_states(
+                                latent_state,
+                                prompt_state[permutation],
+                                anchor_latent_state=anchor_state,
+                            ).coordinates
+                        )
                     prompt_consistency = predicted.sum() * 0.0
                     local_anchor = (
                         _local_residual_anchor(
                             potentials.local_energy, batch, local_anchor_scale
                         )
-                        if stage == "local"
+                        if stage == "local" and not v35_enabled
                         else predicted.sum() * 0.0
                     )
                 else:
@@ -1634,7 +2101,14 @@ def train_pitch3_lte(
                 predicted.float(),
                 batch,
                 predicted_coordinates=predicted_coordinates,
-                **_raw_loss_kwargs(training, local_scales, energy_strata),
+                predicted_coordinates_shuffled=predicted_coordinates_shuffled,
+                **_raw_loss_kwargs(
+                    training,
+                    local_scales,
+                    energy_strata,
+                    coordinate_auxiliary,
+                    include_structured=stage != "local",
+                ),
             )
             total = sum(
                 component_weights[name] * raw_losses[name] / normalizers[name]
@@ -1682,6 +2156,7 @@ def train_pitch3_lte(
                 local_scales,
                 energy_strata,
                 component_weights,
+                coordinate_auxiliary,
             )
             evaluation_variants.append(
                 (source, evaluated_model, variant_metrics, variant_loss)
@@ -1764,6 +2239,75 @@ def train_pitch3_lte(
                 "prompt_interaction_enabled": prompt_interaction_enabled,
             }
         )
+        if v35_enabled and stage == "global":
+            def global_selection_key(
+                item: tuple[
+                    str,
+                    PromptConditionedTopologyEnergy,
+                    dict[str, Any],
+                    float,
+                ],
+            ) -> tuple[float, float, float]:
+                deficits = item[2]["gate_deficits"]
+                global_deficit = sum(
+                    float(value)
+                    for name, value in deficits.items()
+                    if name != "local_direction_sign_accuracy"
+                )
+                return (
+                    global_deficit,
+                    -float(item[2]["minimum_prompt_family_spearman"]),
+                    item[3],
+                )
+
+            global_variant = min(evaluation_variants, key=global_selection_key)
+            global_source, global_model, global_metrics, global_loss = global_variant
+            global_selection = global_selection_key(global_variant)
+            history[-1]["global_stage_selection_key"] = list(global_selection)
+            global_gate_key = global_selection[:2]
+            if global_gate_key < best_global_gate_key:
+                best_global_gate_key = global_gate_key
+                global_patience = 0
+            else:
+                global_patience += 1
+            if global_selection < candidate_keys["global_stage"]:
+                save_candidate(
+                    "global_stage",
+                    global_selection,
+                    epoch,
+                    global_loss,
+                    global_metrics,
+                    global_model,
+                    global_source,
+                )
+            global_stage_finished = epoch >= training.global_stage_epochs or (
+                epoch >= training.global_stage_minimum_epochs
+                and global_patience >= training.global_early_stopping_patience
+            )
+            if global_stage_finished:
+                global_payload = torch.load(
+                    candidate_paths["global_stage"],
+                    map_location=device,
+                    weights_only=False,
+                )
+                model.load_state_dict(global_payload["model_state_dict"])
+                _set_training_stage_trainable(model, training, "local")
+                optimizer = torch.optim.AdamW(
+                    [
+                        parameter
+                        for parameter in model.parameters()
+                        if parameter.requires_grad
+                    ],
+                    lr=training.learning_rate,
+                    weight_decay=training.weight_decay,
+                )
+                if ema_model is not None:
+                    ema_model.load_state_dict(model.state_dict())
+                    ema_model.eval().requires_grad_(False)
+                v35_stage = "local"
+                v35_local_start_epoch = epoch + 1
+                patience = 0
+            continue
         candidate_eligible = (
             not staged_training or stage == "local"
         )
@@ -1831,7 +2375,11 @@ def train_pitch3_lte(
                 direction_source,
             )
         if staged_training:
-            local_epoch = epoch - training.global_stage_epochs
+            local_epoch = (
+                epoch - v35_local_start_epoch + 1
+                if v35_enabled and v35_local_start_epoch is not None
+                else epoch - training.global_stage_epochs
+            )
             if (
                 local_epoch >= training.local_stage_minimum_epochs
                 and patience >= training.early_stopping_patience

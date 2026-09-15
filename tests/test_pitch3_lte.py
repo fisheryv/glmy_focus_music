@@ -359,6 +359,73 @@ def test_lte_model_losses_and_one_shot_guidance() -> None:
     )
     assert {"coordinate", "family_listwise"} <= set(v34_losses)
     assert all(torch.isfinite(value) and value >= 0 for value in v34_losses.values())
+
+    v35_model = PromptConditionedTopologyEnergy(
+        Pitch3LTEConfig(
+            model_dim=16,
+            transformer_heads=4,
+            transformer_layers=1,
+            feedforward_dim=32,
+            temporal_stride=2,
+            dropout=0.0,
+            fusion_mode="latent_primary_residual_v31",
+            latent_stem_mode="dual_rms_v32",
+            potential_mode="structured_anchored_v35",
+        )
+    ).eval()
+    torch.nn.init.normal_(v35_model.local_energy_head[-1].weight)
+    current = latent.detach().clone().requires_grad_(True)
+    anchored = v35_model.potential_components(
+        current,
+        latent_mask,
+        text,
+        text_mask,
+        anchor_latent=latent.detach(),
+        anchor_attention_mask=latent_mask,
+    )
+    assert torch.count_nonzero(anchored.local_energy) == 0
+    anchored.energy.sum().backward()
+    assert current.grad is not None and torch.isfinite(current.grad).all()
+    moved = v35_model.potential_components(
+        latent + 0.01,
+        latent_mask,
+        text,
+        text_mask,
+        anchor_latent=latent,
+        anchor_attention_mask=latent_mask,
+    )
+    assert torch.count_nonzero(moved.local_energy) > 0
+
+    structured_batch = {
+        **batch,
+        "prompt_family": ["family_a"] * 8,
+        "coordinates": torch.randn(8, 3),
+    }
+    structured_losses = pitch3_lte_raw_losses(
+        predicted,
+        structured_batch,
+        huber_delta=1.0,
+        rank_min_delta=1e-6,
+        predicted_coordinates=torch.randn(8, 3),
+        predicted_coordinates_shuffled=torch.randn(8, 3),
+        include_coordinate_loss=True,
+        include_boundary_region=True,
+        include_band_component=True,
+        include_coordinate_fd=True,
+        include_coordinate_prompt_consistency=True,
+        coordinate_lower=(0.0, 0.0, 0.0),
+        coordinate_upper=(1.0, 1.0, 1.0),
+        coordinate_distance_weights=(1 / 3, 1 / 3, 1 / 3),
+        coordinate_region_weights=((1.0, 1.0, 1.0),) * 3,
+        coordinate_fd_scales=(1.0, 1.0, 1.0),
+    )
+    assert {
+        "boundary_region",
+        "band_component",
+        "coordinate_fd",
+        "coordinate_prompt_consistency",
+    } <= set(structured_losses)
+    assert all(torch.isfinite(value) and value >= 0 for value in structured_losses.values())
     ensemble = Pitch3LTEEnergyEnsemble([dual_model.eval(), v33_model])
     ensemble_energy = ensemble(latent, latent_mask, text, text_mask).energy
     expected_energy = 0.5 * (
@@ -488,6 +555,22 @@ def test_lte_v34_full_family_sampler_uses_all_base_rows() -> None:
         assert len({records[index].prompt_id for index in batch}) == 16
         assert len({records[index].prompt_family for index in batch}) == 1
         assert {records[index].source_kind for index in batch} == {"base_step4_seed"}
+
+    v35_sampler = PromptBatchSampler(
+        records,
+        seed=23,
+        shuffle=False,
+        groups_per_batch=16,
+        pairing_mode="family_full_all_v35",
+    )
+    v35_batches = list(v35_sampler)
+    assert len(v35_batches) == 4
+    for batch in v35_batches:
+        assert len(batch) == 64
+        assert len({records[index].prompt_id for index in batch}) == 16
+        assert len({records[index].prompt_family for index in batch}) == 1
+        kinds = [records[index].source_kind for index in batch]
+        assert set(kinds) in ({"base_step4_seed"}, {"local_finite_difference"})
 
 
 @pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")
