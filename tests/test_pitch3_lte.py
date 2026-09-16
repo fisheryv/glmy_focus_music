@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import importlib.util
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -254,6 +255,26 @@ def test_lte_model_losses_and_one_shot_guidance() -> None:
         "local_flat",
     }
     assert all(torch.isfinite(value) and value >= 0 for value in decomposed.values())
+    anchored_direction_flat = pitch3_lte_raw_losses(
+        predicted,
+        v32_batch,
+        huber_delta=1.0,
+        rank_min_delta=1e-6,
+        local_objective="anchored_direction_flat_v35r",
+        local_derivative_scale=0.5,
+        local_delta_scale=0.1,
+    )
+    assert set(anchored_direction_flat) == {
+        "value",
+        "prompt_rank",
+        "local_direction",
+        "local_flat",
+    }
+    assert "local_shape" not in anchored_direction_flat
+    assert all(
+        torch.isfinite(value) and value >= 0
+        for value in anchored_direction_flat.values()
+    )
 
     residual_model = PromptConditionedTopologyEnergy(
         Pitch3LTEConfig(
@@ -571,6 +592,46 @@ def test_lte_v34_full_family_sampler_uses_all_base_rows() -> None:
         assert len({records[index].prompt_family for index in batch}) == 1
         kinds = [records[index].source_kind for index in batch]
         assert set(kinds) in ({"base_step4_seed"}, {"local_finite_difference"})
+
+    v35r_sampler = PromptBatchSampler(
+        records,
+        seed=23,
+        shuffle=False,
+        groups_per_batch=16,
+        pairing_mode="family_full_base_v34",
+    )
+    v35r_batches = list(v35r_sampler)
+    assert len(v35r_batches) == 2
+    assert all(len(batch) == 64 for batch in v35r_batches)
+    assert all(
+        {records[index].source_kind for index in batch} == {"base_step4_seed"}
+        for batch in v35r_batches
+    )
+
+
+@pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")
+def test_lte_v35r_frozen_training_contract() -> None:
+    from generation.pitch3_lte_ensemble import _ENSEMBLE_KINDS
+    from generation.pitch3_lte_training import load_pitch3_lte_config
+
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "pitch3_lte_v35r.toml"
+    model, training = load_pitch3_lte_config(config_path)
+    assert model.potential_mode == "structured_anchored_v35"
+    assert training.training_schedule == "structured_anchored_global_then_local_v35r"
+    assert training.local_objective == "anchored_direction_flat_v35r"
+    assert training.local_learning_rate == pytest.approx(2e-5)
+    assert training.global_value_base_only is True
+    assert training.local_shape_weight == 0
+    assert (
+        training.boundary_region_weight,
+        training.band_component_weight,
+        training.coordinate_fd_weight,
+        training.coordinate_prompt_consistency_weight,
+    ) == (0, 0, 0, 0)
+    assert (
+        _ENSEMBLE_KINDS["v3.5r_minimal_global_anchored_direction"]
+        == "equal_weight_anchored_scalar_energy_v35r"
+    )
 
 
 @pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")

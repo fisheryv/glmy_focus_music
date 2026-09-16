@@ -80,6 +80,7 @@ class Pitch3LTETrainingConfig:
     boundary_temperature_fraction: float = 0.05
     global_stage_minimum_epochs: int = 0
     global_early_stopping_patience: int = 0
+    local_learning_rate: float = 0.0
 
     def validate(self) -> None:
         if self.max_epochs < 1 or not 1 <= self.minimum_epochs <= self.max_epochs:
@@ -88,12 +89,15 @@ class Pitch3LTETrainingConfig:
             raise ValueError("V3-LTE patience and gradient clip must be positive")
         if self.learning_rate <= 0 or self.weight_decay < 0:
             raise ValueError("V3-LTE optimizer settings are invalid")
+        if self.local_learning_rate < 0:
+            raise ValueError("V3-LTE local learning rate must be non-negative")
         if self.huber_delta <= 0 or self.rank_min_delta <= 0:
             raise ValueError("V3-LTE robust-loss thresholds must be positive")
         if self.local_objective not in {
             "central_difference_huber_v3",
             "robust_direction_v31",
             "decomposed_direction_v32",
+            "anchored_direction_flat_v35r",
         }:
             raise ValueError("unknown V3-LTE local objective")
         if min(
@@ -130,12 +134,14 @@ class Pitch3LTETrainingConfig:
             "global_then_local_v33",
             "structured_global_then_local_v34",
             "structured_anchored_global_then_local_v35",
+            "structured_anchored_global_then_local_v35r",
         }:
             raise ValueError("unknown V3-LTE training schedule")
         if self.training_schedule in {
             "global_then_local_v33",
             "structured_global_then_local_v34",
             "structured_anchored_global_then_local_v35",
+            "structured_anchored_global_then_local_v35r",
         }:
             if not 1 <= self.global_stage_epochs < self.max_epochs:
                 raise ValueError("V3.3 global stage must end before max_epochs")
@@ -147,7 +153,10 @@ class Pitch3LTETrainingConfig:
                 raise ValueError("V3.3 uses stage freezing, not prompt-only freezing")
             if self.local_anchor_normalizer < 0:
                 raise ValueError("staged LTE local residual anchor is invalid")
-            if self.training_schedule != "structured_anchored_global_then_local_v35":
+            if self.training_schedule not in {
+                "structured_anchored_global_then_local_v35",
+                "structured_anchored_global_then_local_v35r",
+            }:
                 if self.local_anchor_weight <= 0:
                     raise ValueError("V3.3/V3.4 require a positive soft local anchor")
                 if not self.global_value_base_only:
@@ -195,6 +204,28 @@ class Pitch3LTETrainingConfig:
                 raise ValueError(
                     "V3.5 requires all structured losses, all-row value supervision, "
                     "strict anchoring, and independent global early stopping"
+                )
+        if self.training_schedule == "structured_anchored_global_then_local_v35r":
+            if (
+                self.local_objective != "anchored_direction_flat_v35r"
+                or self.coordinate_loss_weight <= 0
+                or self.family_listwise_weight <= 0
+                or any(weight != 0 for weight in structured_weights)
+                or not self.full_family_global_batches
+                or self.batch_pairing_mode != "family_round_robin_v33"
+                or self.prompt_groups_per_batch != 2
+                or not self.cross_prompt_family_only
+                or not self.global_value_base_only
+                or self.local_anchor_weight != 0
+                or self.local_shape_weight != 0
+                or self.local_learning_rate <= 0
+                or not 1 <= self.global_stage_minimum_epochs <= self.global_stage_epochs
+                or self.global_early_stopping_patience < 1
+            ):
+                raise ValueError(
+                    "V3.5R requires the minimal base-only global objective, strict "
+                    "anchoring, direction/flat local supervision, and an independent "
+                    "local learning rate"
                 )
         if not 0.0 <= self.ema_decay < 1.0:
             raise ValueError("V3-LTE EMA decay must lie in [0,1)")
@@ -709,7 +740,11 @@ def pitch3_lte_raw_losses(
                 F.huber_loss(predicted_derivative, exact_derivative, delta=huber_delta)
             )
             continue
-        if local_objective not in {"robust_direction_v31", "decomposed_direction_v32"}:
+        if local_objective not in {
+            "robust_direction_v31",
+            "decomposed_direction_v32",
+            "anchored_direction_flat_v35r",
+        }:
             raise ValueError(f"unknown V3-LTE local objective: {local_objective}")
         predicted_delta = predicted[plus] - predicted[minus]
         if exact_derivative.abs() <= rank_min_delta:
@@ -718,9 +753,10 @@ def pitch3_lte_raw_losses(
         direction_terms.append(
             F.softplus(-torch.sign(exact_derivative) * predicted_delta / local_delta_scale)
         )
-        exact_robust = torch.asinh(exact_derivative / local_derivative_scale)
-        predicted_robust = torch.asinh(predicted_derivative / local_derivative_scale)
-        shape_terms.append(F.huber_loss(predicted_robust, exact_robust, delta=huber_delta))
+        if local_objective != "anchored_direction_flat_v35r":
+            exact_robust = torch.asinh(exact_derivative / local_derivative_scale)
+            predicted_robust = torch.asinh(predicted_derivative / local_derivative_scale)
+            shape_terms.append(F.huber_loss(predicted_robust, exact_robust, delta=huber_delta))
     losses = {
         "value": value,
         "prompt_rank": torch.stack(rank_terms).mean() if rank_terms else zero,
@@ -881,11 +917,16 @@ def pitch3_lte_raw_losses(
         losses["local_robust"] = (
             direction + local_shape_weight * shape + local_flat_weight * flat
         )
-    else:
+    elif local_objective == "decomposed_direction_v32":
         losses["local_direction"] = (
             torch.stack(direction_terms).mean() if direction_terms else zero
         )
         losses["local_shape"] = torch.stack(shape_terms).mean() if shape_terms else zero
+        losses["local_flat"] = torch.stack(flat_terms).mean() if flat_terms else zero
+    else:
+        losses["local_direction"] = (
+            torch.stack(direction_terms).mean() if direction_terms else zero
+        )
         losses["local_flat"] = torch.stack(flat_terms).mean() if flat_terms else zero
     return losses
 
@@ -1178,6 +1219,7 @@ def _training_stage(training: Pitch3LTETrainingConfig, epoch: int) -> str:
         "global_then_local_v33",
         "structured_global_then_local_v34",
         "structured_anchored_global_then_local_v35",
+        "structured_anchored_global_then_local_v35r",
     }:
         return "joint"
     return "global" if epoch <= training.global_stage_epochs else "local"
@@ -1192,6 +1234,7 @@ def _set_training_stage_trainable(
         "global_then_local_v33",
         "structured_global_then_local_v34",
         "structured_anchored_global_then_local_v35",
+        "structured_anchored_global_then_local_v35r",
     }:
         _set_prompt_interaction_trainable(model, stage != "prompt_frozen")
         model.train()
@@ -1491,8 +1534,10 @@ def _loss_normalizers(
         names.append("local_fd")
     elif training.local_objective == "robust_direction_v31":
         names.append("local_robust")
-    else:
+    elif training.local_objective == "decomposed_direction_v32":
         names.extend(("local_direction", "local_shape", "local_flat"))
+    else:
+        names.extend(("local_direction", "local_flat"))
     values: dict[str, list[float]] = {name: [] for name in names}
     model.eval()
     with torch.inference_mode():
@@ -1628,7 +1673,11 @@ def train_pitch3_lte(
     v35_enabled = (
         training.training_schedule == "structured_anchored_global_then_local_v35"
     )
-    staged_training = v33_enabled or v34_enabled or v35_enabled
+    v35r_enabled = (
+        training.training_schedule == "structured_anchored_global_then_local_v35r"
+    )
+    anchored_v35_enabled = v35_enabled or v35r_enabled
+    staged_training = v33_enabled or v34_enabled or anchored_v35_enabled
     if v33_enabled != (model_config.potential_mode == "global_local_v33"):
         raise LTSNContractError(
             "V3.3 model and two-stage training contracts must be enabled together"
@@ -1637,11 +1686,11 @@ def train_pitch3_lte(
         raise LTSNContractError(
             "V3.4 structured-coordinate model and training contracts must be enabled together"
         )
-    if v35_enabled != (model_config.potential_mode == "structured_anchored_v35"):
+    if anchored_v35_enabled != (model_config.potential_mode == "structured_anchored_v35"):
         raise LTSNContractError(
             "V3.5 anchored-coordinate model and training contracts must be enabled together"
         )
-    if v34_enabled or v35_enabled:
+    if v34_enabled or anchored_v35_enabled:
         frozen_vectors = {
             "coordinate_lower": contract.target_lower,
             "coordinate_upper": contract.target_upper,
@@ -1669,7 +1718,7 @@ def train_pitch3_lte(
     ) != sha256_file(dataset_manifest):
         raise LTSNContractError("V3-LTE dataset failed or is detached from its preflight")
     records = _read_examples(dataset_manifest, contract.artifact_sha256)
-    if v34_enabled or v35_enabled:
+    if v34_enabled or anchored_v35_enabled:
         for record in records:
             below = [
                 max(lower - value, 0.0)
@@ -1754,7 +1803,7 @@ def train_pitch3_lte(
     )
     global_sampler: PromptBatchSampler | None = None
     global_loader: DataLoader[dict[str, Any]] | None = None
-    if v34_enabled or v35_enabled:
+    if v34_enabled or anchored_v35_enabled:
         global_sampler = PromptBatchSampler(
             train_records,
             training.seed,
@@ -1808,7 +1857,7 @@ def train_pitch3_lte(
         "global_energy": output_dir / f"pitch3_lte_seed_{training.seed}_best_energy.pt",
         "local_direction": output_dir / f"pitch3_lte_seed_{training.seed}_best_direction.pt",
     }
-    if v35_enabled:
+    if anchored_v35_enabled:
         candidate_paths["global_stage"] = (
             output_dir / f"pitch3_lte_seed_{training.seed}_best_global_stage.pt"
         )
@@ -1836,21 +1885,25 @@ def train_pitch3_lte(
         "device": device_name,
         "precision": "bf16_forward_fp32_loss" if training.use_bf16 else "fp32",
         "architecture_revision": (
-            "v3.5_structured_anchored_coordinate_potential"
-            if model_config.potential_mode == "structured_anchored_v35"
+            "v3.5r_minimal_global_anchored_direction"
+            if v35r_enabled
             else (
-                "v3.4_structured_coordinate_family_energy"
-                if model_config.potential_mode == "structured_coordinate_v34"
+                "v3.5_structured_anchored_coordinate_potential"
+                if model_config.potential_mode == "structured_anchored_v35"
                 else (
-                    "v3.3_family_round_robin_dual_potential"
-                    if model_config.potential_mode == "global_local_v33"
+                    "v3.4_structured_coordinate_family_energy"
+                    if model_config.potential_mode == "structured_coordinate_v34"
                     else (
-                        "v3.2_dual_rms_latent_primary_prompt_residual"
-                        if model_config.latent_stem_mode == "dual_rms_v32"
+                        "v3.3_family_round_robin_dual_potential"
+                        if model_config.potential_mode == "global_local_v33"
                         else (
-                            "v3.1_latent_primary_prompt_residual"
-                            if model_config.fusion_mode == "latent_primary_residual_v31"
-                            else "v3_joint_fusion"
+                            "v3.2_dual_rms_latent_primary_prompt_residual"
+                            if model_config.latent_stem_mode == "dual_rms_v32"
+                            else (
+                                "v3.1_latent_primary_prompt_residual"
+                                if model_config.fusion_mode == "latent_primary_residual_v31"
+                                else "v3_joint_fusion"
+                            )
                         )
                     )
                 )
@@ -1889,28 +1942,30 @@ def train_pitch3_lte(
             "local_anchor_scale": local_anchor_scale,
             "ema_decay": training.ema_decay,
             "coordinate_target": (
-                "coordinates_json" if v34_enabled or v35_enabled else None
+                "coordinates_json" if v34_enabled or anchored_v35_enabled else None
             ),
             "coordinate_source": (
                 "exact_frozen_pitch3_snapshot_descriptor"
-                if v34_enabled or v35_enabled
+                if v34_enabled or anchored_v35_enabled
                 else None
             ),
             "coordinate_loss_weight": training.coordinate_loss_weight,
             "family_listwise_weight": training.family_listwise_weight,
             "family_rank_temperature": training.family_rank_temperature,
             "full_family_global_batch_size": (
-                64 if v34_enabled or v35_enabled else None
+                64 if v34_enabled or anchored_v35_enabled else None
             ),
-            "full_family_global_batches_per_family": 2 if v35_enabled else None,
+            "full_family_global_batches_per_family": (
+                2 if v35_enabled else (1 if v34_enabled or v35r_enabled else None)
+            ),
             "frozen_band_formula": (
                 "sum_i(weight_i*(relu(lower_i-q_i)^2+relu(q_i-upper_i)^2))"
-                if v34_enabled or v35_enabled
+                if v34_enabled or anchored_v35_enabled
                 else None
             ),
             "anchor_contract": (
                 "R(z,c)-R(z0,c); z0=fixed_step4_base; exact_zero_at_base"
-                if v35_enabled
+                if anchored_v35_enabled
                 else None
             ),
             "coordinate_auxiliary": coordinate_auxiliary if v35_enabled else None,
@@ -1922,6 +1977,23 @@ def train_pitch3_lte(
             ),
             "global_stage_minimum_epochs": training.global_stage_minimum_epochs,
             "global_early_stopping_patience": training.global_early_stopping_patience,
+            "global_objective": (
+                "base_value_coordinate_family_listwise" if v35r_enabled else None
+            ),
+            "local_objective": training.local_objective if v35r_enabled else None,
+            "local_learning_rate": (
+                training.local_learning_rate if v35r_enabled else None
+            ),
+            "auxiliary_losses_disabled": (
+                [
+                    "boundary_region",
+                    "band_component",
+                    "coordinate_fd",
+                    "coordinate_prompt_consistency",
+                ]
+                if v35r_enabled
+                else None
+            ),
             "evaluation_band_formula_changed": False,
         },
         "prompt_collapse_gate": {
@@ -2005,7 +2077,7 @@ def train_pitch3_lte(
         train_sampler.set_epoch(epoch)
         if global_sampler is not None:
             global_sampler.set_epoch(epoch)
-        stage = v35_stage if v35_enabled else _training_stage(training, epoch)
+        stage = v35_stage if anchored_v35_enabled else _training_stage(training, epoch)
         if staged_training:
             _set_training_stage_trainable(model, training, stage)
             prompt_interaction_enabled = stage == "global"
@@ -2013,8 +2085,8 @@ def train_pitch3_lte(
                 global_component_names if stage == "global" else local_component_names
             ) & set(normalizers)
             if stage == "local" and (
-                (not v35_enabled and epoch == training.global_stage_epochs + 1)
-                or (v35_enabled and epoch == v35_local_start_epoch)
+                (not anchored_v35_enabled and epoch == training.global_stage_epochs + 1)
+                or (anchored_v35_enabled and epoch == v35_local_start_epoch)
             ):
                 patience = 0
         else:
@@ -2029,7 +2101,7 @@ def train_pitch3_lte(
         batches = 0
         epoch_loader = (
             global_loader
-            if (v34_enabled or v35_enabled) and stage == "global"
+            if (v34_enabled or anchored_v35_enabled) and stage == "global"
             else train_loader
         )
         if epoch_loader is None:
@@ -2048,7 +2120,7 @@ def train_pitch3_lte(
                     latent_state = model.encode_latent(batch["latent"], batch["attention_mask"])
                     prompt_state = model.encode_prompt(batch["text_hidden"], batch["text_mask"])
                     anchor_state = None
-                    if v35_enabled:
+                    if anchored_v35_enabled:
                         anchor_state = (
                             latent_state.detach()
                             if stage == "global"
@@ -2086,7 +2158,7 @@ def train_pitch3_lte(
                         _local_residual_anchor(
                             potentials.local_energy, batch, local_anchor_scale
                         )
-                        if stage == "local" and not v35_enabled
+                        if stage == "local" and not anchored_v35_enabled
                         else predicted.sum() * 0.0
                     )
                 else:
@@ -2239,7 +2311,7 @@ def train_pitch3_lte(
                 "prompt_interaction_enabled": prompt_interaction_enabled,
             }
         )
-        if v35_enabled and stage == "global":
+        if anchored_v35_enabled and stage == "global":
             def global_selection_key(
                 item: tuple[
                     str,
@@ -2298,7 +2370,11 @@ def train_pitch3_lte(
                         for parameter in model.parameters()
                         if parameter.requires_grad
                     ],
-                    lr=training.learning_rate,
+                    lr=(
+                        training.local_learning_rate
+                        if v35r_enabled
+                        else training.learning_rate
+                    ),
                     weight_decay=training.weight_decay,
                 )
                 if ema_model is not None:
@@ -2377,7 +2453,7 @@ def train_pitch3_lte(
         if staged_training:
             local_epoch = (
                 epoch - v35_local_start_epoch + 1
-                if v35_enabled and v35_local_start_epoch is not None
+                if anchored_v35_enabled and v35_local_start_epoch is not None
                 else epoch - training.global_stage_epochs
             )
             if (
