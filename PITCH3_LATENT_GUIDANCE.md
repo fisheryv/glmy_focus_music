@@ -98,3 +98,26 @@ python scripts/evaluate_pitch3_control_head.py screen-development \
 Do not run calibration unless both the pooled and required group development
 screens pass. The qualification split remains excluded from training,
 checkpoint selection, and this development decision.
+
+## V3.7-DTE latent topology energy
+
+V3.7-DTE retains the frozen Pitch-3 exact Band as the teacher and evaluation
+target, but removes the hard analytic Band calculation from the proxy's
+guidance path. The global proxy directly predicts
+`log1p(exact_pitch3_target_band_loss)` with a latent-primary non-negative scalar
+head and a bounded prompt residual. Its three-coordinate head is latent-only,
+width-normalized, and auxiliary: coordinate predictions never enter the
+guidance energy. The anchored local term remains
+`R(z,c)-R(z0,c)` and uses the V3.5R direction/flat objective.
+
+The existing V3 exact-local dataset is reused without relabeling:
+
+```bash
+bash scripts/run_pitch3_lte_v37_dte.sh train
+bash scripts/run_pitch3_lte_v37_dte.sh ensemble
+bash scripts/run_pitch3_lte_v37_dte.sh model-screen
+```
+
+The default run uses seeds `20260938 20260939 20260940` and devices from
+`LTE_DEVICES` (default `cuda:1 cuda:2 cuda:3`). Do not run `guidance` until the
+model-only development screen passes every frozen model gate.

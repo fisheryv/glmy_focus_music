@@ -73,13 +73,19 @@ class Pitch3LTEConfig:
             "global_local_v33",
             "structured_coordinate_v34",
             "structured_anchored_v35",
+            "direct_anchored_v37",
         }:
             raise ValueError("unknown V3-LTE potential mode")
-        if self.potential_mode in {
-            "global_local_v33",
-            "structured_coordinate_v34",
-            "structured_anchored_v35",
-        } and self.fusion_mode != "latent_primary_residual_v31":
+        if (
+            self.potential_mode
+            in {
+                "global_local_v33",
+                "structured_coordinate_v34",
+                "structured_anchored_v35",
+                "direct_anchored_v37",
+            }
+            and self.fusion_mode != "latent_primary_residual_v31"
+        ):
             raise ValueError("decomposed LTE potentials require latent-primary fusion")
         if self.local_residual_scale <= 0:
             raise ValueError("V3-LTE local residual scale must be positive")
@@ -94,12 +100,11 @@ class Pitch3LTEConfig:
         if self.potential_mode in {
             "structured_coordinate_v34",
             "structured_anchored_v35",
+            "direct_anchored_v37",
         }:
             if any(
                 lower >= upper
-                for lower, upper in zip(
-                    self.coordinate_lower, self.coordinate_upper, strict=True
-                )
+                for lower, upper in zip(self.coordinate_lower, self.coordinate_upper, strict=True)
             ):
                 raise ValueError("V3.4 coordinate bounds are invalid")
             if any(value <= 0 for value in self.coordinate_distance_weights) or not math.isclose(
@@ -180,15 +185,17 @@ class PromptConditionedTopologyEnergy(nn.Module):
         if cfg.potential_mode in {
             "structured_coordinate_v34",
             "structured_anchored_v35",
+            "direct_anchored_v37",
         }:
             self.coordinate_head = nn.Sequential(
                 nn.Linear(cfg.model_dim, cfg.model_dim),
                 nn.SiLU(),
                 nn.Linear(cfg.model_dim, 3),
             )
-            self.coordinate_prompt_film = nn.Linear(cfg.model_dim, 6)
-            nn.init.zeros_(self.coordinate_prompt_film.weight)
-            nn.init.zeros_(self.coordinate_prompt_film.bias)
+            if cfg.potential_mode != "direct_anchored_v37":
+                self.coordinate_prompt_film = nn.Linear(cfg.model_dim, 6)
+                nn.init.zeros_(self.coordinate_prompt_film.weight)
+                nn.init.zeros_(self.coordinate_prompt_film.bias)
             self.register_buffer(
                 "coordinate_lower",
                 torch.tensor(cfg.coordinate_lower, dtype=torch.float32),
@@ -205,6 +212,20 @@ class PromptConditionedTopologyEnergy(nn.Module):
                 "coordinate_distance_weights",
                 torch.tensor(cfg.coordinate_distance_weights, dtype=torch.float32),
             )
+        if cfg.potential_mode == "direct_anchored_v37":
+            self.latent_energy_head = nn.Sequential(
+                nn.Linear(cfg.model_dim, cfg.model_dim),
+                nn.SiLU(),
+                nn.Linear(cfg.model_dim, 1),
+            )
+            self.interaction_energy_head = nn.Linear(cfg.model_dim, 1)
+            nn.init.zeros_(self.interaction_energy_head.weight)
+            nn.init.zeros_(self.interaction_energy_head.bias)
+        elif cfg.potential_mode in {
+            "structured_coordinate_v34",
+            "structured_anchored_v35",
+        }:
+            pass
         elif cfg.fusion_mode == "joint_v3":
             self.energy_head = nn.Linear(cfg.model_dim, 1)
         else:
@@ -220,6 +241,7 @@ class PromptConditionedTopologyEnergy(nn.Module):
             "global_local_v33",
             "structured_coordinate_v34",
             "structured_anchored_v35",
+            "direct_anchored_v37",
         }:
             self.local_energy_head = nn.Sequential(
                 nn.Linear(cfg.model_dim, cfg.model_dim),
@@ -302,7 +324,10 @@ class PromptConditionedTopologyEnergy(nn.Module):
         latent_state = self.encode_latent(latent, attention_mask)
         prompt_state = self.encode_prompt(text_hidden, text_mask)
         anchor_state: Tensor | None = None
-        if self.config.potential_mode == "structured_anchored_v35":
+        if self.config.potential_mode in {
+            "structured_anchored_v35",
+            "direct_anchored_v37",
+        }:
             if anchor_latent is None:
                 anchor_state = latent_state.detach()
             else:
@@ -363,22 +388,39 @@ class PromptConditionedTopologyEnergy(nn.Module):
         if self.config.potential_mode in {
             "structured_coordinate_v34",
             "structured_anchored_v35",
+            "direct_anchored_v37",
         }:
             raw_coordinates = self.coordinate_head(latent_state)
-            film_scale, film_offset = self.coordinate_prompt_film(prompt_state).chunk(2, dim=1)
-            fraction = self.config.prompt_film_fraction
-            scale = 1.0 + fraction * torch.tanh(film_scale)
-            width = self.coordinate_upper - self.coordinate_lower
-            offset = fraction * torch.tanh(film_offset) * width
-            coordinates = self.coordinate_center + scale * (
-                raw_coordinates - self.coordinate_center
-            ) + offset
+            if self.config.potential_mode == "direct_anchored_v37":
+                # Coordinates remain interpretable auxiliary predictions, but
+                # they no longer define the guidance energy through a hard
+                # in-band ReLU dead zone.
+                coordinates = raw_coordinates
+            else:
+                film_scale, film_offset = self.coordinate_prompt_film(prompt_state).chunk(2, dim=1)
+                fraction = self.config.prompt_film_fraction
+                scale = 1.0 + fraction * torch.tanh(film_scale)
+                width = self.coordinate_upper - self.coordinate_lower
+                offset = fraction * torch.tanh(film_offset) * width
+                coordinates = (
+                    self.coordinate_center
+                    + scale * (raw_coordinates - self.coordinate_center)
+                    + offset
+                )
+        if self.config.potential_mode in {
+            "structured_coordinate_v34",
+            "structured_anchored_v35",
+        }:
             below = torch.relu(self.coordinate_lower - coordinates)
             above = torch.relu(coordinates - self.coordinate_upper)
-            band = ((below.square() + above.square()) * self.coordinate_distance_weights).sum(
-                dim=1
-            )
+            band = ((below.square() + above.square()) * self.coordinate_distance_weights).sum(dim=1)
             global_energy = torch.log1p(band)
+        elif self.config.potential_mode == "direct_anchored_v37":
+            latent_energy = self.latent_energy_head(latent_state).squeeze(-1)
+            prompt_residual = self.config.prompt_residual_scale * torch.tanh(
+                self.interaction_energy_head(fused).squeeze(-1)
+            )
+            global_energy = F.softplus(latent_energy + prompt_residual)
         elif self.config.fusion_mode == "joint_v3":
             global_energy = self.energy_head(fused).squeeze(-1)
         else:
@@ -387,11 +429,14 @@ class PromptConditionedTopologyEnergy(nn.Module):
                 self.interaction_energy_head(fused).squeeze(-1)
             )
             global_energy = latent_energy + interaction
-        if self.config.potential_mode == "structured_anchored_v35":
+        if self.config.potential_mode in {
+            "structured_anchored_v35",
+            "direct_anchored_v37",
+        }:
             if anchor_latent_state is None:
-                raise ValueError("V3.5 anchored potential requires an anchor latent state")
+                raise ValueError("anchored LTE potential requires an anchor latent state")
             if anchor_latent_state.shape != latent_state.shape:
-                raise ValueError("V3.5 anchor and current latent states must align")
+                raise ValueError("LTE anchor and current latent states must align")
             anchor_fused = self.joint(
                 torch.cat(
                     (
@@ -405,13 +450,11 @@ class PromptConditionedTopologyEnergy(nn.Module):
             )
             current_residual = self.local_energy_head(fused).squeeze(-1)
             anchor_residual = self.local_energy_head(anchor_fused).squeeze(-1)
-            local_energy = self.config.local_residual_scale * (
-                current_residual - anchor_residual
-            )
+            local_energy = self.config.local_residual_scale * (current_residual - anchor_residual)
         elif self.config.potential_mode in {"global_local_v33", "structured_coordinate_v34"}:
-            local_energy = self.config.local_residual_scale * self.local_energy_head(
-                fused
-            ).squeeze(-1)
+            local_energy = self.config.local_residual_scale * self.local_energy_head(fused).squeeze(
+                -1
+            )
         else:
             local_energy = torch.zeros_like(global_energy)
         energy = global_energy + local_energy
@@ -490,9 +533,7 @@ class Pitch3LTEEnergyEnsemble(nn.Module):
             for model in self.models
         ]
         energies = torch.stack([item.energy for item in components], dim=0)
-        global_energies = torch.stack(
-            [item.global_energy for item in components], dim=0
-        )
+        global_energies = torch.stack([item.global_energy for item in components], dim=0)
         local_energies = torch.stack([item.local_energy for item in components], dim=0)
         weights = self.weights.to(device=energies.device, dtype=energies.dtype)
         coordinate_values = [item.coordinates for item in components]

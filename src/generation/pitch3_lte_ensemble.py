@@ -1,4 +1,4 @@
-"""Auditable equal-weight scalar-energy ensembles for V3.3--V3.6 guidance."""
+"""Auditable equal-weight scalar-energy ensembles for V3.3--V3.7 guidance."""
 
 from __future__ import annotations
 
@@ -17,15 +17,10 @@ from .pitch3_lte_training import load_pitch3_lte_checkpoint
 _ENSEMBLE_KINDS = {
     "v3.3_family_round_robin_dual_potential": "equal_weight_scalar_energy_v33",
     "v3.4_structured_coordinate_family_energy": "equal_weight_scalar_energy_v34",
-    "v3.5_structured_anchored_coordinate_potential": (
-        "equal_weight_anchored_scalar_energy_v35"
-    ),
-    "v3.5r_minimal_global_anchored_direction": (
-        "equal_weight_anchored_scalar_energy_v35r"
-    ),
-    "v3.6_tail_calibrated_coordinate_regression": (
-        "equal_weight_anchored_scalar_energy_v36_tcr"
-    ),
+    "v3.5_structured_anchored_coordinate_potential": ("equal_weight_anchored_scalar_energy_v35"),
+    "v3.5r_minimal_global_anchored_direction": ("equal_weight_anchored_scalar_energy_v35r"),
+    "v3.6_tail_calibrated_coordinate_regression": ("equal_weight_anchored_scalar_energy_v36_tcr"),
+    "v3.7_direct_topology_energy": "equal_weight_direct_topology_energy_v37_dte",
 }
 
 
@@ -85,18 +80,22 @@ def build_pitch3_lte_ensemble_manifest(
     report = {
         "schema_version": 1,
         "stage": (
-            "pitch3_lte_v36_tcr_ensemble"
-            if ensemble_kind == "equal_weight_anchored_scalar_energy_v36_tcr"
+            "pitch3_lte_v37_dte_ensemble"
+            if ensemble_kind == "equal_weight_direct_topology_energy_v37_dte"
             else (
-                "pitch3_lte_v35r_ensemble"
-                if ensemble_kind == "equal_weight_anchored_scalar_energy_v35r"
+                "pitch3_lte_v36_tcr_ensemble"
+                if ensemble_kind == "equal_weight_anchored_scalar_energy_v36_tcr"
                 else (
-                    "pitch3_lte_v35_ensemble"
-                    if ensemble_kind == "equal_weight_anchored_scalar_energy_v35"
+                    "pitch3_lte_v35r_ensemble"
+                    if ensemble_kind == "equal_weight_anchored_scalar_energy_v35r"
                     else (
-                        "pitch3_lte_v34_ensemble"
-                        if ensemble_kind == "equal_weight_scalar_energy_v34"
-                        else "pitch3_lte_v33_ensemble"
+                        "pitch3_lte_v35_ensemble"
+                        if ensemble_kind == "equal_weight_anchored_scalar_energy_v35"
+                        else (
+                            "pitch3_lte_v34_ensemble"
+                            if ensemble_kind == "equal_weight_scalar_energy_v34"
+                            else "pitch3_lte_v33_ensemble"
+                        )
                     )
                 )
             )
@@ -134,9 +133,10 @@ def load_pitch3_lte_ensemble(
         # architecture field became explicit in V3.4.
         revision = "v3.3_family_round_robin_dual_potential"
     expected_kind = _ENSEMBLE_KINDS.get(revision)
-    if payload.get("model_family") != LTE_MODEL_FAMILY or payload.get(
-        "ensemble_kind"
-    ) != expected_kind:
+    if (
+        payload.get("model_family") != LTE_MODEL_FAMILY
+        or payload.get("ensemble_kind") != expected_kind
+    ):
         raise LTSNContractError("invalid V3-LTE scalar-energy ensemble")
     members = payload.get("members", [])
     if len(members) < 2 or len(members) != int(payload.get("member_count", -1)):
@@ -152,9 +152,7 @@ def load_pitch3_lte_ensemble(
         )
         if metadata.get("fingerprint_json_sha256") != payload.get(
             "fingerprint_json_sha256"
-        ) or metadata.get("training_manifest_sha256") != payload.get(
-            "training_manifest_sha256"
-        ):
+        ) or metadata.get("training_manifest_sha256") != payload.get("training_manifest_sha256"):
             raise LTSNContractError("V3-LTE ensemble member detached from ensemble contract")
         if metadata.get("architecture_revision") != revision:
             raise LTSNContractError("V3-LTE ensemble member architecture changed")

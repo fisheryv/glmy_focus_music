@@ -165,9 +165,7 @@ def test_lte_multi_gpu_merge_keeps_prompt_groups_disjoint(tmp_path) -> None:
     assert rerun["dataset_plan_sha256"] == result["dataset_plan_sha256"]
     assert rerun["replaced_legacy_plan_sha256"] is None
     (tmp_path / "pitch3_lte_dataset_summary.json").unlink()
-    recovered = validate_pitch3_lte_dataset_preflight(
-        tmp_path / "pitch3_lte_examples.csv"
-    )
+    recovered = validate_pitch3_lte_dataset_preflight(tmp_path / "pitch3_lte_examples.csv")
     assert recovered["local_preflight_passed"] is True
     assert recovered["dataset_manifest_sha256"] == result["dataset_manifest_sha256"]
     assert recovered["preflight_source"] == "recomputed_from_canonical_plan_and_manifest"
@@ -271,10 +269,7 @@ def test_lte_model_losses_and_one_shot_guidance() -> None:
         "local_flat",
     }
     assert "local_shape" not in anchored_direction_flat
-    assert all(
-        torch.isfinite(value) and value >= 0
-        for value in anchored_direction_flat.values()
-    )
+    assert all(torch.isfinite(value) and value >= 0 for value in anchored_direction_flat.values())
 
     residual_model = PromptConditionedTopologyEnergy(
         Pitch3LTEConfig(
@@ -339,17 +334,12 @@ def test_lte_model_losses_and_one_shot_guidance() -> None:
     ).eval()
     v34_latent_state = v34_model.encode_latent(latent, latent_mask)
     v34_prompt_state = v34_model.encode_prompt(text, text_mask)
-    v34_components = v34_model.potential_components_from_states(
-        v34_latent_state, v34_prompt_state
-    )
+    v34_components = v34_model.potential_components_from_states(v34_latent_state, v34_prompt_state)
     assert v34_components.coordinates is not None
     below = torch.relu(v34_model.coordinate_lower - v34_components.coordinates)
     above = torch.relu(v34_components.coordinates - v34_model.coordinate_upper)
     analytic = torch.log1p(
-        (
-            (below.square() + above.square())
-            * v34_model.coordinate_distance_weights
-        ).sum(dim=1)
+        ((below.square() + above.square()) * v34_model.coordinate_distance_weights).sum(dim=1)
     )
     assert v34_components.coordinates.shape == (8, 3)
     assert torch.allclose(v34_components.global_energy, analytic)
@@ -416,6 +406,37 @@ def test_lte_model_losses_and_one_shot_guidance() -> None:
         anchor_attention_mask=latent_mask,
     )
     assert torch.count_nonzero(moved.local_energy) > 0
+
+    v37_model = PromptConditionedTopologyEnergy(
+        Pitch3LTEConfig(
+            model_dim=16,
+            transformer_heads=4,
+            transformer_layers=1,
+            feedforward_dim=32,
+            temporal_stride=2,
+            dropout=0.0,
+            fusion_mode="latent_primary_residual_v31",
+            prompt_residual_scale=0.1,
+            latent_stem_mode="dual_rms_v32",
+            potential_mode="direct_anchored_v37",
+        )
+    ).eval()
+    v37_current = latent.detach().clone().requires_grad_(True)
+    v37 = v37_model.potential_components(
+        v37_current,
+        latent_mask,
+        text,
+        text_mask,
+        anchor_latent=latent.detach(),
+        anchor_attention_mask=latent_mask,
+    )
+    assert v37.coordinates is not None and v37.coordinates.shape == (8, 3)
+    assert torch.all(v37.global_energy > 0)
+    assert torch.count_nonzero(v37.local_energy) == 0
+    v37.global_energy.sum().backward()
+    assert v37_current.grad is not None
+    assert torch.isfinite(v37_current.grad).all()
+    assert torch.count_nonzero(v37_current.grad) > 0
 
     structured_batch = {
         **batch,
@@ -685,9 +706,7 @@ def test_lte_v36_tcr_frozen_training_contract() -> None:
         load_pitch3_lte_config,
     )
 
-    config_path = (
-        Path(__file__).resolve().parents[1] / "configs" / "pitch3_lte_v36_tcr.toml"
-    )
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "pitch3_lte_v36_tcr.toml"
     model, training = load_pitch3_lte_config(config_path)
     assert model.potential_mode == "structured_anchored_v35"
     assert training.training_schedule == "structured_anchored_global_then_local_v36_tcr"
@@ -717,6 +736,52 @@ def test_lte_v36_tcr_frozen_training_contract() -> None:
         "local_flat",
     )
     assert set(_loss_component_weights(training, enabled)) == set(enabled)
+
+
+@pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")
+def test_lte_v37_dte_frozen_training_contract() -> None:
+    from generation.pitch3_lte_ensemble import _ENSEMBLE_KINDS
+    from generation.pitch3_lte_training import (
+        _direct_energy_coordinate_contract,
+        _loss_component_weights,
+        load_pitch3_lte_config,
+    )
+
+    config_path = Path(__file__).resolve().parents[1] / "configs" / "pitch3_lte_v37_dte.toml"
+    model, training = load_pitch3_lte_config(config_path)
+    assert model.potential_mode == "direct_anchored_v37"
+    assert model.prompt_residual_scale == pytest.approx(0.1)
+    assert training.training_schedule == "direct_energy_anchored_global_then_local_v37_dte"
+    assert training.coordinate_width_normalized is True
+    assert training.coordinate_loss_weight == pytest.approx(0.25)
+    assert training.outside_tail_coordinate_weight == 0
+    assert training.local_objective == "anchored_direction_flat_v35r"
+    assert training.local_learning_rate == pytest.approx(2e-5)
+    assert training.global_value_base_only is True
+    assert training.local_shape_weight == 0
+    assert (
+        training.boundary_region_weight,
+        training.band_component_weight,
+        training.coordinate_fd_weight,
+        training.coordinate_prompt_consistency_weight,
+    ) == (0, 0, 0, 0)
+    assert (
+        _ENSEMBLE_KINDS["v3.7_direct_topology_energy"]
+        == "equal_weight_direct_topology_energy_v37_dte"
+    )
+    enabled = (
+        "value",
+        "prompt_rank",
+        "coordinate",
+        "family_listwise",
+        "local_direction",
+        "local_flat",
+    )
+    assert set(_loss_component_weights(training, enabled)) == set(enabled)
+    contract = _direct_energy_coordinate_contract(
+        [SimpleNamespace(source_kind="base_step4_seed")], model
+    )
+    assert contract["energy_coupling"] == "none_auxiliary_only"
 
 
 @pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")
