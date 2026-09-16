@@ -1117,8 +1117,11 @@ def _loss_component_weights(
         "coordinate_prompt_consistency": training.coordinate_prompt_consistency_weight,
     }
     weights = {name: float(configured[name]) for name in names}
-    if any(value <= 0 for value in weights.values()):
-        raise LTSNContractError("V3-LTE enabled loss component has non-positive weight")
+    invalid = {name: value for name, value in weights.items() if value <= 0}
+    if invalid:
+        raise LTSNContractError(
+            f"V3-LTE enabled loss component has non-positive weight: {invalid}"
+        )
     return weights
 
 
@@ -1506,6 +1509,18 @@ def pitch3_lte_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _stabilize_loss_normalizer_medians(
+    medians: Mapping[str, float],
+) -> dict[str, float]:
+    stabilized = dict(medians)
+    if (
+        "coordinate_prompt_consistency" in stabilized
+        and stabilized["coordinate_prompt_consistency"] <= 0
+    ):
+        stabilized["coordinate_prompt_consistency"] = stabilized.get("coordinate", 1.0)
+    return stabilized
+
+
 def _loss_normalizers(
     model: PromptConditionedTopologyEnergy,
     loader: DataLoader[dict[str, Any]],
@@ -1561,9 +1576,9 @@ def _loss_normalizers(
                 value = float(loss.detach().cpu())
                 if math.isfinite(value) and value > 0:
                     values[name].append(value)
-    medians = {name: float(np.median(items)) if items else 0.0 for name, items in values.items()}
-    if medians.get("coordinate_prompt_consistency", 0.0) <= 0:
-        medians["coordinate_prompt_consistency"] = medians.get("coordinate", 1.0)
+    medians = _stabilize_loss_normalizer_medians(
+        {name: float(np.median(items)) if items else 0.0 for name, items in values.items()}
+    )
     if any(value <= 0 or not math.isfinite(value) for value in medians.values()):
         raise LTSNContractError("V3-LTE first-epoch loss normalization found an empty component")
     normalizers = dict(medians)

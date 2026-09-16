@@ -612,7 +612,11 @@ def test_lte_v34_full_family_sampler_uses_all_base_rows() -> None:
 @pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")
 def test_lte_v35r_frozen_training_contract() -> None:
     from generation.pitch3_lte_ensemble import _ENSEMBLE_KINDS
-    from generation.pitch3_lte_training import load_pitch3_lte_config
+    from generation.pitch3_lte_training import (
+        _loss_component_weights,
+        _stabilize_loss_normalizer_medians,
+        load_pitch3_lte_config,
+    )
 
     config_path = Path(__file__).resolve().parents[1] / "configs" / "pitch3_lte_v35r.toml"
     model, training = load_pitch3_lte_config(config_path)
@@ -632,6 +636,18 @@ def test_lte_v35r_frozen_training_contract() -> None:
         _ENSEMBLE_KINDS["v3.5r_minimal_global_anchored_direction"]
         == "equal_weight_anchored_scalar_energy_v35r"
     )
+    enabled = {
+        "value": 1.0,
+        "prompt_rank": 1.0,
+        "coordinate": 1.0,
+        "family_listwise": 1.0,
+        "local_direction": 1.0,
+        "local_flat": 1.0,
+    }
+    stabilized = _stabilize_loss_normalizer_medians(enabled)
+    assert stabilized == enabled
+    assert "coordinate_prompt_consistency" not in stabilized
+    assert set(_loss_component_weights(training, tuple(stabilized))) == set(enabled)
 
 
 @pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")
