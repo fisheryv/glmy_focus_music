@@ -447,6 +447,33 @@ def test_lte_model_losses_and_one_shot_guidance() -> None:
         "coordinate_prompt_consistency",
     } <= set(structured_losses)
     assert all(torch.isfinite(value) and value >= 0 for value in structured_losses.values())
+    tcr_target = torch.tensor(
+        [
+            [-1.0, 0.5, 0.5],
+            [2.0, 0.5, 0.5],
+            [0.5, -1.0, 0.5],
+            [0.5, 2.0, 0.5],
+            [0.5, 0.5, -1.0],
+            [0.5, 0.5, 2.0],
+            [0.5, 0.5, 0.5],
+            [0.5, 0.5, 0.5],
+        ]
+    )
+    tcr_losses = pitch3_lte_raw_losses(
+        predicted,
+        {**structured_batch, "coordinates": tcr_target},
+        huber_delta=1.0,
+        rank_min_delta=1e-6,
+        predicted_coordinates=tcr_target + 0.2,
+        include_coordinate_loss=True,
+        coordinate_width_normalized=True,
+        include_outside_tail_coordinate=True,
+        outside_tail_strata_weights=((8 / 6, 8 / 6),) * 3,
+        coordinate_lower=(0.0, 0.0, 0.0),
+        coordinate_upper=(1.0, 1.0, 1.0),
+    )
+    assert tcr_losses["coordinate"].item() == pytest.approx(0.02)
+    assert tcr_losses["outside_tail_coordinate"].item() == pytest.approx(0.02)
     ensemble = Pitch3LTEEnergyEnsemble([dual_model.eval(), v33_model])
     ensemble_energy = ensemble(latent, latent_mask, text, text_mask).energy
     expected_energy = 0.5 * (
@@ -648,6 +675,48 @@ def test_lte_v35r_frozen_training_contract() -> None:
     assert stabilized == enabled
     assert "coordinate_prompt_consistency" not in stabilized
     assert set(_loss_component_weights(training, tuple(stabilized))) == set(enabled)
+
+
+@pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")
+def test_lte_v36_tcr_frozen_training_contract() -> None:
+    from generation.pitch3_lte_ensemble import _ENSEMBLE_KINDS
+    from generation.pitch3_lte_training import (
+        _loss_component_weights,
+        load_pitch3_lte_config,
+    )
+
+    config_path = (
+        Path(__file__).resolve().parents[1] / "configs" / "pitch3_lte_v36_tcr.toml"
+    )
+    model, training = load_pitch3_lte_config(config_path)
+    assert model.potential_mode == "structured_anchored_v35"
+    assert training.training_schedule == "structured_anchored_global_then_local_v36_tcr"
+    assert training.coordinate_width_normalized is True
+    assert training.outside_tail_coordinate_weight == pytest.approx(1.0)
+    assert training.local_objective == "anchored_direction_flat_v35r"
+    assert training.local_learning_rate == pytest.approx(2e-5)
+    assert training.global_value_base_only is True
+    assert training.local_shape_weight == 0
+    assert (
+        training.boundary_region_weight,
+        training.band_component_weight,
+        training.coordinate_fd_weight,
+        training.coordinate_prompt_consistency_weight,
+    ) == (0, 0, 0, 0)
+    assert (
+        _ENSEMBLE_KINDS["v3.6_tail_calibrated_coordinate_regression"]
+        == "equal_weight_anchored_scalar_energy_v36_tcr"
+    )
+    enabled = (
+        "value",
+        "prompt_rank",
+        "coordinate",
+        "outside_tail_coordinate",
+        "family_listwise",
+        "local_direction",
+        "local_flat",
+    )
+    assert set(_loss_component_weights(training, enabled)) == set(enabled)
 
 
 @pytest.mark.skipif(importlib.util.find_spec("torch") is None, reason="torch is server-only")

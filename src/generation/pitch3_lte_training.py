@@ -81,6 +81,8 @@ class Pitch3LTETrainingConfig:
     global_stage_minimum_epochs: int = 0
     global_early_stopping_patience: int = 0
     local_learning_rate: float = 0.0
+    coordinate_width_normalized: bool = False
+    outside_tail_coordinate_weight: float = 0.0
 
     def validate(self) -> None:
         if self.max_epochs < 1 or not 1 <= self.minimum_epochs <= self.max_epochs:
@@ -91,6 +93,8 @@ class Pitch3LTETrainingConfig:
             raise ValueError("V3-LTE optimizer settings are invalid")
         if self.local_learning_rate < 0:
             raise ValueError("V3-LTE local learning rate must be non-negative")
+        if self.outside_tail_coordinate_weight < 0:
+            raise ValueError("V3-LTE outside-tail coordinate weight must be non-negative")
         if self.huber_delta <= 0 or self.rank_min_delta <= 0:
             raise ValueError("V3-LTE robust-loss thresholds must be positive")
         if self.local_objective not in {
@@ -135,6 +139,7 @@ class Pitch3LTETrainingConfig:
             "structured_global_then_local_v34",
             "structured_anchored_global_then_local_v35",
             "structured_anchored_global_then_local_v35r",
+            "structured_anchored_global_then_local_v36_tcr",
         }:
             raise ValueError("unknown V3-LTE training schedule")
         if self.training_schedule in {
@@ -142,6 +147,7 @@ class Pitch3LTETrainingConfig:
             "structured_global_then_local_v34",
             "structured_anchored_global_then_local_v35",
             "structured_anchored_global_then_local_v35r",
+            "structured_anchored_global_then_local_v36_tcr",
         }:
             if not 1 <= self.global_stage_epochs < self.max_epochs:
                 raise ValueError("V3.3 global stage must end before max_epochs")
@@ -156,6 +162,7 @@ class Pitch3LTETrainingConfig:
             if self.training_schedule not in {
                 "structured_anchored_global_then_local_v35",
                 "structured_anchored_global_then_local_v35r",
+                "structured_anchored_global_then_local_v36_tcr",
             }:
                 if self.local_anchor_weight <= 0:
                     raise ValueError("V3.3/V3.4 require a positive soft local anchor")
@@ -219,6 +226,8 @@ class Pitch3LTETrainingConfig:
                 or self.local_anchor_weight != 0
                 or self.local_shape_weight != 0
                 or self.local_learning_rate <= 0
+                or self.coordinate_width_normalized
+                or self.outside_tail_coordinate_weight != 0
                 or not 1 <= self.global_stage_minimum_epochs <= self.global_stage_epochs
                 or self.global_early_stopping_patience < 1
             ):
@@ -226,6 +235,30 @@ class Pitch3LTETrainingConfig:
                     "V3.5R requires the minimal base-only global objective, strict "
                     "anchoring, direction/flat local supervision, and an independent "
                     "local learning rate"
+                )
+        if self.training_schedule == "structured_anchored_global_then_local_v36_tcr":
+            if (
+                self.local_objective != "anchored_direction_flat_v35r"
+                or self.coordinate_loss_weight <= 0
+                or self.outside_tail_coordinate_weight <= 0
+                or not self.coordinate_width_normalized
+                or self.family_listwise_weight <= 0
+                or any(weight != 0 for weight in structured_weights)
+                or not self.full_family_global_batches
+                or self.batch_pairing_mode != "family_round_robin_v33"
+                or self.prompt_groups_per_batch != 2
+                or not self.cross_prompt_family_only
+                or not self.global_value_base_only
+                or self.local_anchor_weight != 0
+                or self.local_shape_weight != 0
+                or self.local_learning_rate <= 0
+                or not 1 <= self.global_stage_minimum_epochs <= self.global_stage_epochs
+                or self.global_early_stopping_patience < 1
+            ):
+                raise ValueError(
+                    "V3.6-TCR requires width-normalized coordinate regression, "
+                    "outside-tail supervision, strict anchoring, and the V3.5R "
+                    "direction/flat local objective"
                 )
         if not 0.0 <= self.ema_decay < 1.0:
             raise ValueError("V3-LTE EMA decay must lie in [0,1)")
@@ -669,6 +702,9 @@ def pitch3_lte_raw_losses(
     value_base_only: bool = False,
     predicted_coordinates: Tensor | None = None,
     include_coordinate_loss: bool = False,
+    coordinate_width_normalized: bool = False,
+    include_outside_tail_coordinate: bool = False,
+    outside_tail_strata_weights: Sequence[Sequence[float]] = (),
     include_family_listwise: bool = False,
     family_rank_temperature: float = 0.1,
     predicted_coordinates_shuffled: Tensor | None = None,
@@ -687,10 +723,11 @@ def pitch3_lte_raw_losses(
     value_terms = F.huber_loss(
         predicted.float(), target, delta=huber_delta, reduction="none"
     )
-    value_mask = target.new_tensor(
+    base_mask = target.new_tensor(
         [kind == "base_step4_seed" for kind in batch["source_kind"]],
         dtype=torch.bool,
     )
+    value_mask = base_mask
     if not value_base_only:
         value_mask = torch.ones_like(value_mask)
     if not bool(value_mask.any()):
@@ -761,16 +798,73 @@ def pitch3_lte_raw_losses(
         "value": value,
         "prompt_rank": torch.stack(rank_terms).mean() if rank_terms else zero,
     }
+    coordinate_geometry_loss = (
+        coordinate_width_normalized or include_outside_tail_coordinate
+    )
+    if coordinate_geometry_loss:
+        if predicted_coordinates is None or predicted_coordinates.shape != batch[
+            "coordinates"
+        ].shape:
+            raise LTSNContractError("V3.6-TCR coordinate predictions are missing or malformed")
+        if len(coordinate_lower) != 3 or len(coordinate_upper) != 3:
+            raise LTSNContractError("V3.6-TCR frozen coordinate bounds are incomplete")
+        tcr_lower = predicted_coordinates.new_tensor(tuple(coordinate_lower))
+        tcr_upper = predicted_coordinates.new_tensor(tuple(coordinate_upper))
+        tcr_widths = tcr_upper - tcr_lower
+        if bool((tcr_widths <= 0).any()):
+            raise LTSNContractError("V3.6-TCR coordinate widths must be positive")
     if include_coordinate_loss:
         if predicted_coordinates is None or predicted_coordinates.shape != batch[
             "coordinates"
         ].shape:
             raise LTSNContractError("V3.4 coordinate predictions are missing or malformed")
+        coordinate_prediction = predicted_coordinates[value_mask].float()
+        coordinate_target = batch["coordinates"][value_mask].float()
+        if coordinate_width_normalized:
+            coordinate_prediction = coordinate_prediction / tcr_widths
+            coordinate_target = coordinate_target / tcr_widths
         losses["coordinate"] = F.huber_loss(
-            predicted_coordinates[value_mask].float(),
-            batch["coordinates"][value_mask].float(),
+            coordinate_prediction,
+            coordinate_target,
             delta=huber_delta,
         )
+    if include_outside_tail_coordinate:
+        if len(outside_tail_strata_weights) != 3 or any(
+            len(values) != 2 or any(value <= 0 for value in values)
+            for values in outside_tail_strata_weights
+        ):
+            raise LTSNContractError("V3.6-TCR outside-tail stratum weights are invalid")
+        target_coordinates = batch["coordinates"].float()
+        normalized_error = (
+            predicted_coordinates.float() - target_coordinates
+        ) / tcr_widths
+        tail_weighted_sum = zero
+        for coordinate_index in range(3):
+            for side_index, stratum_mask in enumerate(
+                (
+                    base_mask
+                    & (
+                        target_coordinates[:, coordinate_index]
+                        < tcr_lower[coordinate_index]
+                    ),
+                    base_mask
+                    & (
+                        target_coordinates[:, coordinate_index]
+                        > tcr_upper[coordinate_index]
+                    ),
+                )
+            ):
+                if bool(stratum_mask.any()):
+                    stratum_error = normalized_error[stratum_mask, coordinate_index]
+                    tail_weighted_sum = tail_weighted_sum + float(
+                        outside_tail_strata_weights[coordinate_index][side_index]
+                    ) * F.huber_loss(
+                        stratum_error,
+                        torch.zeros_like(stratum_error),
+                        delta=huber_delta,
+                        reduction="sum",
+                    )
+        losses["outside_tail_coordinate"] = tail_weighted_sum / base_mask.sum().clamp_min(1)
     structured_coordinate_loss = any(
         (
             include_boundary_region,
@@ -1049,6 +1143,57 @@ def _coordinate_auxiliary_contract(
     }
 
 
+def _tail_coordinate_contract(
+    records: Sequence[Pitch3LTEExample],
+    model_config: Pitch3LTEConfig,
+) -> dict[str, Any]:
+    lower = np.asarray(model_config.coordinate_lower, dtype=np.float64)
+    upper = np.asarray(model_config.coordinate_upper, dtype=np.float64)
+    widths = upper - lower
+    if lower.shape != (3,) or upper.shape != (3,) or np.any(widths <= 0):
+        raise LTSNContractError("V3.6-TCR frozen coordinate bounds are invalid")
+    base_coordinates = np.asarray(
+        [
+            record.coordinates
+            for record in records
+            if record.source_kind == "base_step4_seed"
+        ],
+        dtype=np.float64,
+    )
+    if base_coordinates.ndim != 2 or base_coordinates.shape[1] != 3:
+        raise LTSNContractError("V3.6-TCR has no valid base coordinate targets")
+    strata_counts = []
+    strata_weights = []
+    base_count = int(base_coordinates.shape[0])
+    for coordinate_index in range(3):
+        below = int(
+            np.sum(base_coordinates[:, coordinate_index] < lower[coordinate_index])
+        )
+        above = int(
+            np.sum(base_coordinates[:, coordinate_index] > upper[coordinate_index])
+        )
+        if below <= 0 or above <= 0:
+            raise LTSNContractError(
+                f"V3.6-TCR coordinate {coordinate_index} has an empty outside-tail stratum"
+            )
+        strata_counts.append({"below": below, "above": above})
+        strata_weights.append(
+            [base_count / (6.0 * below), base_count / (6.0 * above)]
+        )
+    return {
+        "kind": "width_normalized_outside_tail_coordinate_v36",
+        "coordinate_lower": [float(value) for value in lower],
+        "coordinate_upper": [float(value) for value in upper],
+        "coordinate_widths": [float(value) for value in widths],
+        "base_samples": base_count,
+        "outside_tail_strata_counts": strata_counts,
+        "outside_tail_strata_weights": strata_weights,
+        "coordinate_reduction": "mean_huber_over_base_coordinates",
+        "tail_reduction": "count_weighted_equal_mean_over_six_coordinate_side_strata",
+        "source": "train_split_base_step4_only",
+    }
+
+
 def _raw_loss_kwargs(
     training: Pitch3LTETrainingConfig,
     local_scales: Mapping[str, float],
@@ -1072,6 +1217,16 @@ def _raw_loss_kwargs(
         "energy_strata_weights": tuple(energy_strata["weights"]),
         "value_base_only": training.global_value_base_only,
         "include_coordinate_loss": include_structured and training.coordinate_loss_weight > 0,
+        "coordinate_width_normalized": (
+            include_structured and training.coordinate_width_normalized
+        ),
+        "include_outside_tail_coordinate": (
+            include_structured and training.outside_tail_coordinate_weight > 0
+        ),
+        "outside_tail_strata_weights": tuple(
+            tuple(float(value) for value in values)
+            for values in coordinate_auxiliary.get("outside_tail_strata_weights", ())
+        ),
         "include_family_listwise": include_structured and training.family_listwise_weight > 0,
         "family_rank_temperature": training.family_rank_temperature,
         "include_boundary_region": include_structured and training.boundary_region_weight > 0,
@@ -1110,6 +1265,7 @@ def _loss_component_weights(
         "local_shape": training.local_shape_weight,
         "local_flat": training.local_flat_weight,
         "coordinate": training.coordinate_loss_weight,
+        "outside_tail_coordinate": training.outside_tail_coordinate_weight,
         "family_listwise": training.family_listwise_weight,
         "boundary_region": training.boundary_region_weight,
         "band_component": training.band_component_weight,
@@ -1223,6 +1379,7 @@ def _training_stage(training: Pitch3LTETrainingConfig, epoch: int) -> str:
         "structured_global_then_local_v34",
         "structured_anchored_global_then_local_v35",
         "structured_anchored_global_then_local_v35r",
+        "structured_anchored_global_then_local_v36_tcr",
     }:
         return "joint"
     return "global" if epoch <= training.global_stage_epochs else "local"
@@ -1238,6 +1395,7 @@ def _set_training_stage_trainable(
         "structured_global_then_local_v34",
         "structured_anchored_global_then_local_v35",
         "structured_anchored_global_then_local_v35r",
+        "structured_anchored_global_then_local_v36_tcr",
     }:
         _set_prompt_interaction_trainable(model, stage != "prompt_frozen")
         model.train()
@@ -1533,6 +1691,8 @@ def _loss_normalizers(
     names = ["value", "prompt_rank"]
     if training.coordinate_loss_weight > 0:
         names.append("coordinate")
+    if training.outside_tail_coordinate_weight > 0:
+        names.append("outside_tail_coordinate")
     if training.family_listwise_weight > 0:
         names.append("family_listwise")
     if training.boundary_region_weight > 0:
@@ -1691,7 +1851,11 @@ def train_pitch3_lte(
     v35r_enabled = (
         training.training_schedule == "structured_anchored_global_then_local_v35r"
     )
-    anchored_v35_enabled = v35_enabled or v35r_enabled
+    v36_enabled = (
+        training.training_schedule == "structured_anchored_global_then_local_v36_tcr"
+    )
+    minimal_anchored_enabled = v35r_enabled or v36_enabled
+    anchored_v35_enabled = v35_enabled or minimal_anchored_enabled
     staged_training = v33_enabled or v34_enabled or anchored_v35_enabled
     if v33_enabled != (model_config.potential_mode == "global_local_v33"):
         raise LTSNContractError(
@@ -1779,7 +1943,11 @@ def train_pitch3_lte(
     coordinate_auxiliary = (
         _coordinate_auxiliary_contract(train_records, model_config)
         if v35_enabled
-        else {}
+        else (
+            _tail_coordinate_contract(train_records, model_config)
+            if v36_enabled
+            else {}
+        )
     )
     energy_strata_records = (
         [record for record in train_records if record.source_kind == "base_step4_seed"]
@@ -1900,24 +2068,29 @@ def train_pitch3_lte(
         "device": device_name,
         "precision": "bf16_forward_fp32_loss" if training.use_bf16 else "fp32",
         "architecture_revision": (
-            "v3.5r_minimal_global_anchored_direction"
-            if v35r_enabled
+            "v3.6_tail_calibrated_coordinate_regression"
+            if v36_enabled
             else (
-                "v3.5_structured_anchored_coordinate_potential"
-                if model_config.potential_mode == "structured_anchored_v35"
+                "v3.5r_minimal_global_anchored_direction"
+                if v35r_enabled
                 else (
-                    "v3.4_structured_coordinate_family_energy"
-                    if model_config.potential_mode == "structured_coordinate_v34"
+                    "v3.5_structured_anchored_coordinate_potential"
+                    if model_config.potential_mode == "structured_anchored_v35"
                     else (
-                        "v3.3_family_round_robin_dual_potential"
-                        if model_config.potential_mode == "global_local_v33"
+                        "v3.4_structured_coordinate_family_energy"
+                        if model_config.potential_mode == "structured_coordinate_v34"
                         else (
-                            "v3.2_dual_rms_latent_primary_prompt_residual"
-                            if model_config.latent_stem_mode == "dual_rms_v32"
+                            "v3.3_family_round_robin_dual_potential"
+                            if model_config.potential_mode == "global_local_v33"
                             else (
-                                "v3.1_latent_primary_prompt_residual"
-                                if model_config.fusion_mode == "latent_primary_residual_v31"
-                                else "v3_joint_fusion"
+                                "v3.2_dual_rms_latent_primary_prompt_residual"
+                                if model_config.latent_stem_mode == "dual_rms_v32"
+                                else (
+                                    "v3.1_latent_primary_prompt_residual"
+                                    if model_config.fusion_mode
+                                    == "latent_primary_residual_v31"
+                                    else "v3_joint_fusion"
+                                )
                             )
                         )
                     )
@@ -1965,13 +2138,19 @@ def train_pitch3_lte(
                 else None
             ),
             "coordinate_loss_weight": training.coordinate_loss_weight,
+            "coordinate_width_normalized": training.coordinate_width_normalized,
+            "outside_tail_coordinate_weight": (
+                training.outside_tail_coordinate_weight
+            ),
             "family_listwise_weight": training.family_listwise_weight,
             "family_rank_temperature": training.family_rank_temperature,
             "full_family_global_batch_size": (
                 64 if v34_enabled or anchored_v35_enabled else None
             ),
             "full_family_global_batches_per_family": (
-                2 if v35_enabled else (1 if v34_enabled or v35r_enabled else None)
+                2
+                if v35_enabled
+                else (1 if v34_enabled or minimal_anchored_enabled else None)
             ),
             "frozen_band_formula": (
                 "sum_i(weight_i*(relu(lower_i-q_i)^2+relu(q_i-upper_i)^2))"
@@ -1983,7 +2162,9 @@ def train_pitch3_lte(
                 if anchored_v35_enabled
                 else None
             ),
-            "coordinate_auxiliary": coordinate_auxiliary if v35_enabled else None,
+            "coordinate_auxiliary": (
+                coordinate_auxiliary if v35_enabled or v36_enabled else None
+            ),
             "boundary_region_weight": training.boundary_region_weight,
             "band_component_weight": training.band_component_weight,
             "coordinate_fd_weight": training.coordinate_fd_weight,
@@ -1993,11 +2174,17 @@ def train_pitch3_lte(
             "global_stage_minimum_epochs": training.global_stage_minimum_epochs,
             "global_early_stopping_patience": training.global_early_stopping_patience,
             "global_objective": (
-                "base_value_coordinate_family_listwise" if v35r_enabled else None
+                "base_value_rank_family_width_normalized_coordinate_outside_tail"
+                if v36_enabled
+                else (
+                    "base_value_coordinate_family_listwise" if v35r_enabled else None
+                )
             ),
-            "local_objective": training.local_objective if v35r_enabled else None,
+            "local_objective": (
+                training.local_objective if minimal_anchored_enabled else None
+            ),
             "local_learning_rate": (
-                training.local_learning_rate if v35r_enabled else None
+                training.local_learning_rate if minimal_anchored_enabled else None
             ),
             "auxiliary_losses_disabled": (
                 [
@@ -2006,7 +2193,7 @@ def train_pitch3_lte(
                     "coordinate_fd",
                     "coordinate_prompt_consistency",
                 ]
-                if v35r_enabled
+                if minimal_anchored_enabled
                 else None
             ),
             "evaluation_band_formula_changed": False,
@@ -2071,6 +2258,7 @@ def train_pitch3_lte(
         "prompt_rank",
         "cross_prompt_rank",
         "coordinate",
+        "outside_tail_coordinate",
         "family_listwise",
         "boundary_region",
         "band_component",
@@ -2387,7 +2575,7 @@ def train_pitch3_lte(
                     ],
                     lr=(
                         training.local_learning_rate
-                        if v35r_enabled
+                        if minimal_anchored_enabled
                         else training.learning_rate
                     ),
                     weight_decay=training.weight_decay,

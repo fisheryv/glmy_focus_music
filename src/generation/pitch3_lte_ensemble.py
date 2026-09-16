@@ -1,4 +1,4 @@
-"""Auditable equal-weight scalar-energy ensembles for V3.3--V3.5R guidance."""
+"""Auditable equal-weight scalar-energy ensembles for V3.3--V3.6 guidance."""
 
 from __future__ import annotations
 
@@ -22,6 +22,9 @@ _ENSEMBLE_KINDS = {
     ),
     "v3.5r_minimal_global_anchored_direction": (
         "equal_weight_anchored_scalar_energy_v35r"
+    ),
+    "v3.6_tail_calibrated_coordinate_regression": (
+        "equal_weight_anchored_scalar_energy_v36_tcr"
     ),
 }
 
@@ -82,15 +85,19 @@ def build_pitch3_lte_ensemble_manifest(
     report = {
         "schema_version": 1,
         "stage": (
-            "pitch3_lte_v35r_ensemble"
-            if ensemble_kind == "equal_weight_anchored_scalar_energy_v35r"
+            "pitch3_lte_v36_tcr_ensemble"
+            if ensemble_kind == "equal_weight_anchored_scalar_energy_v36_tcr"
             else (
-                "pitch3_lte_v35_ensemble"
-                if ensemble_kind == "equal_weight_anchored_scalar_energy_v35"
+                "pitch3_lte_v35r_ensemble"
+                if ensemble_kind == "equal_weight_anchored_scalar_energy_v35r"
                 else (
-                    "pitch3_lte_v34_ensemble"
-                    if ensemble_kind == "equal_weight_scalar_energy_v34"
-                    else "pitch3_lte_v33_ensemble"
+                    "pitch3_lte_v35_ensemble"
+                    if ensemble_kind == "equal_weight_anchored_scalar_energy_v35"
+                    else (
+                        "pitch3_lte_v34_ensemble"
+                        if ensemble_kind == "equal_weight_scalar_energy_v34"
+                        else "pitch3_lte_v33_ensemble"
+                    )
                 )
             )
         ),
