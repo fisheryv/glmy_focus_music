@@ -8,6 +8,7 @@ STAGE="${1:-all}"
 DATA_ROOT="${LTE_DATA_ROOT:-${PROJECT_ROOT}/runs/pitch3_lte_v3}"
 RUN_ROOT="${LTE_V33_RUN_ROOT:-${PROJECT_ROOT}/runs/pitch3_lte_v33}"
 CONFIG="${LTE_TRAIN_CONFIG:-${PROJECT_ROOT}/configs/pitch3_lte_v33.toml}"
+FINGERPRINT="${LTE_FINGERPRINT:-${PROJECT_ROOT}/metadata/focus_pitch3_fingerprint_v1.json}"
 VERSION_LABEL="${LTE_VERSION_LABEL:-V3.3}"
 SOURCE_MANIFEST="${LTE_SOURCE_MANIFEST:-${PROJECT_ROOT}/runs/pitch3_ltch/ood_v2/pitch3_training_manifest_augmented.csv}"
 DATA_DIR="${DATA_ROOT}/exact_local_dataset"
@@ -31,13 +32,17 @@ seed_root() {
 
 train_all() {
   local pids=()
+  local training_args=()
+  if [[ "${LTE_GLOBAL_ONLY:-0}" == "1" ]]; then
+    training_args+=(--global-only)
+  fi
   local index seed device root
   for index in "${!SEEDS[@]}"; do
     seed="${SEEDS[$index]}"
     device="${DEVICES[$index]}"
     root="$(seed_root "${seed}")"
     "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/train_pitch3_lte.py" \
-      --fingerprint "${PROJECT_ROOT}/metadata/focus_pitch3_fingerprint_v1.json" \
+      --fingerprint "${FINGERPRINT}" "${training_args[@]}" \
       --manifest "${DATA_DIR}/pitch3_lte_examples.csv" \
       --config "${CONFIG}" \
       --seed "${seed}" \
@@ -77,7 +82,7 @@ screen_seeds() {
     checkpoint="${root}/models/pitch3_lte_seed_${seed}.pt"
     checkpoint_hash="$("${PYTHON_BIN}" -c "import json; print(json.load(open('${root}/models/pitch3_lte_manifest.json'))['checkpoint_sha256'])")"
     "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_pitch3_lte.py" screen-development \
-      --fingerprint "${PROJECT_ROOT}/metadata/focus_pitch3_fingerprint_v1.json" \
+      --fingerprint "${FINGERPRINT}" \
       --manifest "${DATA_DIR}/pitch3_lte_examples.csv" \
       --checkpoint "${checkpoint}" \
       --checkpoint-sha256 "${checkpoint_hash}" \
@@ -98,7 +103,7 @@ screen_seeds() {
 
 screen_ensemble_model_only() {
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_pitch3_lte.py" screen-development \
-    --fingerprint "${PROJECT_ROOT}/metadata/focus_pitch3_fingerprint_v1.json" \
+    --fingerprint "${FINGERPRINT}" \
     --manifest "${DATA_DIR}/pitch3_lte_examples.csv" \
     --ensemble-manifest "${ENSEMBLE_MANIFEST}" \
     --output-dir "${MODEL_SCREEN_DIR}" \
@@ -114,7 +119,7 @@ development_guidance() {
   require_model_screen
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_pitch3_lte.py" materialize-guidance \
     --root "${PROJECT_ROOT}" \
-    --fingerprint "${PROJECT_ROOT}/metadata/focus_pitch3_fingerprint_v1.json" \
+    --fingerprint "${FINGERPRINT}" \
     --manifest "${DATA_DIR}/pitch3_lte_examples.csv" \
     --source-manifest "${SOURCE_MANIFEST}" \
     --ensemble-manifest "${ENSEMBLE_MANIFEST}" \
@@ -143,7 +148,7 @@ final_screen() {
     quality_args=(--quality-report "${QUALITY_REPORT}")
   fi
   "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/evaluate_pitch3_lte.py" screen-development \
-    --fingerprint "${PROJECT_ROOT}/metadata/focus_pitch3_fingerprint_v1.json" \
+    --fingerprint "${FINGERPRINT}" \
     --manifest "${DATA_DIR}/pitch3_lte_examples.csv" \
     --ensemble-manifest "${ENSEMBLE_MANIFEST}" \
     --guidance-summary "${GUIDANCE_DIR}/pitch3_lte_guidance_summary.json" \

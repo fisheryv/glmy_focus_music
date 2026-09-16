@@ -58,18 +58,18 @@
       0.7153788545162881,
       0.9553138629429081
     ],
-    "focus_band_logit_threshold": 2.206483518532511
+    "focus_band_logit_threshold": 2.20648351853251
   },
   "classifier": {
     "kind": "l2_logistic_regression",
     "coef": [
-      -5.882133904099835,
-      4.216280211182077,
-      -0.513873587690703
+      -5.882133904099832,
+      4.216280211182076,
+      -0.5138735876907002
     ],
-    "intercept": 0.7426335215372657,
+    "intercept": 0.742633521537265,
     "decision_threshold": 0.5,
-    "sha256": "1a4da790a0715932cd1a8af12efba9f3605946c38f3835d571ab4315af578a13"
+    "sha256": "d916bc45e747223e30a3a3ed61fbd638d5afdc4a150b5b1b28cec655b26ebbc4"
   },
   "evidence": {
     "primary": "validation/180s",

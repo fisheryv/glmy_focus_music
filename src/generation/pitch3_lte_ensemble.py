@@ -1,4 +1,4 @@
-"""Auditable equal-weight scalar-energy ensembles for V3.3--V3.7 guidance."""
+"""Auditable equal-weight scalar-energy ensembles for V3.3--V3.8 guidance."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ _ENSEMBLE_KINDS = {
     "v3.5r_minimal_global_anchored_direction": ("equal_weight_anchored_scalar_energy_v35r"),
     "v3.6_tail_calibrated_coordinate_regression": ("equal_weight_anchored_scalar_energy_v36_tcr"),
     "v3.7_direct_topology_energy": "equal_weight_direct_topology_energy_v37_dte",
+    "v3.8a_logit_stratified_rank_energy": "equal_weight_direct_topology_energy_v38a",
 }
 
 
@@ -38,6 +39,8 @@ def build_pitch3_lte_ensemble_manifest(
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         if payload.get("model_family") != LTE_MODEL_FAMILY:
             raise LTSNContractError("V3-LTE ensemble member has the wrong model family")
+        if payload.get("validation_scope") == "train_family_cv":
+            raise LTSNContractError("train-family CV checkpoints cannot form a guidance ensemble")
         member_revision = str(payload.get("architecture_revision", ""))
         if member_revision not in _ENSEMBLE_KINDS:
             raise LTSNContractError("V3-LTE ensemble member has an unsupported architecture")
@@ -61,6 +64,15 @@ def build_pitch3_lte_ensemble_manifest(
             "training_radius_ratio": payload["training_radius_ratio"],
             "maximum_guidance_update_ratio": payload["maximum_guidance_update_ratio"],
         }
+        if member_revision == "v3.8a_logit_stratified_rank_energy":
+            contract.update(
+                {
+                    "ranking_contract": payload["ranking_contract"],
+                    "source_training_config_sha256": payload["source_training_config_sha256"],
+                    "local_residual_mode": payload["local_residual_mode"],
+                    "validation_scope": payload["validation_scope"],
+                }
+            )
         if shared is None:
             shared = contract
         elif contract != shared:
@@ -80,7 +92,9 @@ def build_pitch3_lte_ensemble_manifest(
     report = {
         "schema_version": 1,
         "stage": (
-            "pitch3_lte_v37_dte_ensemble"
+            "pitch3_lte_v38a_ensemble"
+            if ensemble_kind == "equal_weight_direct_topology_energy_v38a"
+            else "pitch3_lte_v37_dte_ensemble"
             if ensemble_kind == "equal_weight_direct_topology_energy_v37_dte"
             else (
                 "pitch3_lte_v36_tcr_ensemble"
@@ -156,6 +170,18 @@ def load_pitch3_lte_ensemble(
             raise LTSNContractError("V3-LTE ensemble member detached from ensemble contract")
         if metadata.get("architecture_revision") != revision:
             raise LTSNContractError("V3-LTE ensemble member architecture changed")
+        if metadata.get("validation_scope") == "train_family_cv":
+            raise LTSNContractError("train-family CV checkpoints are diagnostic only")
+        if revision == "v3.8a_logit_stratified_rank_energy" and any(
+            metadata.get(key) != payload.get(key)
+            for key in (
+                "ranking_contract",
+                "source_training_config_sha256",
+                "local_residual_mode",
+                "validation_scope",
+            )
+        ):
+            raise LTSNContractError("V3.8-A ensemble training contracts differ")
         models.append(model)
         weights.append(float(member["weight"]))
     expected_weight = 1.0 / len(members)

@@ -121,3 +121,82 @@ bash scripts/run_pitch3_lte_v37_dte.sh model-screen
 The default run uses seeds `20260938 20260939 20260940` and devices from
 `LTE_DEVICES` (default `cuda:1 cuda:2 cuda:3`). Do not run `guidance` until the
 model-only development screen passes every frozen model gate.
+
+## V3.8-A logit ranking
+
+V3.8-A keeps the V3.7 model and energy readout, `Eglobal = softplus(a)`.
+Same-prompt ranking uses the explicit pre-softplus logit `a` at temperature 1.
+The family soft-Spearman term is replaced by RankNet on all sortable base pairs
+within each family: mean within each unordered energy-stratum pair, then mean
+over nonempty stratum pairs, then mean over families. The zero bucket and three
+positive-energy strata are fitted on the current training subset only. Pairs
+with `abs(exact_band_i - exact_band_j) <= 1e-6` are excluded, including ties.
+Value supervision, width-normalized coordinate auxiliary loss, anchored local
+direction/flat objective, and inference gates retain their V3.7 definitions.
+Ensembles average member energies; there is no ensemble training logit.
+
+Global loss normalization and validation loss use full-family base batches;
+local terms use prompt batches. `pitch3_lte_training_statistics.json` and
+`pitch3_lte_run_protocol.json` bind the fitted scales and selected sample IDs.
+The model revision is `v3.8a_logit_stratified_rank_energy` even though its model
+configuration deliberately retains `potential_mode = "direct_anchored_v37"`.
+
+Run the numerical tests in the server Torch environment first:
+
+```bash
+python -m pytest tests/test_pitch3_lte.py tests/test_pitch3_lte_v38a.py -ra
+export LTE_DEVICES="cuda:1 cuda:2 cuda:3"
+bash scripts/run_pitch3_lte_v38a.sh cv
+```
+
+`cv` is the default stage. It uses seed 20260941 and five deterministic folds
+of the original 20 train families, holding out four families per fold. All
+prompt variants, seeds, anchors and local pairs stay with their family. The
+original development families never enter CV training or selection. Each fold
+refits strata/scales on its 16 training families. The default CV run trains
+only global energy (`R=0`) and writes `runs/pitch3_lte_v38a/cv/` plus the
+hash-checked `pitch3_lte_cv_summary.json`. CV checkpoints cannot be loaded into
+the development screen, guidance, or a guidance ensemble.
+
+Matched V3.7 control, with the same CV seed and folds:
+
+```bash
+LTE_TRAIN_CONFIG="$PWD/configs/pitch3_lte_v37_dte.toml" \
+LTE_V38A_CV_ROOT="$PWD/runs/pitch3_lte_v38a/cv_v37_control" \
+bash scripts/run_pitch3_lte_v38a.sh cv
+```
+
+To measure the local residual increment in a separate output directory:
+
+```bash
+LTE_CV_GLOBAL_ONLY=0 \
+LTE_V38A_CV_ROOT="$PWD/runs/pitch3_lte_v38a/cv_with_local" \
+bash scripts/run_pitch3_lte_v38a.sh cv
+```
+
+The A/control comparison includes the corrected full-family normalization for
+A; their normalized loss totals are not directly comparable. Compare exact
+metrics. The summary reports all folds and never selects a model automatically.
+These CV runs retain the existing per-run global checkpoint rule (global gate
+deficit, minimum family correlation, then normalized loss); they do not change
+the published gates or claim independent qualification.
+
+Once the development experiment is specified, the existing three-seed workflow
+is available:
+
+```bash
+bash scripts/run_pitch3_lte_v38a.sh train
+bash scripts/run_pitch3_lte_v38a.sh ensemble
+bash scripts/run_pitch3_lte_v38a.sh model-screen
+# Equivalent: bash scripts/run_pitch3_lte_v38a.sh all
+```
+
+Default seeds are `20260941 20260942 20260943`; outputs are in
+`runs/pitch3_lte_v38a/`. These full-data training commands retain the existing
+development-based checkpoint selection, so they are not a single-look blind
+evaluation. Use CV results to specify the final experiment before running them.
+`LTE_GLOBAL_ONLY=1` enables the explicit zero-local control for full-data runs;
+use a separate `LTE_V38A_RUN_ROOT` for that experiment. The default keeps the
+original two-stage local training. `LTE_FINGERPRINT` can point to the archived
+server fingerprint; its hash must match the existing exact-local dataset.
+No raw audio generation, dataset rewrite, or threshold change is required.

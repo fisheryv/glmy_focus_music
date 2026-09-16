@@ -3,10 +3,10 @@
   "fingerprint_id": "focus_pitch3_fingerprint_v1",
   "spec_revision": "2026-09-13-post-validation-pitch3",
   "release_status": "issued_for_ltsn_development_only",
-  "profile_sha256": "ce250191773d1afbaa233f4f0e2d1a150ede390329e9142056567988bfde815d",
+  "profile_sha256": "7c34037635ce68338b15a5bead8c9ae36eb76fb4b075f4ee0795ae3d59b05494",
   "artifact_sha256": {
-    "metadata/focus_pitch3_fingerprint_v1_scores.csv": "b52eedf84ffe7a4dce4fd9719ea2e0485190b4f173376f18717b1c6ba9c85166",
-    "metadata/focus_pitch3_fingerprint_v1_summary.json": "55b8e65e13ce30959cf93464110eac9019aeb215c252dfa82f5ebc4532ce1da9",
+    "metadata/focus_pitch3_fingerprint_v1_scores.csv": "35129ff64d4533d68f30af0c89a6749723878bc5dcda6c6e6b5ce73a3e17c68a",
+    "metadata/focus_pitch3_fingerprint_v1_summary.json": "8856e678246a6bca2a5fbbeed21cb70d8b205ca77824612b9dc7f7f94ad8f635",
     "configs/focus_pitch3_fingerprint_v1.toml": "1fc51999dcc6a54546625dbbb6d4ddfd00224bcacedc79b4a898a54d389af94c",
     "scripts/build_focus_pitch3_fingerprint.py": "56517751f7b96e32388e4dcfbf22609a7c35f07e0b702f0ee3c68a8d705cc9c5"
   },

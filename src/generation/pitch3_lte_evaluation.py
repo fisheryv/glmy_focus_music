@@ -56,6 +56,10 @@ def _load_lte_model_artifact(
         device=device,
         expected_sha256=expected_sha256,
     )
+    if metadata.get("validation_scope") == "train_family_cv":
+        raise LTSNContractError(
+            "train-family CV artifacts cannot enter development screening/guidance"
+        )
     return model, metadata, checkpoint_path, "checkpoint"
 
 

@@ -28,6 +28,8 @@ class Pitch3LTEPotentialComponents(NamedTuple):
     global_energy: Tensor
     local_energy: Tensor
     coordinates: Tensor | None
+    # Single-model training score. Ensembles must average energies, not logits.
+    global_logit: Tensor | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -385,6 +387,7 @@ class PromptConditionedTopologyEnergy(nn.Module):
             )
         )
         coordinates: Tensor | None = None
+        global_logit: Tensor | None = None
         if self.config.potential_mode in {
             "structured_coordinate_v34",
             "structured_anchored_v35",
@@ -420,7 +423,8 @@ class PromptConditionedTopologyEnergy(nn.Module):
             prompt_residual = self.config.prompt_residual_scale * torch.tanh(
                 self.interaction_energy_head(fused).squeeze(-1)
             )
-            global_energy = F.softplus(latent_energy + prompt_residual)
+            global_logit = latent_energy + prompt_residual
+            global_energy = F.softplus(global_logit)
         elif self.config.fusion_mode == "joint_v3":
             global_energy = self.energy_head(fused).squeeze(-1)
         else:
@@ -463,6 +467,7 @@ class PromptConditionedTopologyEnergy(nn.Module):
             global_energy.float(),
             local_energy.float(),
             coordinates.float() if coordinates is not None else None,
+            global_logit.float() if global_logit is not None else None,
         )
 
     @property

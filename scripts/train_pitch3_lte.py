@@ -23,6 +23,8 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--seed", type=int)
+    parser.add_argument("--cv-fold", type=int, choices=range(5))
+    parser.add_argument("--global-only", action="store_true")
     args = parser.parse_args()
     result = train_pitch3_lte(
         fingerprint_path=args.fingerprint,
@@ -31,6 +33,8 @@ def main() -> None:
         output_dir=args.output_dir,
         device_name=args.device,
         seed_override=args.seed,
+        cv_fold=args.cv_fold,
+        global_only=args.global_only,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 

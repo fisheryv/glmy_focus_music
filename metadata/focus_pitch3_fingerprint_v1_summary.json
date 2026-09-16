@@ -82,13 +82,13 @@
     ]
   ],
   "discovery_180_pca_explained_variance_ratio": [
-    0.8097950211016061,
-    0.10779841951636905,
-    0.08240655938202497
+    0.8097950211016058,
+    0.10779841951636897,
+    0.08240655938202514
   ],
   "artifacts": {
-    "metadata/focus_pitch3_fingerprint_v1.json": "ce250191773d1afbaa233f4f0e2d1a150ede390329e9142056567988bfde815d",
-    "metadata/focus_pitch3_fingerprint_v1_scores.csv": "b52eedf84ffe7a4dce4fd9719ea2e0485190b4f173376f18717b1c6ba9c85166"
+    "metadata/focus_pitch3_fingerprint_v1.json": "7c34037635ce68338b15a5bead8c9ae36eb76fb4b075f4ee0795ae3d59b05494",
+    "metadata/focus_pitch3_fingerprint_v1_scores.csv": "35129ff64d4533d68f30af0c89a6749723878bc5dcda6c6e6b5ce73a3e17c68a"
   },
   "authorization": {
     "scientific_claim": "post_validation_downstream_target_only",
