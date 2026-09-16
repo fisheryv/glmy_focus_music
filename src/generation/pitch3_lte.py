@@ -30,6 +30,8 @@ class Pitch3LTEPotentialComponents(NamedTuple):
     coordinates: Tensor | None
     # Single-model training score. Ensembles must average energies, not logits.
     global_logit: Tensor | None = None
+    # Auxiliary cumulative logits only; never used to clip or replace energy.
+    ordinal_logits: Tensor | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,8 +58,11 @@ class Pitch3LTEConfig:
         1.0 / 3.0,
     )
     prompt_film_fraction: float = 0.25
+    ordinal_auxiliary: bool = False
 
     def validate(self) -> None:
+        if self.ordinal_auxiliary and self.potential_mode != "direct_anchored_v37":
+            raise ValueError("ordinal auxiliary requires direct anchored energy")
         if self.model_dim % self.transformer_heads:
             raise ValueError("model_dim must be divisible by transformer_heads")
         if min(self.latent_dim, self.text_dim, self.model_dim, self.temporal_stride) < 1:
@@ -252,6 +257,10 @@ class PromptConditionedTopologyEnergy(nn.Module):
             )
             nn.init.zeros_(self.local_energy_head[-1].weight)
             nn.init.zeros_(self.local_energy_head[-1].bias)
+        if cfg.ordinal_auxiliary:
+            self.ordinal_head = nn.Sequential(
+                nn.Linear(cfg.model_dim, cfg.model_dim), nn.SiLU(), nn.Linear(cfg.model_dim, 3)
+            )
 
     @staticmethod
     def _validate_mask(values: Tensor, mask: Tensor, name: str) -> Tensor:
@@ -462,12 +471,18 @@ class PromptConditionedTopologyEnergy(nn.Module):
         else:
             local_energy = torch.zeros_like(global_energy)
         energy = global_energy + local_energy
+        ordinal_logits = None
+        if self.config.ordinal_auxiliary:
+            raw = self.ordinal_head(latent_state).float()
+            first = raw[:, :1]
+            ordinal_logits = torch.cat((first, first - F.softplus(raw[:, 1:]).cumsum(dim=1)), dim=1)
         return Pitch3LTEPotentialComponents(
             energy.float(),
             global_energy.float(),
             local_energy.float(),
             coordinates.float() if coordinates is not None else None,
             global_logit.float() if global_logit is not None else None,
+            ordinal_logits,
         )
 
     @property

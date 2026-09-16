@@ -200,3 +200,133 @@ use a separate `LTE_V38A_RUN_ROOT` for that experiment. The default keeps the
 original two-stage local training. `LTE_FINGERPRINT` can point to the archived
 server fingerprint; its hash must match the existing exact-local dataset.
 No raw audio generation, dataset rewrite, or threshold change is required.
+
+## V3.8-B: ordinal auxiliary and calibrated local derivatives
+
+Use `scripts/run_pitch3_lte_v38b.py` (or its `.sh` wrapper) and
+`configs/pitch3_lte_v38b.toml`. The first implementation covers the predeclared
+G0/G1/G37 and L0/L1/L2 experiments. The temporal-feature branch and independent
+trajectory expansion remain conditional follow-ups to the diagnostics, as
+specified in `docs/pitch3-lte-v38a-audit-and-next-plan.md`.
+
+| Variant | Objective |
+|---|---|
+| G0 | V3.8-A global losses; ordinal head present but frozen and unused |
+| G1 | G0 plus natural-frequency cumulative ordinal BCE, weight 0.25 |
+| G37 | V3.7 ranking losses with the same full-family normalization and fixed schedule as G0 |
+| L0 | Global-only checkpoint, strict zero residual |
+| L1 | Frozen global plus anchored direction + 0.25 flat |
+| L2 | L1 plus 0.25 Huber on asinh-normalized **total** finite-difference derivatives |
+
+G0/G1 have identical initial parameters, batches, existing loss normalizers,
+and dropout seeds. Three ordered ordinal logits supervise `y>0`, `y>t1`,
+`y>t2`; `t1,t2` are positive-energy tertiles from the actual fit/base subset.
+Local rows do not receive ordinal supervision. The ordinal head is latent-only
+and auxiliary: energy remains `softplus(a)` plus the strictly anchored residual,
+with no zero clipping or categorical energy readout.
+
+L1/L2 require a hash-verified L0 manifest with matching seed, fit IDs, fold,
+fingerprint, source config, and global variant. They inherit its loss scales
+and start from identical global weights. Only `local_energy_head` is trainable;
+all other parameters are checked bitwise at the end. L2 fits
+`Huber(asinh(d_pred/s_d), asinh(d_exact/s_d))` on nonflat directions. The exact
+derivative scale `s_d` is fit-only; ordinal/shape normalizers are fixed at 1.
+The frozen direction threshold, flat loss and all evaluation gates are unchanged.
+
+The `[v38b]` section owns the schedule: **12 global epochs and 12 local epochs,
+online weights, no checkpoint selection**. Twelve global epochs is a declared
+starting budget informed by the median selected epoch of the V3.8-A folds;
+it is not an empirically optimized V3.8-B duration. The legacy `[training]`
+epoch/EMA/early-stopping fields are retained for loss/optimizer compatibility
+but do not drive the dedicated runner. Any change to `[v38b]` creates a new
+source-config hash and requires a new experiment directory.
+
+Each CV fold trains on 16 original training families and evaluates the other
+four once at the end. Full-train runs do not evaluate development at all;
+development screening is a separate command after the variant is frozen.
+The old `train_pitch3_lte.py` rejects ordinal-enabled configs to prevent using
+the legacy development-selected loop accidentally.
+
+Run the CPU tensor/optimizer tests in a Torch environment first. The integration
+test uses synthetic labels and validates the training/provenance/anchor workflow;
+it is not evidence of real model accuracy.
+
+```bash
+python -m pytest tests/test_pitch3_lte.py tests/test_pitch3_lte_v38a.py tests/test_pitch3_lte_v38b.py -ra
+python scripts/run_pitch3_lte_v38b.py cv-global --dry-run
+```
+
+Start with archived-checkpoint diagnostics, the missing original V3.7 control,
+and the G0/G1 global comparison:
+
+```bash
+bash scripts/run_pitch3_lte_v38b.sh diagnose
+bash scripts/run_pitch3_lte_v38b.sh cv-control
+python scripts/summarize_pitch3_lte_cv.py --cv-root runs/pitch3_lte_v38b/cv_v37_control
+bash scripts/run_pitch3_lte_v38b.sh cv-global
+bash scripts/run_pitch3_lte_v38b.sh summary
+# Optional attribution control: legacy ranking with matched normalization/schedule.
+bash scripts/run_pitch3_lte_v38b.sh cv-global --global-variants g37
+bash scripts/run_pitch3_lte_v38b.sh summary --global-variants g37
+```
+
+`diagnose` reads the existing three full-train and five CV V3.8-A checkpoints;
+it writes new eval-train/selection predictions, fit-defined stratum statistics,
+zero/positive AUC, coordinate errors, logit RankNet diagnostics per stratum pair,
+and component gradient norms/cosines. It never fits or changes the source model.
+The original V3.7 control still selects on CV, so it is descriptive and not a
+strict comparison of ranking objectives; G37 supplies the matched comparison.
+
+Choose the global variant using the internal results, then run local ablations.
+The following commands use G1 **only as an example**, not an automatic choice:
+
+```bash
+bash scripts/run_pitch3_lte_v38b.sh cv-local --global-variants g1
+bash scripts/run_pitch3_lte_v38b.sh summary --global-variants g1 --local-variants l0 l1 l2
+# Add the remaining seeds for the chosen global variant and its local ablations.
+bash scripts/run_pitch3_lte_v38b.sh cv-global --global-variants g1 --seeds 20260942 20260943
+bash scripts/run_pitch3_lte_v38b.sh cv-local --global-variants g1 --seeds 20260942 20260943
+bash scripts/run_pitch3_lte_v38b.sh summary --global-variants g1 --local-variants l0 l1 l2 --seeds 20260941 20260942 20260943
+```
+
+Compare original-gate passing family count, worst-family rho and stability,
+while reporting every other original gate. Summaries recompute all five folds
+and final equal-weight energies, report each member and derivative disagreement,
+and never select/promote an artifact automatically. CV aggregation averages
+archived member outputs in float64 without
+new inference; the final model screen evaluates the actual fp32 ensemble.
+These remain development experiments; repeatedly choosing variants using CV does not create independent
+confirmatory evidence. CV artifacts remain barred from development screening
+and guidance ensembles.
+
+Once global/local variants and durations are frozen, full training and screening
+are explicit. Again, G1/L2 below are placeholders for the internally selected
+variants; for L0 omit `train-local` and select `--local-variants l0` downstream.
+
+```bash
+bash scripts/run_pitch3_lte_v38b.sh train-global --global-variants g1
+bash scripts/run_pitch3_lte_v38b.sh train-local --global-variants g1 --local-variants l2
+bash scripts/run_pitch3_lte_v38b.sh ensemble --global-variants g1 --local-variants l2
+bash scripts/run_pitch3_lte_v38b.sh model-screen --global-variants g1 --local-variants l2
+```
+
+Defaults: CV seed 20260941, full-training seeds 20260941/42/43, devices
+`cuda:1 cuda:2 cuda:3`. Override with `--seeds`, `--devices`, `--folds`,
+`--run-root`, `--dataset-manifest`, `--fingerprint`, or `--config`. GPU queues
+are sequential per device, including on uneven fold durations. The runner
+rejects nonempty training/diagnostic/screen targets and preserves old logs;
+after partial failure select only unrun folds/seeds or use a new root.
+
+Outputs are under `runs/pitch3_lte_v38b/`: `diagnostics_v38a/`,
+`cv_v37_control/`, `cv/<global>/<local>/fold_N/seed_S/models/`, and
+`final/<global>/<local>/seed_S/models/`. Each new run exports eval-train metrics,
+fit-only statistics, a split/schedule protocol, initial/final gradient snapshots,
+per-epoch clipping rates, source implementation hashes, and a final checkpoint.
+Only CV runs export selection predictions. Final ensemble/model-screen artifacts
+are in `final/<global>/<local>/`.
+
+After all original model gates pass, the existing guidance/quality workflow can
+use that final directory, for example
+`LTE_V33_RUN_ROOT="$PWD/runs/pitch3_lte_v38b/final/g1/l2" bash scripts/run_pitch3_lte_v33.sh guidance`.
+Step-4 exact improvement and audio-quality noninferiority remain separate,
+mandatory evidence; no V3.8-B training or CV artifact grants production authorization.

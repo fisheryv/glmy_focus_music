@@ -28,10 +28,25 @@ from .pitch3_lte_data import (
     LTE_RADIUS_RATIO,
     validate_pitch3_lte_dataset_preflight,
 )
+from .pitch3_lte_metrics import (
+    LTE_COLLAPSE_EXACT_RANGE as LTE_COLLAPSE_EXACT_RANGE,
+)
+from .pitch3_lte_metrics import (
+    LTE_COLLAPSE_PREDICTED_RANGE as LTE_COLLAPSE_PREDICTED_RANGE,
+)
+from .pitch3_lte_metrics import (
+    LTE_MAX_COLLAPSED_PROMPT_FRACTION as LTE_MAX_COLLAPSED_PROMPT_FRACTION,
+)
+from .pitch3_lte_metrics import (
+    _rank as _rank,
+)
+from .pitch3_lte_metrics import (
+    pitch3_lte_metrics as pitch3_lte_metrics,
+)
+from .pitch3_lte_metrics import (
+    spearman as spearman,
+)
 
-LTE_COLLAPSE_PREDICTED_RANGE = 1e-3
-LTE_COLLAPSE_EXACT_RANGE = 0.1
-LTE_MAX_COLLAPSED_PROMPT_FRACTION = 0.05
 LTE_V38A_SCHEDULE = "direct_energy_logit_rank_global_then_local_v38a"
 
 
@@ -1594,28 +1609,6 @@ def _model_potentials(
     return components, shuffled_coordinates
 
 
-def _rank(values: np.ndarray) -> np.ndarray:
-    order = np.argsort(values, kind="mergesort")
-    ranks = np.empty(len(values), dtype=float)
-    index = 0
-    while index < len(values):
-        end = index + 1
-        while end < len(values) and values[order[end]] == values[order[index]]:
-            end += 1
-        ranks[order[index:end]] = (index + end - 1) / 2.0
-        index = end
-    return ranks
-
-
-def spearman(first: np.ndarray, second: np.ndarray) -> float:
-    if len(first) < 2:
-        return 0.0
-    left, right = _rank(np.asarray(first, dtype=float)), _rank(np.asarray(second, dtype=float))
-    if np.std(left) <= 0 or np.std(right) <= 0:
-        return 0.0
-    return float(np.corrcoef(left, right)[0, 1])
-
-
 def _prediction_rows(
     model: PromptConditionedTopologyEnergy,
     loader: DataLoader[dict[str, Any]],
@@ -1671,122 +1664,15 @@ def _prediction_rows(
                         "anchor_sample_id": raw["anchor_sample_id"][index],
                     }
                 )
+                if potentials.global_logit is not None:
+                    rows[-1]["predicted_global_logit"] = float(
+                        potentials.global_logit[index].float().cpu()
+                    )
+                if potentials.ordinal_logits is not None:
+                    rows[-1]["predicted_ordinal_probabilities_json"] = json.dumps(
+                        potentials.ordinal_logits[index].sigmoid().float().cpu().tolist()
+                    )
     return rows
-
-
-def pitch3_lte_metrics(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    base = [row for row in rows if row["source_kind"] == "base_step4_seed"]
-    if not base:
-        raise LTSNContractError("V3-LTE metrics require base Step-4 rows")
-    exact_band = np.asarray([float(row["exact_band"]) for row in base])
-    predicted = np.asarray([float(row["predicted_energy"]) for row in base])
-    by_prompt: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    by_family: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    for row in base:
-        by_prompt[str(row["prompt_id"])].append(row)
-        by_family[str(row["prompt_family"])].append(row)
-    collapsed_prompt_ids = []
-    for prompt_id, values in by_prompt.items():
-        exact_values = [float(row["exact_energy"]) for row in values]
-        predicted_values = [float(row["predicted_energy"]) for row in values]
-        exact_range = max(exact_values) - min(exact_values)
-        predicted_range = max(predicted_values) - min(predicted_values)
-        if (
-            exact_range > LTE_COLLAPSE_EXACT_RANGE
-            and predicted_range < LTE_COLLAPSE_PREDICTED_RANGE
-        ):
-            collapsed_prompt_ids.append(prompt_id)
-    collapsed_fraction = len(collapsed_prompt_ids) / len(by_prompt)
-    rank_correct = 0
-    rank_total = 0
-    for values in by_prompt.values():
-        for offset, left in enumerate(values):
-            for right in values[offset + 1 :]:
-                exact_delta = float(left["exact_band"]) - float(right["exact_band"])
-                if abs(exact_delta) <= 1e-6:
-                    continue
-                predicted_delta = float(left["predicted_energy"]) - float(right["predicted_energy"])
-                rank_correct += int(
-                    math.copysign(1, exact_delta) == math.copysign(1, predicted_delta)
-                )
-                rank_total += 1
-    family_rho = {
-        family: spearman(
-            np.asarray([float(row["exact_band"]) for row in values]),
-            np.asarray([float(row["predicted_energy"]) for row in values]),
-        )
-        for family, values in sorted(by_family.items())
-    }
-    local: dict[str, dict[int, Mapping[str, Any]]] = defaultdict(dict)
-    for row in rows:
-        if row["direction_id"]:
-            local[str(row["direction_id"])][int(row["direction_sign"])] = row
-    direction_correct = 0
-    direction_total = 0
-    derivative_exact: list[float] = []
-    derivative_predicted: list[float] = []
-    for signed in local.values():
-        if set(signed) != {-1, 1}:
-            continue
-        minus, plus = signed[-1], signed[1]
-        epsilon = float(minus["epsilon"])
-        exact = (float(plus["exact_energy"]) - float(minus["exact_energy"])) / (2 * epsilon)
-        estimate = (float(plus["predicted_energy"]) - float(minus["predicted_energy"])) / (
-            2 * epsilon
-        )
-        if abs(exact) <= 1e-6:
-            continue
-        direction_correct += int(math.copysign(1, exact) == math.copysign(1, estimate))
-        direction_total += 1
-        derivative_exact.append(exact)
-        derivative_predicted.append(estimate)
-    pooled = spearman(exact_band, predicted)
-    ranking = rank_correct / rank_total if rank_total else 0.0
-    direction = direction_correct / direction_total if direction_total else 0.0
-    gates = {
-        "direct_energy_spearman": pooled >= 0.50,
-        "every_prompt_family_spearman": bool(family_rho) and min(family_rho.values()) >= 0.50,
-        "same_prompt_ranking_accuracy": rank_total > 0 and ranking >= 0.65,
-        "local_direction_sign_accuracy": direction_total > 0 and direction >= 0.65,
-        "prompt_latent_sensitivity": collapsed_fraction <= LTE_MAX_COLLAPSED_PROMPT_FRACTION,
-    }
-    deficits = {
-        "direct_energy_spearman": max(0.0, 0.50 - pooled),
-        "every_prompt_family_spearman": max(0.0, 0.50 - min(family_rho.values(), default=0.0)),
-        "same_prompt_ranking_accuracy": max(0.0, 0.65 - ranking),
-        "local_direction_sign_accuracy": max(0.0, 0.65 - direction) if direction_total else 0.65,
-        "prompt_latent_sensitivity": max(
-            0.0, collapsed_fraction - LTE_MAX_COLLAPSED_PROMPT_FRACTION
-        ),
-    }
-    return {
-        "samples": len(rows),
-        "base_samples": len(base),
-        "direct_energy_spearman": pooled,
-        "prompt_family_spearman": family_rho,
-        "minimum_prompt_family_spearman": min(family_rho.values(), default=0.0),
-        "same_prompt_rank_pairs": rank_total,
-        "same_prompt_ranking_accuracy": ranking,
-        "local_direction_pairs": direction_total,
-        "local_direction_sign_accuracy": direction,
-        "local_derivative_spearman": spearman(
-            np.asarray(derivative_exact), np.asarray(derivative_predicted)
-        )
-        if direction_total >= 2
-        else 0.0,
-        "collapsed_prompt_count": len(collapsed_prompt_ids),
-        "collapsed_prompt_fraction": collapsed_fraction,
-        "collapsed_prompt_ids": sorted(collapsed_prompt_ids),
-        "prompt_collapse_definition": {
-            "maximum_predicted_range": LTE_COLLAPSE_PREDICTED_RANGE,
-            "minimum_exact_range": LTE_COLLAPSE_EXACT_RANGE,
-            "maximum_fraction": LTE_MAX_COLLAPSED_PROMPT_FRACTION,
-        },
-        "gates": gates,
-        "gate_deficits": deficits,
-        "total_gate_deficit": sum(deficits.values()),
-        "all_gates_passed": all(gates.values()),
-    }
 
 
 def _stabilize_loss_normalizer_medians(
@@ -1998,6 +1884,8 @@ def train_pitch3_lte(
     dataset_manifest = dataset_manifest.resolve()
     contract = load_pitch3_contract(fingerprint_path)
     model_config, training = load_pitch3_lte_config(config_path)
+    if model_config.ordinal_auxiliary:
+        raise LTSNContractError("V3.8-B ordinal models require scripts/train_pitch3_lte_v38b.py")
     source_training_config_sha256 = sha256_file(config_path)
     effective_config_path: Path | None = None
     effective_training_config_sha256 = source_training_config_sha256

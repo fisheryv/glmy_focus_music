@@ -22,6 +22,7 @@ _ENSEMBLE_KINDS = {
     "v3.6_tail_calibrated_coordinate_regression": ("equal_weight_anchored_scalar_energy_v36_tcr"),
     "v3.7_direct_topology_energy": "equal_weight_direct_topology_energy_v37_dte",
     "v3.8a_logit_stratified_rank_energy": "equal_weight_direct_topology_energy_v38a",
+    "v3.8b_ordinal_calibrated_direction": "equal_weight_direct_topology_energy_v38b",
 }
 
 
@@ -73,6 +74,23 @@ def build_pitch3_lte_ensemble_manifest(
                     "validation_scope": payload["validation_scope"],
                 }
             )
+        if member_revision == "v3.8b_ordinal_calibrated_direction":
+            from .pitch3_lte_v38b_protocol import verify_manifest
+
+            verify_manifest(manifest_path)
+            contract.update(
+                {
+                    key: payload[key]
+                    for key in (
+                        "source_training_config_sha256",
+                        "local_residual_mode",
+                        "validation_scope",
+                        "experiment_contract",
+                        "checkpoint_selection",
+                        "implementation_sha256",
+                    )
+                }
+            )
         if shared is None:
             shared = contract
         elif contract != shared:
@@ -92,7 +110,9 @@ def build_pitch3_lte_ensemble_manifest(
     report = {
         "schema_version": 1,
         "stage": (
-            "pitch3_lte_v38a_ensemble"
+            "pitch3_lte_v38b_ensemble"
+            if ensemble_kind == "equal_weight_direct_topology_energy_v38b"
+            else "pitch3_lte_v38a_ensemble"
             if ensemble_kind == "equal_weight_direct_topology_energy_v38a"
             else "pitch3_lte_v37_dte_ensemble"
             if ensemble_kind == "equal_weight_direct_topology_energy_v37_dte"
@@ -182,6 +202,18 @@ def load_pitch3_lte_ensemble(
             )
         ):
             raise LTSNContractError("V3.8-A ensemble training contracts differ")
+        if revision == "v3.8b_ordinal_calibrated_direction" and any(
+            metadata.get(key) != payload.get(key)
+            for key in (
+                "experiment_contract",
+                "checkpoint_selection",
+                "implementation_sha256",
+                "source_training_config_sha256",
+                "local_residual_mode",
+                "validation_scope",
+            )
+        ):
+            raise LTSNContractError("V3.8-B ensemble training contracts differ")
         models.append(model)
         weights.append(float(member["weight"]))
     expected_weight = 1.0 / len(members)
