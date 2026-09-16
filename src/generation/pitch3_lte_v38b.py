@@ -49,6 +49,7 @@ from .pitch3_lte_v38b_protocol import (
     REVISION,
     SELECTION,
     describe_predictions,
+    gradient_vector_statistics,
     local_file,
     read_csv,
     read_json,
@@ -164,26 +165,24 @@ def gradient_snapshot(model, batch, stage, training, stats, weights):
             retain_graph=True,
             allow_unused=True,
         )
-        vectors[name] = torch.cat(
-            [
-                (torch.zeros_like(p) if g is None else g).detach().reshape(-1)
-                for p, g in zip(params, grads, strict=True)
-            ]
+        # Only diagnostic reductions move to CPU. Autograd and the model stay
+        # on their original device; CUDA torch.dot can invoke unsupported Sdot.
+        vectors[name] = (
+            torch.cat(
+                [
+                    (torch.zeros_like(p) if g is None else g).detach().reshape(-1)
+                    for p, g in zip(params, grads, strict=True)
+                ]
+            )
+            .cpu()
+            .numpy()
         )
-    norms = {k: float(v.norm()) for k, v in vectors.items()}
-    cosine = {
-        a: {
-            b: float(torch.dot(va, vb) / (va.norm() * vb.norm()))
-            if norms[a] > 0 and norms[b] > 0
-            else None
-            for b, vb in vectors.items()
-        }
-        for a, va in vectors.items()
-    }
+    norms, cosine = gradient_vector_statistics(vectors)
     return {
         "sample_ids": batch["sample_id"],
         "mode": "eval",
         "stage": stage,
+        "gradient_statistics_backend": "cpu_numpy_float64",
         "weighted_normalized_gradient_norms": norms,
         "gradient_cosine": cosine,
     }

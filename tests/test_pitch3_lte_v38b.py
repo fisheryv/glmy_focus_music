@@ -17,6 +17,7 @@ from generation.pitch3_lte_v38b_protocol import (
     SELECTION,
     describe_predictions,
     file_hash,
+    gradient_vector_statistics,
     validate_protocol,
     verify_manifest,
 )
@@ -139,6 +140,103 @@ def test_diagnostics_use_supplied_training_strata_and_handle_constant_targets():
     assert [s["n"] for s in family["train_defined_strata"]] == [1, 0, 1, 2]
     assert family["coordinate_rho"] == [None, None, None]
     assert result["local"]["nontrivial_pairs"] == 0
+    json.dumps(result, allow_nan=False)
+
+
+def test_gradient_statistics_norms_cosines_and_zero_vectors():
+    vectors = {
+        "a": np.array([3, 4], dtype=np.float32),
+        "same": np.array([6, 8], dtype=np.float32),
+        "opposite": np.array([-3, -4], dtype=np.float32),
+        "orthogonal": np.array([-4, 3], dtype=np.float32),
+        "zero": np.zeros(2, dtype=np.float32),
+    }
+    norms, cosine = gradient_vector_statistics(vectors)
+    assert norms == pytest.approx({"a": 5, "same": 10, "opposite": 5, "orthogonal": 5, "zero": 0})
+    assert cosine["a"]["same"] == pytest.approx(1)
+    assert cosine["a"]["opposite"] == pytest.approx(-1)
+    assert cosine["a"]["orthogonal"] == pytest.approx(0, abs=1e-15)
+    for a in vectors:
+        for b in vectors:
+            if "zero" in (a, b):
+                assert cosine[a][b] is None
+            else:
+                assert cosine[a][b] == pytest.approx(cosine[b][a])
+                assert -1 <= cosine[a][b] <= 1
+        if a != "zero":
+            assert cosine[a][a] == pytest.approx(1)
+    json.dumps({"norms": norms, "cosine": cosine}, allow_nan=False)
+
+
+def test_gradient_statistics_accumulate_float32_extremes_in_float64():
+    vectors = {
+        "large": np.array([3e30, 4e30], dtype=np.float32),
+        "small": np.array([3e-30, 4e-30], dtype=np.float32),
+    }
+    with np.errstate(over="raise", invalid="raise", divide="raise", under="raise"):
+        norms, cosine = gradient_vector_statistics(vectors)
+    assert norms["large"] == pytest.approx(5e30, rel=1e-6)
+    assert norms["small"] == pytest.approx(5e-30, rel=1e-6, abs=0)
+    assert cosine["large"]["small"] == pytest.approx(1)
+    json.dumps({"norms": norms, "cosine": cosine}, allow_nan=False)
+
+
+@pytest.mark.parametrize(
+    "vectors, message",
+    [
+        ({"a": np.ones((2, 2))}, "one-dimensional"),
+        ({"a": np.ones(2), "b": np.ones(3)}, "matching lengths"),
+        ({"a": np.array([np.nan])}, "finite"),
+        ({"a": np.array([np.inf])}, "finite"),
+    ],
+)
+def test_gradient_statistics_reject_invalid_vectors(vectors, message):
+    with pytest.raises(ValueError, match=message):
+        gradient_vector_statistics(vectors)
+
+
+@pytest.mark.parametrize("device", ["cpu", "cuda"])
+def test_gradient_snapshot_avoids_cublas_dot_and_preserves_parameters(monkeypatch, device):
+    torch = pytest.importorskip("torch")
+    if device == "cuda" and not torch.cuda.is_available():
+        pytest.skip("CUDA is unavailable")
+    from generation import pitch3_lte_v38b as experiment
+
+    model = torch.nn.Module()
+    model.register_parameter("weight", torch.nn.Parameter(torch.tensor([2.0, -1.0], device=device)))
+    model.register_parameter("unused", torch.nn.Parameter(torch.tensor([7.0], device=device)))
+    model.weight.grad = torch.ones_like(model.weight)
+    before = {name: p.detach().clone() for name, p in model.named_parameters()}
+
+    def losses(model, *_args):
+        a = 3 * model.weight[0] + 4 * model.weight[1]
+        return {"a": a, "opposite": -a, "zero": a * 0}
+
+    def unsupported_dot(*_args, **_kwargs):
+        raise RuntimeError("CUBLAS_STATUS_NOT_SUPPORTED when calling cublasSdot")
+
+    monkeypatch.setattr(torch, "dot", unsupported_dot)
+    monkeypatch.setattr(experiment, "forward_losses", losses)
+    monkeypatch.setattr(experiment, "_set_training_stage_trainable", lambda *_args: None)
+    result = experiment.gradient_snapshot(
+        model,
+        {"sample_id": ["diagnostic-fixture"]},
+        "global",
+        None,
+        {"loss_normalizers": {"a": 4.0, "opposite": 2.0, "zero": 1.0}},
+        {"a": 2.0, "opposite": 0.5, "zero": 1.0},
+    )
+    assert result["gradient_statistics_backend"] == "cpu_numpy_float64"
+    assert result["weighted_normalized_gradient_norms"] == pytest.approx(
+        {"a": 2.5, "opposite": 1.25, "zero": 0}
+    )
+    assert result["gradient_cosine"]["a"]["opposite"] == pytest.approx(-1)
+    assert result["gradient_cosine"]["a"]["zero"] is None
+    for name, parameter in model.named_parameters():
+        assert torch.equal(parameter, before[name])
+        assert parameter.device == before[name].device
+    assert torch.equal(model.weight.grad, torch.ones_like(model.weight))
+    assert model.unused.grad is None
     json.dumps(result, allow_nan=False)
 
 

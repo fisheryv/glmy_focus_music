@@ -274,6 +274,20 @@ bash scripts/run_pitch3_lte_v38b.sh summary --global-variants g37
 it writes new eval-train/selection predictions, fit-defined stratum statistics,
 zero/positive AUC, coordinate errors, logit RankNet diagnostics per stratum pair,
 and component gradient norms/cosines. It never fits or changes the source model.
+Autograd runs on the selected device; detached gradient norms/cosines use CPU
+NumPy float64 reductions to avoid unsupported CUDA `cublasSdot` calls. Reports
+record `gradient_statistics_backend=cpu_numpy_float64`; zero-gradient cosines
+remain undefined (`null`). This also applies to training gradient snapshots.
+If an earlier diagnostic failed after exporting predictions, preserve that
+directory and rerun into a fresh output root after synchronizing both
+`src/generation/pitch3_lte_v38b.py` and `src/generation/pitch3_lte_v38b_protocol.py`:
+
+```bash
+bash scripts/run_pitch3_lte_v38b.sh diagnose --run-root runs/pitch3_lte_v38b_diag_retry
+```
+
+The source checkpoints still default to `runs/pitch3_lte_v38a`; only the new
+diagnostic output root changes.
 The original V3.7 control still selects on CV, so it is descriptive and not a
 strict comparison of ranking objectives; G37 supplies the matched comparison.
 

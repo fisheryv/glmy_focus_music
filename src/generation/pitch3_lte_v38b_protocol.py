@@ -17,6 +17,32 @@ GLOBAL_VARIANTS = ("g0", "g1", "g37")
 LOCAL_VARIANTS = ("l0", "l1", "l2")
 
 
+def gradient_vector_statistics(
+    vectors: dict[str, np.ndarray],
+) -> tuple[dict[str, float], dict[str, dict[str, float | None]]]:
+    """Reduce detached CPU gradients without any CUDA/cuBLAS calls.
+
+    Float64 accumulation also avoids float32 square overflow/underflow in
+    diagnostics. A zero vector has no defined cosine, represented by None.
+    """
+    arrays = {name: np.asarray(vector, dtype=np.float64) for name, vector in vectors.items()}
+    if any(v.ndim != 1 or not np.isfinite(v).all() for v in arrays.values()):
+        raise ValueError("Gradient diagnostics require finite one-dimensional vectors")
+    if len({v.size for v in arrays.values()}) > 1:
+        raise ValueError("Gradient diagnostic vectors must have matching lengths")
+    norms = {name: float(np.sqrt(np.sum(v * v, dtype=np.float64))) for name, v in arrays.items()}
+    cosine = {
+        a: {
+            b: float(np.clip(np.sum((va / norms[a]) * (vb / norms[b]), dtype=np.float64), -1, 1))
+            if norms[a] > 0 and norms[b] > 0
+            else None
+            for b, vb in arrays.items()
+        }
+        for a, va in arrays.items()
+    }
+    return norms, cosine
+
+
 def file_hash(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
