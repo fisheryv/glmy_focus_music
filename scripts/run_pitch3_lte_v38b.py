@@ -7,13 +7,23 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+DEVICE_STAGES = {
+    "diagnose",
+    "cv-control",
+    "cv-global",
+    "cv-local",
+    "train-global",
+    "train-local",
+    "model-screen",
+}
 
 
 def build_jobs(args):
@@ -178,20 +188,109 @@ def build_jobs(args):
                 ],
                 output,
             )
-    device_stages = {
-        "diagnose",
-        "cv-control",
-        "cv-global",
-        "cv-local",
-        "train-global",
-        "train-local",
-        "model-screen",
-    }
     for index, job in enumerate(jobs):
         job["device"] = args.devices[index % len(args.devices)]
-        if args.stage in device_stages:
+        if args.stage in DEVICE_STAGES:
             job["command"] += ["--device", job["device"]]
     return jobs
+
+
+def _child_env(root):
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(root / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    return env
+
+
+def _query_cuda_memory(devices, args):
+    # Probe in a short-lived child using exactly the training interpreter/env.
+    # torch logical indices respect CUDA_VISIBLE_DEVICES (including UUID masks).
+    code = """
+import json
+import sys
+import torch
+
+rows = []
+for name in sys.argv[1:]:
+    device = torch.device(name)
+    index = torch.cuda.current_device() if device.index is None else device.index
+    free, total = torch.cuda.mem_get_info(index)
+    rows.append(dict(device=name, index=index, name=torch.cuda.get_device_name(index),
+                     free_bytes=free, total_bytes=total))
+print(json.dumps(rows))
+"""
+    result = subprocess.run(
+        [args.python, "-c", code, *devices],
+        cwd=args.root,
+        env=_child_env(args.root),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=60,
+        creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
+    )
+    if result.returncode:
+        raise RuntimeError(
+            f"CUDA memory preflight failed using {args.python}:\n{result.stderr[-16384:]}"
+        )
+    return json.loads(result.stdout)
+
+
+def preflight_devices(args):
+    """Filter only the requested devices; preserve the full experiment job list."""
+    if not math.isfinite(args.min_free_gpu_gib) or args.min_free_gpu_gib <= 0:
+        raise ValueError("--min-free-gpu-gib must be finite and positive")
+    if args.dry_run or args.stage not in DEVICE_STAGES:
+        return
+    cuda_devices = [d for d in args.devices if d == "cuda" or d.startswith("cuda:")]
+    if not cuda_devices:
+        return
+    rows = _query_cuda_memory(cuda_devices, args)
+    if [row["device"] for row in rows] != cuda_devices:
+        raise RuntimeError("CUDA memory probe returned different devices")
+    if len({row["index"] for row in rows}) != len(rows):
+        raise ValueError("CUDA aliases refer to the same GPU; each queue needs a unique device")
+    busy = []
+    for row in rows:
+        free, total = row["free_bytes"] / 2**30, row["total_bytes"] / 2**30
+        print(
+            f"GPU preflight {row['device']} ({row['name']}): {free:.2f}/{total:.2f} GiB free",
+            flush=True,
+        )
+        if free < args.min_free_gpu_gib:
+            busy.append(row["device"])
+    if busy and not args.skip_busy_gpus:
+        raise RuntimeError(
+            f"Insufficient free GPU memory on {', '.join(busy)} "
+            f"(minimum {args.min_free_gpu_gib:g} GiB). No experiment started. "
+            "Inspect nvidia-smi; choose free --devices or use --skip-busy-gpus "
+            "to queue all jobs on the remaining requested devices."
+        )
+    selected = [device for device in args.devices if device not in busy]
+    if not selected:
+        raise RuntimeError(
+            f"No requested device has {args.min_free_gpu_gib:g} GiB free. "
+            "No experiment started; inspect nvidia-smi and rerun when a GPU is available."
+        )
+    if busy:
+        print(
+            f"Skipping busy GPUs {', '.join(busy)}; all jobs will use "
+            f"{', '.join(selected)} (one sequential queue per device).",
+            flush=True,
+        )
+    args.devices = selected
+
+
+def _log_tail(path: Path, max_bytes: int = 16384, max_lines: int = 80) -> str:
+    """Read a bounded tail even when a training log is large or partly encoded."""
+    try:
+        with path.open("rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - max_bytes))
+            text = handle.read(max_bytes).decode("utf-8", errors="replace")
+    except OSError as exc:
+        return f"Unable to read log: {exc}"
+    return "\n".join(text.splitlines()[-max_lines:]) or "(empty log)"
 
 
 def execute_jobs(jobs, args):
@@ -219,8 +318,7 @@ def execute_jobs(jobs, args):
             while log.exists():
                 log = output.parent / f"{output.name}_{args.stage}_{suffix}.log"
                 suffix += 1
-            env = dict(os.environ)
-            env["PYTHONPATH"] = str(args.root / "src") + os.pathsep + env.get("PYTHONPATH", "")
+            env = _child_env(args.root)
             with log.open("x", encoding="utf-8") as handle:
                 print(f"START {args.stage} {output} [{job['device']}]", flush=True)
                 result = subprocess.run(
@@ -233,7 +331,12 @@ def execute_jobs(jobs, args):
                     creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
                 )
             if result.returncode:
-                raise RuntimeError(f"Experiment failed ({result.returncode}); inspect {log}")
+                raise RuntimeError(
+                    f"Experiment failed ({result.returncode}) [{job['device']}]: {output}\n"
+                    f"Full log: {log}\n"
+                    f"Command: {json.dumps(job['command'], ensure_ascii=False)}\n"
+                    f"Last log lines:\n{_log_tail(log)}"
+                )
             if args.stage in {"cv-global", "cv-local", "train-global", "train-local"}:
                 sys.path.insert(0, str(args.root / "src"))
                 from generation.pitch3_lte_v38b_protocol import verify_manifest
@@ -242,9 +345,19 @@ def execute_jobs(jobs, args):
             print(f"DONE {output}", flush=True)
 
     with ThreadPoolExecutor(max_workers=len(queues)) as pool:
-        futures = [pool.submit(worker, q) for q in queues if q]
-        for future in futures:
-            future.result()
+        futures = {pool.submit(worker, q): q[0]["device"] for q in queues if q}
+        failures = []
+        for future in as_completed(futures):
+            try:
+                future.result()
+            except Exception as exc:
+                message = f"Queue [{futures[future]}]: {type(exc).__name__}: {exc}"
+                print(message, file=sys.stderr, flush=True)
+                failures.append(message)
+        if failures:
+            raise RuntimeError(
+                f"{len(failures)} experiment queue(s) failed:\n\n" + "\n\n".join(failures)
+            ) from None
 
 
 def main():
@@ -271,6 +384,17 @@ def main():
     parser.add_argument("--config", type=Path)
     parser.add_argument("--python", default=sys.executable)
     parser.add_argument("--devices", nargs="+", default=["cuda:1", "cuda:2", "cuda:3"])
+    parser.add_argument(
+        "--min-free-gpu-gib",
+        type=float,
+        default=8.0,
+        help="Minimum free GPU memory before launch (default: 8 GiB; not a peak-memory estimate)",
+    )
+    parser.add_argument(
+        "--skip-busy-gpus",
+        action="store_true",
+        help="Queue all jobs on requested GPUs meeting the memory floor; no probe in --dry-run",
+    )
     parser.add_argument("--seeds", type=int, nargs="+")
     parser.add_argument("--folds", type=int, choices=range(5), nargs="+", default=list(range(5)))
     parser.add_argument("--global-variants", choices=["g0", "g1", "g37"], nargs="+")
@@ -288,7 +412,11 @@ def main():
         args.fingerprint or args.root / "metadata/focus_pitch3_fingerprint_v1.json"
     ).resolve()
     args.config = (args.config or args.root / "configs/pitch3_lte_v38b.toml").resolve()
-    execute_jobs(build_jobs(args), args)
+    jobs = build_jobs(args)
+    preflight_devices(args)
+    if jobs and any(job["device"] not in args.devices for job in jobs):
+        jobs = build_jobs(args)
+    execute_jobs(jobs, args)
 
 
 if __name__ == "__main__":

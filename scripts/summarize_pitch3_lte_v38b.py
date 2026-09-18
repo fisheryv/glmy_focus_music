@@ -6,6 +6,7 @@ import argparse
 import json
 import math
 import sys
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
 import numpy as np
@@ -107,6 +108,42 @@ def direction_disagreement(members):
     }
 
 
+def _direction_sign(value):
+    # CSV teachers can contain '-1.0' while the prediction writer emits '-1'.
+    # Decimal compares the discrete label exactly; int(float(...)) would silently
+    # truncate fractional labels or round values close to +/-1 into valid signs.
+    try:
+        sign = Decimal(str(value))
+    except InvalidOperation as exc:
+        raise ValueError(f"Invalid direction_sign: {value!r}") from exc
+    if not sign.is_finite() or sign not in {-1, 0, 1}:
+        raise ValueError(f"Invalid direction_sign: {value!r}; expected -1, 0 or 1")
+    return int(sign)
+
+
+def _validate_prediction_labels(row, truth):
+    sid = row["sample_id"]
+    for key in ["prompt_id", "prompt_family", "source_kind", "direction_id"]:
+        if row[key] != truth[key]:
+            raise ValueError(f"Prediction detached from true {key}: {sid}")
+    try:
+        predicted_sign = _direction_sign(row["direction_sign"])
+        true_sign = _direction_sign(truth["direction_sign"])
+    except ValueError as exc:
+        raise ValueError(f"{sid}: {exc}") from exc
+    if predicted_sign != true_sign:
+        raise ValueError(
+            f"Prediction detached from true direction_sign: {sid} "
+            f"(prediction={row['direction_sign']!r}, dataset={truth['direction_sign']!r})"
+        )
+    for key, target in [("exact_band", "exact_band"), ("exact_energy", "energy_target")]:
+        if not math.isclose(float(row[key]), float(truth[target]), rel_tol=2e-7, abs_tol=2e-7):
+            raise ValueError(f"Prediction exact label mismatch: {sid} / {key}")
+    # Canonicalize only this in-memory row for the frozen metric reader. Source
+    # CSV bytes/hashes, prediction values, and the metric implementation stay intact.
+    row["direction_sign"] = str(predicted_sign)
+
+
 def summarize(root: Path, dataset: Path, seeds: list[int]):
     if not seeds or len(seeds) != len(set(seeds)):
         raise ValueError("Summary seeds must be nonempty and unique")
@@ -148,23 +185,7 @@ def summarize(root: Path, dataset: Path, seeds: list[int]):
                 raise ValueError("Selection predictions do not cover the held-out fold")
             for row in rows:
                 truth = by_id[row["sample_id"]]
-                for key in [
-                    "prompt_id",
-                    "prompt_family",
-                    "source_kind",
-                    "direction_id",
-                    "direction_sign",
-                ]:
-                    if row[key] != truth[key]:
-                        raise ValueError(f"Prediction detached from true {key}")
-                for key, target in [
-                    ("exact_band", "exact_band"),
-                    ("exact_energy", "energy_target"),
-                ]:
-                    if not math.isclose(
-                        float(row[key]), float(truth[target]), rel_tol=2e-7, abs_tol=2e-7
-                    ):
-                        raise ValueError("Prediction exact label mismatch")
+                _validate_prediction_labels(row, truth)
             metrics = pitch3_lte_metrics(rows)
             if metrics != m["best_development_metrics"]:
                 raise ValueError("Saved CV metrics do not reproduce")

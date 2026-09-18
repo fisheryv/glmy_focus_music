@@ -309,6 +309,12 @@ and final equal-weight energies, report each member and derivative disagreement,
 and never select/promote an artifact automatically. CV aggregation averages
 archived member outputs in float64 without
 new inference; the final model screen evaluates the actual fp32 ensemble.
+Archived `direction_sign` labels are compared as exact discrete numeric values
+(-1, 0, 1): teacher CSV `-1.0`/`1.0` and prediction CSV `-1`/`1` are equivalent.
+Fractional, nonfinite, and mismatched signs are rejected. Canonicalization is
+in memory only, after artifact hash checks; existing CSVs/checkpoints need no
+rewrite or retraining. After updating `scripts/summarize_pitch3_lte_v38b.py`,
+rerun `summary` with the same run root and seeds as the completed experiments.
 These remain development experiments; repeatedly choosing variants using CV does not create independent
 confirmatory evidence. CV artifacts remain barred from development screening
 and guidance ensembles.
@@ -330,6 +336,10 @@ Defaults: CV seed 20260941, full-training seeds 20260941/42/43, devices
 are sequential per device, including on uneven fold durations. The runner
 rejects nonempty training/diagnostic/screen targets and preserves old logs;
 after partial failure select only unrun folds/seeds or use a new root.
+On child-process failure, the runner prints the command, device, full log path,
+and the last 80 log lines (at most 16 KiB), and reports every failed GPU queue.
+Use the child traceback to diagnose the cause; the wrapper's nonzero exit code
+alone does not identify a training fault. Full logs remain beside each output.
 
 Outputs are under `runs/pitch3_lte_v38b/`: `diagnostics_v38a/`,
 `cv_v37_control/`, `cv/<global>/<local>/fold_N/seed_S/models/`, and

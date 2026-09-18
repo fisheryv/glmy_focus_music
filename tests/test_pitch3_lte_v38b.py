@@ -48,6 +48,26 @@ def _dataset():
     return rows
 
 
+def _local_pair_rows(base_rows):
+    rows = []
+    for base in base_rows:
+        for sign in [-1, 1]:
+            band = max(0.0, float(base["exact_band"]) + sign * 0.1)
+            rows.append(
+                {
+                    **base,
+                    "sample_id": f"{base['sample_id']}_local_{sign}",
+                    "source_kind": "local_finite_difference",
+                    "direction_id": f"{base['sample_id']}_direction",
+                    "direction_sign": str(float(sign)),
+                    "epsilon": "0.5",
+                    "exact_band": str(band),
+                    "energy_target": str(math.log1p(band)),
+                }
+            )
+    return rows
+
+
 def _protocol(rows, fold=0):
     held = {f"f{i:02}" for i in range(20)[fold::5]} if fold is not None else set()
     fit = [r for r in rows if r["split"] == "train" and r["prompt_family"] not in held]
@@ -87,7 +107,7 @@ def _predictions(rows):
             "predicted_global_energy": r["energy_target"],
             "predicted_local_energy": "0.0",
             "predicted_coordinates_json": "[0,0,0]",
-            "anchor_sample_id": r["sample_id"],
+            "anchor_sample_id": r["trajectory_id"],
         }
         for r in rows
     ]
@@ -290,10 +310,13 @@ def _write_csv(path, rows):
         writer.writerows(rows)
 
 
-def test_cv_summary_verifies_hashes_splits_and_recomputes_gates(tmp_path):
+@pytest.mark.parametrize("with_local_pairs", [False, True])
+def test_cv_summary_verifies_hashes_splits_and_recomputes_gates(tmp_path, with_local_pairs):
     from scripts.summarize_pitch3_lte_v38b import summarize
 
     rows = _dataset()
+    if with_local_pairs:
+        rows += _local_pair_rows(rows)
     dataset = tmp_path / "dataset.csv"
     _write_csv(dataset, rows)
     for fold in range(5):
@@ -311,6 +334,9 @@ def test_cv_summary_verifies_hashes_splits_and_recomputes_gates(tmp_path):
             pred = _predictions(
                 [r for r in rows if r["sample_id"] in protocol[f"{split}_sample_ids"]]
             )
+            # Match the real exporter: teacher CSV -1.0/1.0 becomes prediction -1/1.
+            for row in pred:
+                row["direction_sign"] = str(int(float(row["direction_sign"])))
             path = folder / f"pitch3_lte_{split}_predictions.csv"
             _write_csv(path, pred)
             fields[f"{split}_predictions_sha256"] = file_hash(path)
@@ -335,13 +361,57 @@ def test_cv_summary_verifies_hashes_splits_and_recomputes_gates(tmp_path):
                 "local_residual_mode": "zero_global_only",
             },
         )
+    artifacts = {p: file_hash(p) for p in tmp_path.rglob("*") if p.is_file()}
     report = summarize(tmp_path, dataset, [41])
     assert report["families_passing_original_rho_gate"] == 20
-    assert report["folds_passing_all_original_model_gates"] == 0
+    assert report["folds_passing_all_original_model_gates"] == (5 if with_local_pairs else 0)
+    assert all(file_hash(p) == digest for p, digest in artifacts.items())
     path = tmp_path / "fold_0/seed_41/models/pitch3_lte_selection_predictions.csv"
+    if with_local_pairs:
+        # A true sign mismatch must fail even if the prediction file hash matches.
+        with path.open(newline="", encoding="utf-8") as handle:
+            predictions = list(csv.DictReader(handle))
+        next(row for row in predictions if row["direction_sign"] == "-1")["direction_sign"] = "1"
+        _write_csv(path, predictions)
+        manifest_path = path.parent / "pitch3_lte_manifest.json"
+        manifest = json.loads(manifest_path.read_text())
+        manifest["selection_predictions_sha256"] = file_hash(path)
+        _write_json(manifest_path, manifest)
+        with pytest.raises(ValueError, match="Prediction detached from true direction_sign"):
+            summarize(tmp_path, dataset, [41])
     path.write_text(path.read_text() + "\n")
     with pytest.raises(ValueError, match="hash-mismatched"):
         summarize(tmp_path, dataset, [41])
+
+
+@pytest.mark.parametrize("sign", [-1, 0, 1])
+def test_summary_direction_sign_compares_numeric_labels_without_rewriting_truth(sign):
+    from scripts.summarize_pitch3_lte_v38b import _validate_prediction_labels
+
+    truth = _dataset()[0]
+    truth["direction_sign"] = str(float(sign))
+    prediction = _predictions([truth])[0]
+    prediction["direction_sign"] = str(sign)
+    original = dict(truth)
+    _validate_prediction_labels(prediction, truth)
+    assert truth == original
+    assert prediction["direction_sign"] == str(sign)
+    # Decimal-form predictions also become readable by the unchanged gate code.
+    prediction["direction_sign"] = str(float(sign))
+    _validate_prediction_labels(prediction, truth)
+    assert prediction["direction_sign"] == str(sign)
+
+
+@pytest.mark.parametrize("field_source", ["prediction", "dataset"])
+@pytest.mark.parametrize("invalid", ["1.5", "1.00000000000000000001", "NaN", "Infinity", "2", ""])
+def test_summary_rejects_invalid_direction_signs_without_truncation(field_source, invalid):
+    from scripts.summarize_pitch3_lte_v38b import _validate_prediction_labels
+
+    truth = _dataset()[0]
+    prediction = _predictions([truth])[0]
+    (prediction if field_source == "prediction" else truth)["direction_sign"] = invalid
+    with pytest.raises(ValueError, match="Invalid direction_sign"):
+        _validate_prediction_labels(prediction, truth)
 
 
 def test_runner_local_branches_share_global_parent_and_default_cv_does_not_screen():
