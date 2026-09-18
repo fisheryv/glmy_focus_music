@@ -201,6 +201,21 @@ original two-stage local training. `LTE_FINGERPRINT` can point to the archived
 server fingerprint; its hash must match the existing exact-local dataset.
 No raw audio generation, dataset rewrite, or threshold change is required.
 
+## V3.9-A: high-resolution transition representation
+
+V3.9-A adds a masked 64-channel, stride-one temporal branch with directed lag
+features (1/2/4/8 latent frames) and a zero-initialized residual projection. Its
+matched baseline uses the same G0/L0 loss recipe, shared initial tensors and
+fit-only loss normalizers. Both arms keep ordinal supervision disabled and the
+local residual exactly zero. Training uses fixed 12-epoch online checkpoints;
+the two-family fit diagnostic is separate and does not produce a deployable model.
+
+Run `bash scripts/run_pitch3_lte_v39a.sh check`, then `diagnose`, `cv-global`, and
+`summary`. The complete Chinese runbook is `PITCH3_LTE_V39A.md`. Each fold/seed's
+baseline and transition jobs share one GPU queue. No stage automatically chooses
+an architecture, screens development, or grants guidance authorization. V3.9-B/C
+are not implemented by this experiment.
+
 ## V3.8-B: ordinal auxiliary and calibrated local derivatives
 
 Use `scripts/run_pitch3_lte_v38b.py` (or its `.sh` wrapper) and

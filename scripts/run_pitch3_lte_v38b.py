@@ -235,11 +235,11 @@ print(json.dumps(rows))
     return json.loads(result.stdout)
 
 
-def preflight_devices(args):
+def preflight_devices(args, *, device_stages=DEVICE_STAGES):
     """Filter only the requested devices; preserve the full experiment job list."""
     if not math.isfinite(args.min_free_gpu_gib) or args.min_free_gpu_gib <= 0:
         raise ValueError("--min-free-gpu-gib must be finite and positive")
-    if args.dry_run or args.stage not in DEVICE_STAGES:
+    if args.dry_run or args.stage not in device_stages:
         return
     cuda_devices = [d for d in args.devices if d == "cuda" or d.startswith("cuda:")]
     if not cuda_devices:
@@ -293,7 +293,7 @@ def _log_tail(path: Path, max_bytes: int = 16384, max_lines: int = 80) -> str:
     return "\n".join(text.splitlines()[-max_lines:]) or "(empty log)"
 
 
-def execute_jobs(jobs, args):
+def execute_jobs(jobs, args, *, verify_run=None):
     if args.dry_run:
         print(json.dumps({"stage": args.stage, "jobs": jobs}, indent=2))
         return
@@ -305,8 +305,8 @@ def execute_jobs(jobs, args):
                 f"Existing run: {output}; choose a new root or unrun --folds/--seeds"
             )
     queues = [[] for _ in args.devices]
-    for index, job in enumerate(jobs):
-        queues[index % len(queues)].append(job)
+    for job in jobs:
+        queues[args.devices.index(job["device"])].append(job)
 
     def worker(queue):
         for job in queue:
@@ -337,7 +337,9 @@ def execute_jobs(jobs, args):
                     f"Command: {json.dumps(job['command'], ensure_ascii=False)}\n"
                     f"Last log lines:\n{_log_tail(log)}"
                 )
-            if args.stage in {"cv-global", "cv-local", "train-global", "train-local"}:
+            if verify_run is not None:
+                verify_run(output, args.stage)
+            elif args.stage in {"cv-global", "cv-local", "train-global", "train-local"}:
                 sys.path.insert(0, str(args.root / "src"))
                 from generation.pitch3_lte_v38b_protocol import verify_manifest
 

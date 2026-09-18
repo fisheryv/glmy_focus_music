@@ -23,6 +23,7 @@ _ENSEMBLE_KINDS = {
     "v3.7_direct_topology_energy": "equal_weight_direct_topology_energy_v37_dte",
     "v3.8a_logit_stratified_rank_energy": "equal_weight_direct_topology_energy_v38a",
     "v3.8b_ordinal_calibrated_direction": "equal_weight_direct_topology_energy_v38b",
+    "v3.9a_high_resolution_transition": "equal_weight_direct_topology_energy_v39a",
 }
 
 
@@ -42,6 +43,8 @@ def build_pitch3_lte_ensemble_manifest(
             raise LTSNContractError("V3-LTE ensemble member has the wrong model family")
         if payload.get("validation_scope") == "train_family_cv":
             raise LTSNContractError("train-family CV checkpoints cannot form a guidance ensemble")
+        if payload.get("validation_scope") == "train_fit_diagnostic":
+            raise LTSNContractError("fit diagnostics cannot form a guidance ensemble")
         member_revision = str(payload.get("architecture_revision", ""))
         if member_revision not in _ENSEMBLE_KINDS:
             raise LTSNContractError("V3-LTE ensemble member has an unsupported architecture")
@@ -74,8 +77,14 @@ def build_pitch3_lte_ensemble_manifest(
                     "validation_scope": payload["validation_scope"],
                 }
             )
-        if member_revision == "v3.8b_ordinal_calibrated_direction":
-            from .pitch3_lte_v38b_protocol import verify_manifest
+        if member_revision in {
+            "v3.8b_ordinal_calibrated_direction",
+            "v3.9a_high_resolution_transition",
+        }:
+            if member_revision == "v3.9a_high_resolution_transition":
+                from .pitch3_lte_v39a_protocol import verify_manifest
+            else:
+                from .pitch3_lte_v38b_protocol import verify_manifest
 
             verify_manifest(manifest_path)
             contract.update(
@@ -110,7 +119,9 @@ def build_pitch3_lte_ensemble_manifest(
     report = {
         "schema_version": 1,
         "stage": (
-            "pitch3_lte_v38b_ensemble"
+            "pitch3_lte_v39a_ensemble"
+            if ensemble_kind == "equal_weight_direct_topology_energy_v39a"
+            else "pitch3_lte_v38b_ensemble"
             if ensemble_kind == "equal_weight_direct_topology_energy_v38b"
             else "pitch3_lte_v38a_ensemble"
             if ensemble_kind == "equal_weight_direct_topology_energy_v38a"
@@ -192,6 +203,8 @@ def load_pitch3_lte_ensemble(
             raise LTSNContractError("V3-LTE ensemble member architecture changed")
         if metadata.get("validation_scope") == "train_family_cv":
             raise LTSNContractError("train-family CV checkpoints are diagnostic only")
+        if revision == "v3.9a_high_resolution_transition" and metadata.get("run_mode") != "full":
+            raise LTSNContractError("Only full-train V3.9-A checkpoints can form an ensemble")
         if revision == "v3.8a_logit_stratified_rank_energy" and any(
             metadata.get(key) != payload.get(key)
             for key in (
@@ -202,7 +215,10 @@ def load_pitch3_lte_ensemble(
             )
         ):
             raise LTSNContractError("V3.8-A ensemble training contracts differ")
-        if revision == "v3.8b_ordinal_calibrated_direction" and any(
+        if revision in {
+            "v3.8b_ordinal_calibrated_direction",
+            "v3.9a_high_resolution_transition",
+        } and any(
             metadata.get(key) != payload.get(key)
             for key in (
                 "experiment_contract",
@@ -213,7 +229,7 @@ def load_pitch3_lte_ensemble(
                 "validation_scope",
             )
         ):
-            raise LTSNContractError("V3.8-B ensemble training contracts differ")
+            raise LTSNContractError("Fixed-epoch LTE ensemble training contracts differ")
         models.append(model)
         weights.append(float(member["weight"]))
     expected_weight = 1.0 / len(members)

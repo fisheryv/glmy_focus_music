@@ -59,8 +59,15 @@ class Pitch3LTEConfig:
     )
     prompt_film_fraction: float = 0.25
     ordinal_auxiliary: bool = False
+    transition_branch: bool = False
 
     def validate(self) -> None:
+        if type(self.transition_branch) is not bool:
+            raise ValueError("transition_branch must be boolean")
+        if self.transition_branch and (
+            self.potential_mode != "direct_anchored_v37" or self.ordinal_auxiliary
+        ):
+            raise ValueError("V3.9-A transitions require direct energy without ordinal auxiliary")
         if self.ordinal_auxiliary and self.potential_mode != "direct_anchored_v37":
             raise ValueError("ordinal auxiliary requires direct anchored energy")
         if self.model_dim % self.transformer_heads:
@@ -261,6 +268,10 @@ class PromptConditionedTopologyEnergy(nn.Module):
             self.ordinal_head = nn.Sequential(
                 nn.Linear(cfg.model_dim, cfg.model_dim), nn.SiLU(), nn.Linear(cfg.model_dim, 3)
             )
+        if cfg.transition_branch:
+            from .pitch3_lte_transition import HighResolutionTransitionBranch
+
+            self.transition_branch = HighResolutionTransitionBranch(cfg.latent_dim, cfg.model_dim)
 
     @staticmethod
     def _validate_mask(values: Tensor, mask: Tensor, name: str) -> Tensor:
@@ -288,7 +299,10 @@ class PromptConditionedTopologyEnergy(nn.Module):
         ).unsqueeze(0)
         sequence = self.latent_transformer(sequence, src_key_padding_mask=~mask)
         pooled = self.latent_pool(self.latent_output_norm(sequence), mask)
-        return self.latent_fusion(pooled)
+        state = self.latent_fusion(pooled)
+        if self.config.transition_branch:
+            state = state + self.transition_branch(latent, attention_mask)
+        return state
 
     def encode_prompt(self, text_hidden: Tensor, text_mask: Tensor) -> Tensor:
         cfg = self.config
