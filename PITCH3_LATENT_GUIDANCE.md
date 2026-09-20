@@ -201,6 +201,21 @@ original two-stage local training. `LTE_FINGERPRINT` can point to the archived
 server fingerprint; its hash must match the existing exact-local dataset.
 No raw audio generation, dataset rewrite, or threshold change is required.
 
+## V3.9-B: fit-budget probes and frozen transition supervision
+
+Start with `bash scripts/run_pitch3_lte_v39b.sh check`, then `budget` and
+`budget-summary`. The budget experiment compares baseline and transition at a
+fixed 48 epochs on five distinct pairs of fit families. It records low-energy
+ordering, per-family block gradients and parameter updates without checkpoint
+selection or outer/development evaluation.
+
+The separately launched `teacher`, `distill-diagnose`, and `cv` stages implement
+the conditional follow-up: a 16-by-16 joint transition target, including self
+transitions, reconstructed from the original x0 and checked against exact q2/q3.
+Only the new auxiliary supervision changes; the original G0 losses and frozen
+gates remain intact. Review budget results before launching this follow-up.
+See [PITCH3_LTE_V39B.md](PITCH3_LTE_V39B.md) for commands and artifact contracts.
+
 ## V3.9-A: high-resolution transition representation
 
 V3.9-A adds a masked 64-channel, stride-one temporal branch with directed lag
@@ -213,8 +228,8 @@ the two-family fit diagnostic is separate and does not produce a deployable mode
 Run `bash scripts/run_pitch3_lte_v39a.sh check`, then `diagnose`, `cv-global`, and
 `summary`. The complete Chinese runbook is `PITCH3_LTE_V39A.md`. Each fold/seed's
 baseline and transition jobs share one GPU queue. No stage automatically chooses
-an architecture, screens development, or grants guidance authorization. V3.9-B/C
-are not implemented by this experiment.
+an architecture, screens development, or grants guidance authorization. The
+separate V3.9-B workflow above preserves these original A experiments.
 
 ## V3.8-B: ordinal auxiliary and calibrated local derivatives
 
